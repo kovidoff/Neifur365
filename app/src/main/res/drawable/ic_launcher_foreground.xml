@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- fox-ear "N" with a play notch -->
+    <path android:fillColor="#F4F1FF"
+        android:pathData="M36,74 L36,34 Q36,31 38.6,32.6 L62,50 L62,36 Q62,32 66,32 L68,32 Q72,32 72,36 L72,74 Q72,77 69.4,75.4 L46,58 L46,72 Q46,76 42,76 L40,76 Q36,76 36,74 Z"/>
+</vector>

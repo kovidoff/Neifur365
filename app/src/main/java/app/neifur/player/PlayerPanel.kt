@@ -1,0 +1,341 @@
+@file:OptIn(ExperimentalLayoutApi::class)
+
+package app.neifur.player
+
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.SubtitlesOff
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import app.neifur.data.a365.Translation
+import app.neifur.data.a365.TranslationKind
+import app.neifur.ui.Nf
+import app.neifur.ui.Type
+import app.neifur.ui.pressable
+import java.util.Locale
+import kotlin.math.abs
+
+enum class PanelTab(val title: String, val icon: ImageVector) {
+    Translation("Перевод", Icons.Rounded.Mic),
+    Subs("Субтитры", Icons.Rounded.Subtitles),
+    Video("Видео", Icons.Rounded.Tune),
+}
+
+/** What the panel shows about the stream: the translation playing, this episode's alternatives, the qualities. */
+data class StreamUi(
+    val options: Map<TranslationKind, List<Translation>> = emptyMap(),
+    val current: Translation? = null,
+    val heights: List<Int> = emptyList(),
+    val height: Int = 0,
+)
+
+private val PanelBg = Color(0xF5121219)
+internal val PanelWidth = 420.dp
+private val RowOn = Nf.Violet.copy(alpha = 0.16f)
+
+@Composable
+fun PlayerPanel(
+    tab: PanelTab?, player: MpvPlayer, stream: StreamUi, onTab: (PanelTab) -> Unit, onClose: () -> Unit,
+    onSelectTrack: (String, Track?) -> Unit, onSubScale: (Double) -> Unit,
+    onTranslation: (Translation) -> Unit, onHeight: (Int) -> Unit,
+) {
+    // Scrim: the video stays visible but dims, and a tap on it closes the panel.
+    val scrim by animateFloatAsState(if (tab != null) 0.45f else 0f, tween(260), label = "scrim")
+    if (scrim > 0.01f) Box(
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = scrim))
+            .clickable(remember { MutableInteractionSource() }, null, onClick = onClose)
+    )
+    var shown by remember { mutableStateOf(PanelTab.Translation) }
+    if (tab != null) shown = tab
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterEnd) {
+        AnimatedVisibility(
+            tab != null,
+            enter = slideInHorizontally(spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow)) { it } + fadeIn(tween(160)),
+            exit = slideOutHorizontally(tween(220)) { it } + fadeOut(tween(200)),
+        ) {
+            // A floating card: only the screen edge it sits against is inset (a camera cut-out on the left must not
+            // push the card's content inwards, which is what produced the empty strip before).
+            Column(
+                Modifier.fillMaxHeight()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+                    .padding(top = 12.dp, bottom = 12.dp, end = 12.dp)
+                    .width(PanelWidth)
+                    .clip(RoundedCornerShape(28.dp)).background(PanelBg).border(1.dp, Color(0x14FFFFFF), RoundedCornerShape(28.dp))
+                    .clickable(remember { MutableInteractionSource() }, null) {}
+            ) {
+                Tabs(shown, onTab, Modifier.padding(start = 14.dp, end = 14.dp, top = 14.dp))
+                Spacer(Modifier.height(10.dp))
+                AnimatedContent(
+                    shown, label = "tab", modifier = Modifier.weight(1f),
+                    transitionSpec = {
+                        val dir = if (targetState.ordinal > initialState.ordinal) 1 else -1
+                        (slideInHorizontally(tween(260)) { it / 5 * dir } + fadeIn(tween(220))) togetherWith
+                            (slideOutHorizontally(tween(200)) { -it / 5 * dir } + fadeOut(tween(120)))
+                    },
+                ) { t ->
+                    when (t) {
+                        PanelTab.Translation -> TranslationTab(stream, onTranslation)
+                        PanelTab.Subs -> SubsTab(player, onSelectTrack, onSubScale)
+                        PanelTab.Video -> VideoTab(player, stream, onHeight)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Segmented tabs with an indicator that slides between them. */
+@Composable
+private fun Tabs(current: PanelTab, onTab: (PanelTab) -> Unit, modifier: Modifier) {
+    val density = LocalDensity.current
+    var w by remember { mutableIntStateOf(0) }
+    val inner = 5.dp
+    val segment = with(density) { ((w - (inner * 2).roundToPx()) / PanelTab.entries.size).toDp() }
+    val x by animateDpAsState(segment * current.ordinal, spring(dampingRatio = 0.8f, stiffness = 500f), label = "tabx")
+    Box(
+        modifier.fillMaxWidth().height(50.dp).clip(RoundedCornerShape(18.dp)).background(Color(0x0FFFFFFF))
+            .onSizeChanged { w = it.width }.padding(inner)
+    ) {
+        if (w > 0) Box(
+            Modifier.offset(x = x).width(segment).fillMaxHeight().clip(RoundedCornerShape(14.dp))
+                .background(Nf.Violet.copy(alpha = 0.26f)).border(1.dp, Nf.Violet.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+        )
+        Row(Modifier.fillMaxSize()) {
+            PanelTab.entries.forEach { t ->
+                val on = t == current
+                val c by animateColorAsState(if (on) Color.White else Color(0x8CFFFFFF), label = "tabc")
+                Row(
+                    Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(14.dp)).clickable { onTab(t) }.padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(t.icon, null, tint = c, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text(t.title, style = Type.Label.copy(fontSize = 13.5.sp), color = c, maxLines = 1, softWrap = false)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubsTab(player: MpvPlayer, onSelect: (String, Track?) -> Unit, onSubScale: (Double) -> Unit) {
+    val subs = remember(player.tracks) { player.tracks.filter { it.type == "sub" }.sortedBy { TrackNames.sortKey(it) } }
+    LazyColumn(contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        item(key = "off") {
+            OptionRow(selected = subs.none { it.selected }, onClick = { onSelect("sub", null) }) {
+                Icon(Icons.Rounded.SubtitlesOff, null, tint = Color(0x99FFFFFF), modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(12.dp))
+                Text("Без субтитров", style = Type.Title.copy(fontSize = 15.sp), color = Color.White, modifier = Modifier.weight(1f))
+            }
+        }
+        items(subs, key = { "s${it.id}" }) { t -> TrackRow(t) { onSelect("sub", t) } }
+        if (subs.isEmpty()) item { Hint("У озвучки субтитров нет. Субтитры есть у переводов из раздела «Субтитры» на вкладке «Перевод»") }
+
+        item(key = "look") {
+            Column(Modifier.padding(horizontal = 8.dp).padding(top = 18.dp)) {
+                SectionLabel("Размер")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(0.8, 1.0, 1.25, 1.5).forEachIndexed { i, v ->
+                        val on = abs(player.subScale - v) < 0.01
+                        Box(
+                            Modifier.weight(1f).height(52.dp).clip(RoundedCornerShape(14.dp))
+                                .background(if (on) RowOn else Color(0x0FFFFFFF))
+                                .border(1.dp, if (on) Nf.Violet.copy(alpha = 0.6f) else Color.Transparent, RoundedCornerShape(14.dp))
+                                .clickable { onSubScale(v) },
+                            contentAlignment = Alignment.Center,
+                        ) { Text("Аа", style = Type.Title.copy(fontSize = (13 + i * 3).sp), color = if (on) Nf.Violet else Color.White) }
+                    }
+                }
+                Spacer(Modifier.height(18.dp))
+                SectionLabel("Синхронизация")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StepButton(Icons.Rounded.Remove, "Раньше на 0,1 с") { player.changeSubDelay(player.subDelay - 0.1) }
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        val d = player.subDelay
+                        Text(
+                            if (d == 0.0) "0,0 с" else String.format(Locale("ru"), "%+.1f с", d),
+                            style = Type.Title, color = if (d == 0.0) Color.White else Nf.Amber,
+                        )
+                        Text(
+                            when { d > 0 -> "субтитры позже"; d < 0 -> "субтитры раньше"; else -> "как в файле" },
+                            style = Type.Caption, color = Color(0x80FFFFFF),
+                        )
+                    }
+                    StepButton(Icons.Rounded.Add, "Позже на 0,1 с") { player.changeSubDelay(player.subDelay + 0.1) }
+                }
+                AnimatedVisibility(player.subDelay != 0.0) {
+                    Text(
+                        "Сбросить", style = Type.Label, color = Nf.Violet,
+                        modifier = Modifier.padding(top = 10.dp).clip(CircleShape).clickable { player.changeSubDelay(0.0) }.padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Every translation of the playing episode; picking one restarts the episode in it, at the same moment. */
+@Composable
+private fun TranslationTab(stream: StreamUi, onPick: (Translation) -> Unit) {
+    LazyColumn(contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (stream.options.isEmpty()) item { Hint("Список переводов загружается…") }
+        stream.options.forEach { (kind, list) ->
+            item(key = "h-$kind") { Box(Modifier.padding(start = 8.dp, top = 12.dp)) { SectionLabel(kind.title) } }
+            items(list, key = { "t${it.id}" }) { t ->
+                OptionRow(selected = t.pickKey == stream.current?.pickKey, onClick = { onPick(t) }) {
+                    Column(Modifier.weight(1f)) {
+                        Text(t.author, style = Type.Title.copy(fontSize = 15.sp), color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (t.qualityLabel.isNotBlank()) Text(t.qualityLabel, style = Type.Caption, color = Color(0x80FFFFFF), modifier = Modifier.padding(top = 2.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VideoTab(player: MpvPlayer, stream: StreamUi, onHeight: (Int) -> Unit) {
+    Column(Modifier.padding(horizontal = 20.dp)) {
+        if (stream.heights.size > 1) {
+            SectionLabel("Качество")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                stream.heights.forEach { h ->
+                    val on = h == stream.height
+                    Box(
+                        Modifier.weight(1f).height(54.dp).clip(RoundedCornerShape(14.dp))
+                            .background(if (on) RowOn else Color(0x0FFFFFFF))
+                            .border(1.dp, if (on) Nf.Violet.copy(alpha = 0.6f) else Color.Transparent, RoundedCornerShape(14.dp))
+                            .clickable { if (!on) onHeight(h) },
+                        contentAlignment = Alignment.Center,
+                    ) { Text("${h}p", style = Type.Title.copy(fontSize = 15.sp), color = if (on) Nf.Violet else Color.White) }
+                }
+            }
+            Spacer(Modifier.height(20.dp))
+        }
+        SectionLabel("Скорость")
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), maxItemsInEachRow = 4) {
+            listOf(0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0).forEach { v ->
+                val on = abs(player.speed - v) < 0.01
+                Box(
+                    Modifier.weight(1f).height(54.dp).clip(RoundedCornerShape(14.dp))
+                        .background(if (on) RowOn else Color(0x0FFFFFFF))
+                        .border(1.dp, if (on) Nf.Violet.copy(alpha = 0.6f) else Color.Transparent, RoundedCornerShape(14.dp))
+                        .clickable { player.changeSpeed(v) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(if (v == 1.0) "Обычная" else speedLabel(v), style = Type.Title.copy(fontSize = 15.sp), color = if (on) Nf.Violet else Color.White)
+                }
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+        Hint("Подсказка: удерживайте палец на видео, чтобы временно смотреть в 2×", padding = 0.dp)
+    }
+}
+
+/** One audio or subtitle track: language first and large, the details that tell twins apart underneath. */
+@Composable
+private fun TrackRow(t: Track, onClick: () -> Unit) {
+    val info = t.info
+    OptionRow(selected = t.selected, onClick = onClick) {
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(info.name, style = Type.Title.copy(fontSize = 15.sp), color = if (t.selected) Color.White else Color(0xE6FFFFFF), maxLines = 1)
+                if (info.kind == SubKind.Signs) Badge("Надписи", Nf.Amber)
+                if (info.kind == SubKind.Captions) Badge("Для слабослышащих", Nf.Mint)
+                if (t.external) Badge("Внешние", Color(0xB3FFFFFF))
+            }
+            val details = listOfNotNull(info.detail, t.codecLabel, t.channelLabel).joinToString(" · ")
+            if (details.isNotEmpty()) Text(details, style = Type.Caption, color = Color(0x80FFFFFF), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+        }
+    }
+}
+
+@Composable
+private fun OptionRow(selected: Boolean, onClick: () -> Unit, content: @Composable RowScope.() -> Unit) {
+    val bg by animateColorAsState(if (selected) RowOn else Color.Transparent, tween(220), label = "row")
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 58.dp).clip(RoundedCornerShape(16.dp)).background(bg).clickable(onClick = onClick)
+            .padding(start = 14.dp, end = 14.dp, top = 9.dp, bottom = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        content()
+        Spacer(Modifier.width(10.dp))
+        Radio(selected)
+    }
+}
+
+@Composable
+private fun Radio(on: Boolean) {
+    val dot by animateFloatAsState(if (on) 1f else 0f, spring(dampingRatio = 0.55f, stiffness = 600f), label = "radio")
+    val ring by animateColorAsState(if (on) Nf.Violet else Color(0x4DFFFFFF), label = "ring")
+    Box(Modifier.size(22.dp).clip(CircleShape).border(2.dp, ring, CircleShape), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(10.dp).graphicsLayer { scaleX = dot; scaleY = dot }.clip(CircleShape).background(Nf.Violet))
+    }
+}
+
+@Composable
+private fun Badge(text: String, color: Color) {
+    Text(
+        text, style = Type.Caption.copy(fontSize = 10.5.sp), color = color, maxLines = 1,
+        modifier = Modifier.padding(start = 8.dp).clip(RoundedCornerShape(6.dp)).background(color.copy(alpha = 0.14f)).padding(horizontal = 6.dp, vertical = 2.dp),
+    )
+}
+
+@Composable
+private fun SectionLabel(text: String) =
+    Text(text.uppercase(), style = Type.Overline, color = Color(0x80FFFFFF), modifier = Modifier.padding(bottom = 10.dp, start = 2.dp))
+
+@Composable
+private fun Hint(text: String, padding: androidx.compose.ui.unit.Dp = 14.dp) =
+    Text(text, style = Type.Caption, color = Color(0x80FFFFFF), modifier = Modifier.padding(horizontal = padding, vertical = 10.dp))
+
+@Composable
+private fun StepButton(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0x14FFFFFF)).pressable(0.88f, onClick = onClick), contentAlignment = Alignment.Center) {
+        Icon(icon, label, tint = Color.White, modifier = Modifier.size(22.dp))
+    }
+}

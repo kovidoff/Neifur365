@@ -1,0 +1,85 @@
+package app.neifur
+
+import android.app.Application
+import android.content.Context
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import app.neifur.core.buildHttpClient
+import app.neifur.data.Prefs
+import app.neifur.data.SavedAnime
+import app.neifur.data.a365.Account
+import app.neifur.data.a365.Anime365
+import app.neifur.data.a365.Episode
+import app.neifur.data.a365.Series
+import app.neifur.data.shikimori.ShikimoriApi
+import coil3.ImageLoader
+import coil3.PlatformContext
+import coil3.SingletonImageLoader
+import coil3.disk.DiskCache
+import coil3.disk.directory
+import coil3.memory.MemoryCache
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import coil3.request.crossfade
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+
+/** The little a screen needs to draw a title before its full data arrives. */
+data class AnimeStub(
+    val id: String, val title: String, val poster: String?, val kind: String? = null,
+    val year: Int? = null, val score: Double? = null,
+) {
+    fun saved() = SavedAnime(id, title, poster, kind, year, score, System.currentTimeMillis())
+}
+
+fun Series.stub() = AnimeStub(id.toString(), title, posterUrl ?: posterUrlSmall, type, year.takeIf { it > 0 }, score)
+
+/**
+ * What the player was asked to play: the title's episodes, where to start, and which translation
+ * ([pick], a studio key) the viewer chose. Each episode resolves its own translation of that studio.
+ */
+data class PlaySession(val anime: AnimeStub, val episodes: List<Episode>, val index: Int, val pick: String?)
+
+class Container(app: Application) {
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val http = buildHttpClient()
+    val prefs = Prefs(app)
+    val shikimori = ShikimoriApi(http)
+    val a365 = Anime365(app, http, prefs)
+    val account = Account(a365, scope)
+
+    val stubs = HashMap<String, AnimeStub>()
+    fun remember(stub: AnimeStub) { stubs[stub.id] = stub }
+
+    @Volatile var session: PlaySession? = null
+}
+
+class NeifurApp : Application(), SingletonImageLoader.Factory {
+    lateinit var container: Container
+        private set
+
+    override fun onCreate() {
+        super.onCreate()
+        container = Container(this)
+    }
+
+    override fun newImageLoader(context: PlatformContext): ImageLoader =
+        ImageLoader.Builder(context)
+            .components { add(OkHttpNetworkFetcherFactory(callFactory = { container.http })) }
+            .memoryCache { MemoryCache.Builder().maxSizePercent(context, 0.25).build() }
+            .diskCache { DiskCache.Builder().directory(cacheDir.resolve("posters")).maxSizeBytes(256L shl 20).build() }
+            .crossfade(220)
+            .build()
+}
+
+val Context.container: Container get() = (applicationContext as NeifurApp).container
+
+@Composable
+inline fun <reified T : ViewModel> nfViewModel(key: String? = null, crossinline create: (Container) -> T): T {
+    val c = LocalContext.current.container
+    return viewModel(key = key, factory = viewModelFactory { initializer { create(c) } })
+}

@@ -1,0 +1,17 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.kotlin/
+captures/
+*.apk
+
+# Signing keys and secrets never go into git
+*.jks
+*.keystore
+keystore.properties
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
