@@ -157,10 +157,7 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit) {
                 .background(Nf.Ink.copy(alpha = barAlpha * 0.96f))
                 .statusBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp)
         ) {
-            Row(Modifier.align(Alignment.CenterStart), verticalAlignment = Alignment.CenterVertically) {
-                Text("neifur", style = Type.Display.copy(fontSize = 19.sp), color = Nf.Text)
-                Text("365", style = Type.Display.copy(fontSize = 19.sp), color = Nf.Violet, modifier = Modifier.padding(start = 5.dp))
-            }
+            Wordmark(Modifier.align(Alignment.CenterStart))
             Box(
                 Modifier.align(Alignment.CenterEnd).size(40.dp).clip(CircleShape).background(Color(0x33000000))
                     .pressable(0.9f, onClick = onSearch),

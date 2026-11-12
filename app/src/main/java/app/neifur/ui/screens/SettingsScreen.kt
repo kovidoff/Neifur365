@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalLayoutApi::class)
+
 package app.neifur.ui.screens
 
 import androidx.compose.animation.AnimatedContent
@@ -25,7 +27,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Login
 import androidx.compose.material.icons.automirrored.rounded.Logout
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ClosedCaption
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.RestartAlt
+import androidx.compose.material.icons.rounded.Translate
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -82,8 +92,19 @@ class SettingsVm(private val c: Container) : ViewModel() {
     val preferredKind = c.prefs.preferredKind
     val history = c.prefs.history
     val subScale = c.prefs.subScaleFlow
+    val studios = c.prefs.favouriteStudios
+    val pickCount = c.prefs.pickCount
+    /** Address in use, for "open on the site" links. */
+    var base by mutableStateOf<String?>(null)
+        private set
 
-    init { checkMirrors() }
+    init {
+        checkMirrors()
+        viewModelScope.launch { base = runCatching { c.a365.baseUrl() }.getOrNull() }
+    }
+
+    fun removeStudio(key: String) = viewModelScope.launch { c.prefs.removeFavouriteStudio(key) }
+    fun clearPicks() = viewModelScope.launch { c.prefs.clearPicks() }
 
     fun checkMirrors() {
         mirrorsBusy = true
@@ -150,7 +171,10 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
     val kind by vm.preferredKind.collectAsStateWithLifecycle("VoiceRu")
     val history by vm.history.collectAsStateWithLifecycle(emptyList())
     val subScale by vm.subScale.collectAsStateWithLifecycle(1.0)
+    val studios by vm.studios.collectAsStateWithLifecycle(emptyList())
+    val pickCount by vm.pickCount.collectAsStateWithLifecycle(0)
     var confirmHistory by remember { mutableStateOf(false) }
+    var confirmPicks by remember { mutableStateOf(false) }
     var confirmLogout by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { vm.measureCache(ctx) }
 
@@ -168,15 +192,35 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
             Text("Настройки", style = Type.Display, color = Nf.Text)
         }
 
-        SectionLabel("Аккаунт Anime 365")
+        Spacer(Modifier.height(10.dp))
         AccountCard(vm) { confirmLogout = true }
 
-        SectionLabel("Просмотр")
+        SectionLabel("Перевод")
         Card {
-            SettingTitle("Что включать по умолчанию", "Для новых тайтлов. Выбранная вручную студия запоминается для каждого тайтла")
-            Segmented(listOf("VoiceRu" to "Озвучка", "SubRu" to "Субтитры", "Raw" to "Оригинал"), kind) { vm.setKind(it) }
+            SettingTitle("Как вы смотрите", "Что включать в новых тайтлах, пока вы не выбрали студию сами")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                KindTile("VoiceRu", Icons.Rounded.Mic, Nf.Pink, "Озвучка", kind) { vm.setKind(it) }
+                KindTile("SubRu", Icons.Rounded.ClosedCaption, Nf.Violet, "Субтитры", kind) { vm.setKind(it) }
+                KindTile("Raw", Icons.Rounded.Translate, Nf.Mint, "Оригинал", kind) { vm.setKind(it) }
+            }
             Divider()
-            SettingTitle("Качество видео", "Если такого нет, включится ближайшее ниже")
+            SettingTitle(
+                "Любимые студии",
+                if (studios.isEmpty()) "Появятся, когда вы выберете перевод на странице тайтла или в плеере"
+                else "Их Neifur 365 ставит первыми на новых тайтлах. Сверху — последняя выбранная",
+            )
+            if (studios.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                studios.forEach { (key, name) -> StudioChip(key, name) { vm.removeStudio(key) } }
+            }
+            if (pickCount > 0) {
+                Divider()
+                ActionRow(Icons.Rounded.RestartAlt, "Выбор по тайтлам", "Запомнено для $pickCount ${plural(pickCount, "тайтла", "тайтлов", "тайтлов")}", "Сбросить", enabled = true) { confirmPicks = true }
+            }
+        }
+
+        SectionLabel("Плеер")
+        Card {
+            SettingTitle("Качество видео", "Если такого нет у перевода, включится ближайшее ниже")
             Segmented(listOf(1080 to "1080p", 720 to "720p", 480 to "480p"), quality) { vm.setQuality(it) }
             Divider()
             SettingTitle("Размер субтитров", null)
@@ -194,7 +238,7 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
             }
         }
 
-        SectionLabel("Подключение")
+        SectionLabel("Сайт Anime 365")
         MirrorsCard(vm)
 
         SectionLabel("Данные")
@@ -217,9 +261,8 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
             // Hidden for testing: five quick taps on the wordmark bring the welcome flow back.
             var taps by remember { mutableIntStateOf(0) }
             var lastTap by remember { mutableLongStateOf(0L) }
-            Text(
-                "neifur 365", style = Type.Display.copy(fontSize = 18.sp), color = Nf.TextDim,
-                modifier = Modifier.clickable(remember { MutableInteractionSource() }, indication = null) {
+            Wordmark(
+                Modifier.graphicsLayer { alpha = 0.75f }.clickable(remember { MutableInteractionSource() }, indication = null) {
                     val now = System.currentTimeMillis()
                     taps = if (now - lastTap < 600) taps + 1 else 1
                     lastTap = now
@@ -243,6 +286,14 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
         confirmButton = { TextButton({ vm.clearHistory(); confirmHistory = false }) { Text("Очистить", color = Nf.Red, style = Type.Label) } },
         dismissButton = { TextButton({ confirmHistory = false }) { Text("Отмена", color = Nf.Text, style = Type.Label) } },
     )
+    if (confirmPicks) AlertDialog(
+        onDismissRequest = { confirmPicks = false },
+        containerColor = Nf.SurfaceHi, titleContentColor = Nf.Text, textContentColor = Nf.TextDim,
+        title = { Text("Сбросить выбор студий?", style = Type.Section) },
+        text = { Text("Тайтлы снова будут включаться по настройке «Как вы смотрите», любимые студии очистятся.", style = Type.Body) },
+        confirmButton = { TextButton({ vm.clearPicks(); confirmPicks = false }) { Text("Сбросить", color = Nf.Red, style = Type.Label) } },
+        dismissButton = { TextButton({ confirmPicks = false }) { Text("Отмена", color = Nf.Text, style = Type.Label) } },
+    )
     if (confirmLogout) AlertDialog(
         onDismissRequest = { confirmLogout = false },
         containerColor = Nf.SurfaceHi, titleContentColor = Nf.Text, textContentColor = Nf.TextDim,
@@ -258,8 +309,14 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
 @Composable
 private fun AccountCard(vm: SettingsVm, onLogout: () -> Unit) {
     val state by vm.account.collectAsStateWithLifecycle()
+    val ctx = LocalContext.current
     var signIn by remember { mutableStateOf(false) }
-    Card {
+    // The account sits on a soft violet wash: it's the first thing on the page and the heart of Neifur 365.
+    Column(
+        Modifier.padding(horizontal = 20.dp).fillMaxWidth().clip(RoundedCornerShape(26.dp))
+            .background(Brush.linearGradient(listOf(Nf.Violet.copy(alpha = 0.16f), Nf.Pink.copy(alpha = 0.07f), Nf.Surface)))
+            .border(1.dp, Nf.Violet.copy(alpha = 0.22f), RoundedCornerShape(26.dp)).padding(18.dp)
+    ) {
         AnimatedContent(state, label = "acc", transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) }) { s ->
             when (s) {
                 AccountState.Unknown -> Row(verticalAlignment = Alignment.CenterVertically) {
@@ -272,21 +329,33 @@ private fun AccountCard(vm: SettingsVm, onLogout: () -> Unit) {
                 }
                 is AccountState.SignedIn -> Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        PosterImage(s.profile.avatarUrl, Modifier.size(50.dp).clip(CircleShape))
-                        Spacer(Modifier.width(14.dp))
+                        Box(Modifier.size(64.dp).clip(CircleShape).background(Brush.linearGradient(listOf(Nf.Violet, Nf.Pink))).padding(2.5.dp)) {
+                            PosterImage(s.profile.avatarUrl, Modifier.fillMaxSize().clip(CircleShape))
+                        }
+                        Spacer(Modifier.width(16.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(s.profile.name, style = Type.Title, color = Nf.Text, maxLines = 1)
-                            Text("ID ${s.profile.id} · списки синхронизируются", style = Type.Caption, color = Nf.TextMute, maxLines = 1)
+                            Text(s.profile.name, style = Type.Display.copy(fontSize = 19.sp), color = Nf.Text, maxLines = 1)
+                            Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.size(7.dp).clip(CircleShape).background(Nf.Mint))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Anime 365 · ID ${s.profile.id}", style = Type.Caption, color = Nf.TextDim, maxLines = 1)
+                            }
                         }
                     }
-                    Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Списки и отметки о просмотре синхронизируются с сайтом",
+                        style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 14.dp),
+                    )
+                    Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        vm.base?.let { b -> PillButton("Профиль на сайте", Icons.AutoMirrored.Rounded.OpenInNew) { openUrl(ctx, "$b/users/profile") } }
                         PillButton("Выйти", Icons.AutoMirrored.Rounded.Logout, tint = Nf.Red, onClick = onLogout)
                     }
                 }
                 AccountState.SignedOut -> Column {
-                    Text("Вы не вошли", style = Type.Title, color = Nf.Text)
+                    Wordmark()
+                    Text("Войдите, чтобы смотреть", style = Type.Title, color = Nf.Text, modifier = Modifier.padding(top = 14.dp))
                     Text(
-                        "Видео Anime 365 доступно после входа. Каталог и поиск работают и так.",
+                        "Видео Anime 365 доступно после входа. Списки и отметки о просмотре будут общими с сайтом.",
                         style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 4.dp, bottom = 14.dp),
                     )
                     PrimaryButton("Войти в Anime 365") { signIn = true }
@@ -354,10 +423,19 @@ private fun MirrorsCard(vm: SettingsVm) {
                 }
             }
         }
-        Text(
-            "Официальные адреса сайта. smotret-anime.app работает из России без VPN",
-            style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 12.dp, start = 2.dp),
-        )
+        val ctx = LocalContext.current
+        Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Официальные адреса сайта. smotret-anime.app работает из России без VPN",
+                style = Type.Caption, color = Nf.TextMute, modifier = Modifier.weight(1f).padding(start = 2.dp),
+            )
+            vm.mirrors?.firstOrNull { it.active }?.let { m ->
+                Text(
+                    "Открыть сайт", style = Type.Label, color = Nf.Violet,
+                    modifier = Modifier.clip(CircleShape).clickable { openUrl(ctx, "https://${m.host}") }.padding(horizontal = 8.dp, vertical = 6.dp),
+                )
+            }
+        }
     }
 }
 
@@ -390,6 +468,44 @@ private fun MirrorRow(m: MirrorStatus, auto: Boolean, onPick: () -> Unit, onRemo
             modifier = Modifier.size(36.dp).clip(CircleShape).clickable(onClick = onRemove).padding(9.dp),
         ) else if (m.active) Icon(Icons.Rounded.Check, null, tint = Nf.Violet, modifier = Modifier.padding(end = 8.dp).size(18.dp))
     }
+}
+
+@Composable
+private fun RowScope.KindTile(key: String, icon: ImageVector, tint: Color, label: String, selected: String, onPick: (String) -> Unit) {
+    val on = key == selected
+    val bg by animateColorAsState(if (on) tint.copy(alpha = 0.16f) else Nf.Ink, label = "kt")
+    val br by animateColorAsState(if (on) tint.copy(alpha = 0.6f) else Nf.Line, label = "ktb")
+    Column(
+        Modifier.weight(1f).height(84.dp).clip(RoundedCornerShape(18.dp)).background(bg).border(1.dp, br, RoundedCornerShape(18.dp))
+            .pressable(0.95f) { onPick(key) },
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(icon, null, tint = if (on) tint else Nf.TextDim, modifier = Modifier.size(24.dp))
+        Text(label, style = Type.Label, color = if (on) Nf.Text else Nf.TextDim, modifier = Modifier.padding(top = 8.dp))
+    }
+}
+
+@Composable
+private fun StudioChip(key: String, name: String, onRemove: () -> Unit) {
+    val voice = key.startsWith("Voice")
+    val tint = if (voice) Nf.Pink else Nf.Violet
+    Row(
+        Modifier.clip(CircleShape).background(tint.copy(alpha = 0.12f)).border(1.dp, tint.copy(alpha = 0.3f), CircleShape)
+            .padding(start = 12.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(if (voice) Icons.Rounded.Mic else Icons.Rounded.ClosedCaption, null, tint = tint, modifier = Modifier.size(15.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(name, style = Type.Label, color = Nf.Text, maxLines = 1)
+        Icon(
+            Icons.Rounded.Close, "Убрать $name", tint = Nf.TextMute,
+            modifier = Modifier.size(32.dp).clip(CircleShape).clickable(onClick = onRemove).padding(8.dp),
+        )
+    }
+}
+
+private fun openUrl(ctx: android.content.Context, url: String) {
+    runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
 }
 
 @Composable

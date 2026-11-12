@@ -151,12 +151,16 @@ fun LibraryScreen(open: OpenAnime) {
                     Column(Modifier.animateItem()) {
                         PosterCard(item.stub, "library-l", { open(item.stub, "library-l") }, width = null)
                         val e = item.entry
-                        if (e.total != null && e.total > 0) {
+                        // Ongoing titles have no total on the site ("3 / ?"): show the count alone.
+                        val total = e.total ?: item.series?.numberOfEpisodes?.takeIf { it > 0 && item.series.airing.not() }
+                        if (total != null && total > 0) {
                             Spacer(Modifier.height(5.dp))
                             Box(Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(Nf.Line)) {
-                                Box(Modifier.fillMaxWidth((e.watched / e.total.toFloat()).coerceIn(0f, 1f)).fillMaxHeight().clip(CircleShape).background(Nf.Violet))
+                                Box(Modifier.fillMaxWidth((e.watched / total.toFloat()).coerceIn(0f, 1f)).fillMaxHeight().clip(CircleShape).background(Nf.Violet))
                             }
-                            Text("${e.watched} из ${e.total}", style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 3.dp))
+                            Text("${e.watched} из $total", style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 3.dp))
+                        } else if (e.watched > 0) {
+                            Text("Просмотрено: ${e.watched}", style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 4.dp))
                         }
                     }
                 }

@@ -244,7 +244,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         pickKey = t.pickKey
         val r = play as? PlayState.Ready ?: return
         play = r.copy(chosen = t)
-        viewModelScope.launch { c.prefs.setPick(seriesId ?: return@launch, t.pickKey) }
+        viewModelScope.launch { c.prefs.setPick(seriesId ?: return@launch, t.pickKey, t.author) }
     }
 
     private suspend fun loadRecord() {

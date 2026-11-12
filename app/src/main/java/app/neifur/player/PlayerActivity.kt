@@ -98,6 +98,22 @@ class PlayerActivity : ComponentActivity() {
         lifecycleScope.launch {
             while (isActive) { delay(5000); if (!player.paused) { saveProgress(); markIfWatched() } }
         }
+        // Stall watchdog: Anime 365's video servers sometimes drop the extra connection a seek opens, and the
+        // picture freezes for good. After 8 s stuck, reopen the episode at the same spot with fresh links.
+        lifecycleScope.launch {
+            var stuck = 0
+            var last = -1.0
+            while (isActive) {
+                delay(1000)
+                val moving = player.position != last
+                last = player.position
+                when {
+                    !player.loaded || player.paused || reconnecting || resolving -> stuck = 0
+                    player.buffering && !moving -> if (++stuck >= 8) { stuck = 0; recover() }
+                    else -> { stuck = 0; if (moving) reconnects = 0 }
+                }
+            }
+        }
         lifecycleScope.launch { snapshotFlow { notice }.collect { if (it != null) { delay(4500); notice = null } } }
         // Keep the PiP window's buttons (and auto-enter) in step with playback.
         lifecycleScope.launch { snapshotFlow { Triple(player.paused, player.loaded, player.videoW * 10000 + player.videoH) }.collect { updatePipParams() } }
@@ -176,7 +192,7 @@ class PlayerActivity : ComponentActivity() {
     /** Another studio from the panel: same episode, same moment, and it becomes the pick for the next episodes. */
     private fun switchTranslation(t: Translation) {
         pick = t.pickKey
-        lifecycleScope.launch { container.prefs.setPick(session.anime.id, t.pickKey) }
+        lifecycleScope.launch { container.prefs.setPick(session.anime.id, t.pickKey, t.author) }
         stream = stream.copy(current = t)
         loadEpisode(index, resumeAt = player.position.takeIf { player.loaded }, keep = true)
     }

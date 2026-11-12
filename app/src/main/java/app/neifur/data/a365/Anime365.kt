@@ -143,7 +143,7 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
         val pick = live.firstOrNull { manual && it.host == prefs.mirror.first() }
             ?: live.filter { it.health == MirrorHealth.Ok }.minByOrNull { it.millis }
             ?: live.minByOrNull { it.millis }
-            ?: throw ApiError("Anime 365 сейчас недоступен ни по одному адресу")
+            ?: throw ApiError("Не удалось связаться с Anime 365. Проверьте интернет или VPN")
         prefs.setMirror(pick.host)
         pick.host
     }
@@ -163,6 +163,8 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
         } catch (e: Exception) {
             val mirrorDown = e is IOException && (e !is HttpError || e.code >= 500)
             if (!mirrorDown) throw e
+            // A single dropped request (flaky mobile network, VPN) shouldn't move the app to another address.
+            runCatching { return block("https://$first") }
             val next = resolveMirror(exclude = first)
             return block("https://$next")
         }
@@ -172,12 +174,25 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
 
     // --- transport -------------------------------------------------------------------------------------
     private suspend fun text(req: Request): String = withContext(Dispatchers.IO) {
-        http.newCall(req).await().use { r ->
+        val t0 = System.currentTimeMillis()
+        val call = runCatching { http.newCall(req).await() }
+            .onFailure { if (dumpDir != null) android.util.Log.w("A365", "${req.method} ${req.url.encodedPath} failed: $it") }
+            .getOrThrow()
+        call.use { r ->
             val body = r.body?.string().orEmpty()
+            if (dumpDir != null) android.util.Log.d("A365", "${req.method} ${req.url.encodedPath} → ${r.code} in ${System.currentTimeMillis() - t0} ms")
             if (!r.isSuccessful && r.code != 403) throw HttpError(r.code, body.take(300))
+            // Debug builds keep the last copy of each site page, to check the parsers against real markup.
+            if (dumpDir != null && !req.url.encodedPath.startsWith("/api")) runCatching {
+                val name = (req.url.encodedPath.trim('/').ifEmpty { "index" } + "_" + req.url.query.orEmpty()).replace(Regex("[^\\w.-]"), "_").take(80)
+                java.io.File(dumpDir, "$name.html").writeText(body)
+            }
             body
         }
     }
+
+    private val dumpDir: java.io.File? =
+        if (app.neifur.BuildConfig.DEBUG) java.io.File(context.filesDir, "pages").apply { mkdirs() } else null
 
     private suspend fun <T> api(path: String, ser: KSerializer<T>): T = mirrored { base ->
         val raw = text(Request.Builder().url("$base/api$path").header("Accept", "application/json").build())

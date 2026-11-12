@@ -85,15 +85,34 @@ class Prefs(private val context: Context) {
     suspend fun pick(animeId: String): String? =
         context.store.data.first()[KEY_PICKS]?.lineSequence()?.firstOrNull { it.startsWith("$animeId\t") }?.substringAfter('\t')
 
-    suspend fun setPick(animeId: String, key: String) = context.store.edit { p ->
+    /** [author] is the studio's display name, kept for the "favourite studios" list in Settings. */
+    suspend fun setPick(animeId: String, key: String, author: String) = context.store.edit { p ->
         val lines = p[KEY_PICKS]?.lines()?.filterNot { it.startsWith("$animeId\t") } ?: emptyList()
         p[KEY_PICKS] = (listOf("$animeId\t$key") + lines).take(400).joinToString("\n")
         // Studios picked by hand rank first on titles the viewer hasn't opened yet.
-        val fav = p[KEY_FAVOURITE_AUTHORS]?.lines().orEmpty().filterNot { it == key }
-        p[KEY_FAVOURITE_AUTHORS] = (listOf(key) + fav).take(12).joinToString("\n")
+        val fav = p[KEY_FAVOURITE_AUTHORS]?.lines().orEmpty().filterNot { it.substringBefore('\t') == key }
+        p[KEY_FAVOURITE_AUTHORS] = (listOf("$key\t$author") + fav).take(12).joinToString("\n")
     }
 
-    suspend fun favouriteAuthors(): List<String> = context.store.data.first()[KEY_FAVOURITE_AUTHORS]?.lines().orEmpty()
+    /** Pick keys of the studios chosen by hand, most recent first. */
+    suspend fun favouriteAuthors(): List<String> = favouriteStudios.first().map { it.first }
+
+    /** (pick key, display name) of the studios chosen by hand, most recent first. */
+    val favouriteStudios: Flow<List<Pair<String, String>>> = context.store.data.map { p ->
+        p[KEY_FAVOURITE_AUTHORS]?.lines().orEmpty().filter { it.isNotBlank() }.map { l ->
+            val key = l.substringBefore('\t')
+            key to (l.substringAfter('\t', "").ifBlank { key.substringAfter('|').replaceFirstChar { it.uppercase() } })
+        }
+    }.distinctUntilChanged()
+
+    suspend fun removeFavouriteStudio(key: String) = context.store.edit { p ->
+        p[KEY_FAVOURITE_AUTHORS] = p[KEY_FAVOURITE_AUTHORS]?.lines().orEmpty().filterNot { it.substringBefore('\t') == key }.joinToString("\n")
+    }
+
+    /** How many titles have a translation chosen by hand. */
+    val pickCount: Flow<Int> = context.store.data.map { p -> p[KEY_PICKS]?.lines()?.count { it.isNotBlank() } ?: 0 }.distinctUntilChanged()
+
+    suspend fun clearPicks() = context.store.edit { it.remove(KEY_PICKS); it.remove(KEY_FAVOURITE_AUTHORS) }
 
     // --- history and favourites ----------------------------------------------------------------------
     val history: Flow<List<WatchEntry>> = context.store.data.map { p ->

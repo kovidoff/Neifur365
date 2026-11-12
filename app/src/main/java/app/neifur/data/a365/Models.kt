@@ -86,7 +86,9 @@ data class Translation(
 
     /** Studio name without release notes: "Freedub Studio [ТВ] (BD)" → "Freedub Studio". */
     val author: String
-        get() = authorsSummary.replace(Regex("""\s*[\[(][^\])]*[\])]"""), "").trim().ifBlank { authorsSummary.trim() }.ifBlank { "Без названия" }
+        get() = authorsSummary.replace(Regex("""\s*[\[(][^\])]*[\])]"""), "")
+            .trim().trimStart('-', '–', '—', '·', ' ').trim()
+            .ifBlank { authorsSummary.trim() }.ifBlank { "Без названия" }
 
     /** Identifies "the same translation" across episodes, so a pick made once follows the viewer. */
     val pickKey: String get() = "${kind.name}|${author.lowercase()}"
