@@ -56,6 +56,8 @@ class PlayerActivity : ComponentActivity() {
     /** The translation playing, the alternatives for this episode and the qualities, for the panel and title. */
     private var stream by mutableStateOf(StreamUi())
     private var notice by mutableStateOf<String?>(null)
+    /** Episodes of this title finished on this phone, for the checkmarks in the episode list. */
+    private var watched by mutableStateOf<Set<Int>>(emptySet())
     /** The studio key the viewer wants; each episode resolves it to its own translation. */
     private var pick: String? = null
     /** Translations already marked watched on Anime 365 in this session. */
@@ -115,6 +117,11 @@ class PlayerActivity : ComponentActivity() {
             }
         }
         lifecycleScope.launch { snapshotFlow { notice }.collect { if (it != null) { delay(4500); notice = null } } }
+        lifecycleScope.launch {
+            container.prefs.history.collect { h ->
+                watched = h.filter { it.animeId == session.anime.id && it.finished }.mapTo(HashSet()) { it.episode }
+            }
+        }
         // Keep the PiP window's buttons (and auto-enter) in step with playback.
         lifecycleScope.launch { snapshotFlow { Triple(player.paused, player.loaded, player.videoW * 10000 + player.videoH) }.collect { updatePipParams() } }
 
@@ -122,7 +129,7 @@ class PlayerActivity : ComponentActivity() {
             NeifurTheme {
                 PlayerScreen(
                     player = player, session = session, index = index, resolving = resolving, reconnecting = reconnecting,
-                    error = error, inPip = inPip, stream = stream, notice = notice,
+                    error = error, inPip = inPip, stream = stream, notice = notice, watched = watched,
                     onTranslation = ::switchTranslation, onHeight = { h -> loadEpisode(index, resumeAt = player.position, height = h, keep = true) },
                     onBack = { finish() }, onRetry = { loadEpisode(index) }, onEpisode = { loadEpisode(it) }, onPip = { enterPip() },
                     onVideoBounds = { r ->
@@ -170,18 +177,20 @@ class PlayerActivity : ComponentActivity() {
                 if (streams.isEmpty()) throw ApiError("Anime 365 не отдал видео для этого перевода")
                 val want = height ?: quality
                 val s = streams.firstOrNull { it.height <= want } ?: streams.last()
-                stream = stream.copy(current = tr, heights = streams.map { it.height }.distinct(), height = s.height)
+                stream = stream.copy(current = tr, heights = streams.map { it.height }.distinct(), height = s.height, externalSubs = false)
                 val subs = embed.subtitlesUrl?.takeIf { it.isNotBlank() }?.let { url ->
                     runCatching {
                         val text = c.a365.subtitles(url)
                         java.io.File(cacheDir, "subs").apply { mkdirs() }.resolve("${tr.id}.ass").apply { writeText(text) }.absolutePath
                     }.getOrNull()
                 }
+                stream = stream.copy(externalSubs = subs != null)
                 val start = resumeAt ?: c.prefs.history.first()
                     .firstOrNull { it.animeId == session.anime.id && it.episode == ep.number }
                     ?.takeIf { !it.finished && it.positionSec > 15 }?.positionSec ?: 0.0
                 player.preferAudio(if (tr.kind == TranslationKind.VoiceRu) "ru,rus" else if (tr.kind == TranslationKind.VoiceEn) "en,eng" else "ja,jpn,jp")
-                player.load(s.urls.first(), start, subs, c.a365.baseUrl() + "/")
+                val subLang = if (tr.kind == TranslationKind.SubEn) "en" else if (tr.typeLang.isNotBlank()) tr.typeLang else "ru"
+                player.load(s.urls.first(), start, subs?.let { Triple(it, tr.author, subLang) }, c.a365.baseUrl() + "/")
             }.onFailure {
                 if (it !is kotlinx.coroutines.CancellationException) { error = it.userMessage(); reconnecting = false }
             }

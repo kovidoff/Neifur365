@@ -100,9 +100,12 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     init {
         // libass needs a fallback font for subtitles that don't embed their own: <config-dir>/subfont.ttf.
         val dir = File(context.filesDir, "mpv").apply { mkdirs() }
+        // A static SemiBold cut of Manrope: libass mis-spaces a variable font when a style asks for bold (words ran
+        // together). Rewritten whenever the bundled file changes size, so updates replace an older copy.
         val font = File(dir, "subfont.ttf")
-        if (!font.exists()) runCatching {
-            context.resources.openRawResource(R.font.manrope).use { i -> font.outputStream().use { i.copyTo(it) } }
+        runCatching {
+            val bundled = context.resources.openRawResource(R.raw.subfont).use { it.readBytes() }
+            if (font.length() != bundled.size.toLong()) font.writeBytes(bundled)
         }
         fun opt(k: String, v: String) = mpv.setOptionString(k, v)
         opt("config", "yes"); opt("config-dir", dir.absolutePath)
@@ -116,6 +119,9 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         opt("alang", "ja,jpn,jp"); opt("slang", "ru,rus,en,eng"); opt("subs-fallback", "yes")
         opt("sub-auto", "fuzzy"); opt("sub-font", "Manrope"); opt("sub-scale-with-window", "yes")
         opt("embeddedfonts", "yes"); opt("sub-fix-timing", "no")
+        // No system fonts: on Xiaomi, libass picked a clock font (MiClockTibetan) for missing families and lost every space.
+        // Fonts embedded in the file still win; anything else falls back to our own subfont.ttf.
+        opt("sub-font-provider", "none")
         opt("screenshot-directory", dir.absolutePath)
         mpv.init()
         mpv.addObserver(this)
@@ -164,9 +170,10 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     private var seeking = false
 
     /** An external subtitle file to attach once the video opens (Anime 365 serves subtitles separately). */
-    private var pendingSub: String? = null
+    private var pendingSub: Triple<String, String, String>? = null
 
-    fun load(url: String, startAt: Double, subtitles: String? = null, referrer: String? = null) {
+    /** [subtitles] is (file, title, language): the title and language name the track in the subtitle list. */
+    fun load(url: String, startAt: Double, subtitles: Triple<String, String, String>? = null, referrer: String? = null) {
         pendingSub = subtitles
         referrer?.let { mpv.setPropertyString("referrer", it) }
         if (active) skipEndFile++
@@ -176,6 +183,15 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         mpv.setOptionString("start", if (startAt > 1) String.format(java.util.Locale.US, "%.2f", startAt) else "none")
         mpv.command(arrayOf("loadfile", url, "replace"))
         mpv.setPropertyBoolean("pause", false)
+    }
+
+    /**
+     * Raises subtitles above the player controls while they are on screen. sub-pos moves ASS subtitles too
+     * (the margin options don't, short of overriding their styles), so the whole layer shifts up a little.
+     */
+    fun liftSubtitles(up: Boolean) {
+        if (released) return
+        mpv.setPropertyInt("sub-pos", if (up) 80 else 100)
     }
 
     /** Voice-overs are Russian tracks; subtitle and raw releases keep the Japanese audio first. */
@@ -320,7 +336,7 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         when (eventId) {
             MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> main.post {
                 loaded = true; buffering = false; failed = false
-                pendingSub?.let { runCatching { mpv.command(arrayOf("sub-add", it, "select")) } }
+                pendingSub?.let { (file, title, lang) -> runCatching { mpv.command(arrayOf("sub-add", file, "select", title, lang)) } }
                 pendingSub = null
                 readTracks(); readChapters()
                 onFileLoaded?.invoke()

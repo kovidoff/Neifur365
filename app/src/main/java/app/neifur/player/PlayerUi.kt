@@ -39,6 +39,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.UnfoldMore
+import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Close
@@ -119,7 +121,7 @@ private data class Level(val volume: Boolean, val value: Float)
 @Composable
 fun PlayerScreen(
     player: MpvPlayer, session: PlaySession, index: Int, resolving: Boolean, reconnecting: Boolean, error: String?, inPip: Boolean,
-    stream: StreamUi, notice: String?,
+    stream: StreamUi, notice: String?, watched: Set<Int>,
     onBack: () -> Unit, onRetry: () -> Unit, onEpisode: (Int) -> Unit, onPip: () -> Unit,
     onSelectTrack: (String, Track?) -> Unit, onSubScale: (Double) -> Unit,
     onTranslation: (app.neifur.data.a365.Translation) -> Unit, onHeight: (Int) -> Unit,
@@ -137,6 +139,9 @@ fun PlayerScreen(
     var locked by remember { mutableStateOf(false) }
     var lockHint by remember { mutableIntStateOf(0) }
     var panel by remember { mutableStateOf<PanelTab?>(null) }
+    var menu by remember { mutableStateOf<QuickMenu?>(null) }
+    val hasSubTracks = player.tracks.any { it.type == "sub" }
+    val tabs = listOfNotNull(PanelTab.Translation, PanelTab.Episodes.takeIf { episodes.size > 1 }, PanelTab.Subs.takeIf { hasSubTracks })
     var burst by remember { mutableStateOf<SeekBurst?>(null) }
     var level by remember { mutableStateOf<Level?>(null) }
     var scrub by remember { mutableStateOf<Double?>(null) }
@@ -146,15 +151,15 @@ fun PlayerScreen(
     var autoNextCancelled by remember(index) { mutableStateOf(false) }
 
     // Auto-hide: controls go away after a few seconds of playback without touches.
-    LaunchedEffect(controls, interaction, player.paused, panel, scrub, locked) {
-        if (controls && !player.paused && panel == null && scrub == null && !locked) { delay(3500); controls = false }
+    LaunchedEffect(controls, interaction, player.paused, panel, menu, scrub, locked) {
+        if (controls && !player.paused && panel == null && menu == null && scrub == null && !locked) { delay(3500); controls = false }
     }
     LaunchedEffect(burst?.at) { if (burst != null) { delay(850); burst = null } }
     LaunchedEffect(pop?.second) { if (pop != null) { delay(550); pop = null } }
     LaunchedEffect(lockHint) { if (lockHint > 0) delay(2500) }
 
-    BackHandler(enabled = panel != null || locked) {
-        if (panel != null) panel = null else lockHint++
+    BackHandler(enabled = panel != null || menu != null || locked) {
+        when { menu != null -> menu = null; panel != null -> panel = null; else -> lockHint++ }
     }
 
     val rawBusy = resolving || reconnecting || (player.buffering && error == null && !player.failed)
@@ -320,6 +325,8 @@ fun PlayerScreen(
 
         // ---- controls ----
         val showControls = controls && panel == null && failure == null && !locked
+        // Subtitles step up while the controls cover the bottom of the picture, and settle back when they hide.
+        LaunchedEffect(showControls) { player.liftSubtitles(showControls) }
         AnimatedVisibility(showControls, enter = fadeIn(tween(160)), exit = fadeOut(tween(260))) {
             Box(Modifier.fillMaxSize().background(Color(0x59000000))) {
                 Box(Modifier.fillMaxWidth().height(130.dp).background(Brush.verticalGradient(listOf(Color(0xB3000000), Color.Transparent))))
@@ -380,18 +387,24 @@ fun PlayerScreen(
                             modifier = Modifier.widthIn(min = 44.dp).clip(RoundedCornerShape(6.dp)).pressable(0.92f) { remaining = !remaining; interaction++ },
                         )
                     }
-                    Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        val sub = player.tracks.firstOrNull { it.type == "sub" && it.selected }
-                        Chip(
-                            if (sub == null) Icons.Rounded.SubtitlesOff else Icons.Rounded.Subtitles,
-                            sub?.let { it.info.name + if (it.info.kind == SubKind.Signs) " · надписи" else "" } ?: "Субтитры выкл.",
-                            highlight = sub != null,
-                        ) { panel = PanelTab.Subs }
-                        Chip(Icons.Rounded.Mic, stream.current?.author ?: "Перевод") { panel = PanelTab.Translation }
-                        Chip(Icons.Rounded.Speed, if (player.speed == 1.0) "${stream.height.takeIf { it > 0 }?.let { "${it}p" } ?: "Видео"}" else speedLabel(player.speed), highlight = player.speed != 1.0) { panel = PanelTab.Video }
-                        Chip(if (player.fill) Icons.Rounded.FitScreen else Icons.Rounded.AspectRatio, if (player.fill) "Заполнить" else "Вписать") { player.changeFill(!player.fill); interaction++ }
+                    // Left: what you watch (translation, episodes). Right: how it looks (subtitles, quality, speed, fit).
+                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        TranslationChip(stream, player.tracks.any { it.type == "sub" && it.selected }) { menu = null; panel = PanelTab.Translation }
+                        if (episodes.size > 1) Chip(Icons.Rounded.VideoLibrary, "Серии") { menu = null; panel = PanelTab.Episodes }
                         Spacer(Modifier.weight(1f))
-                        if (hasNext) Chip(Icons.Rounded.SkipNext, "Серия ${episodes[index + 1].number}") { onEpisode(index + 1) }
+                        if (hasSubTracks) {
+                            val on = player.tracks.any { it.type == "sub" && it.selected }
+                            IconPill(if (on) Icons.Rounded.Subtitles else Icons.Rounded.SubtitlesOff, "Субтитры", highlight = on) { menu = null; panel = PanelTab.Subs }
+                        }
+                        if (stream.height > 0) TextPill(qualityLabel(stream.height), highlight = menu == QuickMenu.Quality) {
+                            menu = if (menu == QuickMenu.Quality) null else QuickMenu.Quality; interaction++
+                        }
+                        TextPill(speedLabel(player.speed), highlight = player.speed != 1.0 || menu == QuickMenu.Speed) {
+                            menu = if (menu == QuickMenu.Speed) null else QuickMenu.Speed; interaction++
+                        }
+                        IconPill(if (player.fill) Icons.Rounded.FitScreen else Icons.Rounded.AspectRatio, if (player.fill) "Вписать" else "Заполнить") {
+                            player.changeFill(!player.fill); interaction++
+                        }
                     }
                 }
             }
@@ -503,10 +516,14 @@ fun PlayerScreen(
         }
 
         // ---- settings panel ----
+        QuickMenuHost(
+            menu.takeIf { showControls }, player, stream, onHeight = onHeight, onClose = { menu = null },
+        )
         PlayerPanel(
-            tab = panel, player = player, stream = stream, onTab = { panel = it }, onClose = { panel = null },
+            tab = panel, tabs = tabs, player = player, stream = stream, episodes = episodes, index = index, watched = watched,
+            onTab = { panel = it }, onClose = { panel = null },
             onSelectTrack = onSelectTrack, onSubScale = onSubScale,
-            onTranslation = { onTranslation(it); panel = null }, onHeight = { onHeight(it); panel = null },
+            onTranslation = { onTranslation(it); panel = null }, onEpisode = { onEpisode(it); panel = null },
         )
 
         // ---- a word about an automatic change (studio missing for this episode) ----
@@ -663,6 +680,65 @@ private fun RoundButton(icon: ImageVector, label: String, enabled: Boolean = tru
             .pressable(0.86f, enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, label, tint = if (enabled) Color.White else Color(0x4DFFFFFF), modifier = Modifier.size(size * 0.54f)) }
+}
+
+/**
+ * The translation playing: the player's main switch on Anime 365. Burned-in subtitles say so here,
+ * since there is no subtitle track to show for them.
+ */
+@Composable
+private fun TranslationChip(stream: StreamUi, subsOn: Boolean, onClick: () -> Unit) {
+    val t = stream.current
+    val tint = kindTint(t?.kind)
+    val kindText = when {
+        t == null -> null
+        stream.isSubs && !stream.externalSubs && !subsOn -> "вшитые субтитры"
+        else -> when (t.kind) {
+            app.neifur.data.a365.TranslationKind.VoiceRu -> "озвучка"
+            app.neifur.data.a365.TranslationKind.SubRu -> "субтитры"
+            app.neifur.data.a365.TranslationKind.VoiceEn -> "англ. озвучка"
+            app.neifur.data.a365.TranslationKind.SubEn -> "англ. субтитры"
+            app.neifur.data.a365.TranslationKind.Raw -> "оригинал"
+            app.neifur.data.a365.TranslationKind.Other -> "другой язык"
+        }
+    }
+    Row(
+        Modifier.height(42.dp).widthIn(max = 300.dp).clip(CircleShape).background(Color(0x26FFFFFF)).border(1.dp, tint.copy(alpha = 0.35f), CircleShape)
+            .pressable(0.95f, onClick = onClick).padding(start = 5.dp, end = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(32.dp).clip(CircleShape).background(tint.copy(alpha = 0.28f)), contentAlignment = Alignment.Center) {
+            Icon(kindIcon(t?.kind), null, tint = Color.White, modifier = Modifier.size(17.dp))
+        }
+        Spacer(Modifier.width(9.dp))
+        Text(t?.author ?: "Перевод", style = Type.Label, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        if (kindText != null) Text("  ·  $kindText", style = Type.Label, color = Color(0x99FFFFFF), maxLines = 1, softWrap = false)
+        Icon(Icons.Rounded.UnfoldMore, null, tint = Color(0x99FFFFFF), modifier = Modifier.padding(start = 4.dp).size(16.dp))
+    }
+}
+
+private fun qualityLabel(h: Int) = when { h >= 2160 -> "4K"; else -> "${h}p" }
+
+@Composable
+private fun TextPill(text: String, highlight: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.height(42.dp).widthIn(min = 52.dp).clip(CircleShape)
+            .background(if (highlight) Nf.Violet.copy(alpha = 0.3f) else Color(0x1FFFFFFF))
+            .then(if (highlight) Modifier.border(1.dp, Nf.Violet.copy(alpha = 0.5f), CircleShape) else Modifier)
+            .pressable(0.92f, onClick = onClick).padding(horizontal = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) { Text(text, style = Type.Label, color = Color.White, maxLines = 1) }
+}
+
+@Composable
+private fun IconPill(icon: ImageVector, label: String, highlight: Boolean = false, onClick: () -> Unit) {
+    Box(
+        Modifier.size(42.dp).clip(CircleShape)
+            .background(if (highlight) Nf.Violet.copy(alpha = 0.3f) else Color(0x1FFFFFFF))
+            .then(if (highlight) Modifier.border(1.dp, Nf.Violet.copy(alpha = 0.5f), CircleShape) else Modifier)
+            .pressable(0.9f, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { Icon(icon, label, tint = Color.White, modifier = Modifier.size(19.dp)) }
 }
 
 @Composable
