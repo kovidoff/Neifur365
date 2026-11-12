@@ -26,7 +26,6 @@ import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
-import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
@@ -69,6 +68,7 @@ class SessionCookies(context: Context, private val isOurs: (String) -> Boolean) 
 
     operator fun get(name: String): String? = jar[name]
     operator fun set(name: String, value: String) { jar[name] = value; persist() }
+    fun remove(name: String) { jar.remove(name); persist() }
 
     /** Takes over cookies from a sign-in made in the in-app browser ("a=1; b=2"). */
     fun import(header: String) {
@@ -197,11 +197,26 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
 
     private suspend fun page(path: String): String = mirrored { base -> text(Request.Builder().url(base + path).build()) }
 
-    /** Site forms check a double-submitted token: the same random value as a cookie and as a form field. */
+    /**
+     * Site forms check a signed token the server issues in the `csrf` cookie. The cookie holds it URL-encoded
+     * ("…%3D%3D"); the form field must carry the decoded value, or the site answers 400. Without a token yet,
+     * the login page is opened first to get one; a rejected (stale) token is replaced once and the form resent.
+     */
     private suspend fun post(path: String, form: Map<String, String>): String = mirrored { base ->
-        val csrf = cookies["csrf"] ?: UUID.randomUUID().toString().also { cookies["csrf"] = it }
-        val body = FormBody.Builder().apply { form.forEach { (k, v) -> add(k, v) }; add("csrf", csrf) }.build()
-        text(Request.Builder().url(base + path).post(body).build())
+        suspend fun send(): String {
+            if (cookies["csrf"] == null) text(Request.Builder().url("$base/users/login").build())
+            val raw = cookies["csrf"] ?: throw ApiError("Anime 365 не выдал ключ формы, попробуйте вход через сайт")
+            val csrf = java.net.URLDecoder.decode(raw, "UTF-8")
+            val body = FormBody.Builder().apply { form.forEach { (k, v) -> add(k, v) }; add("csrf", csrf) }.build()
+            return text(Request.Builder().url(base + path).post(body).build())
+        }
+        try {
+            send()
+        } catch (e: HttpError) {
+            if (e.code != 400) throw e
+            cookies.remove("csrf")
+            send()
+        }
     }
 
     // --- catalog ---------------------------------------------------------------------------------------
