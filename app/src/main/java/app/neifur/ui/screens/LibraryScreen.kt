@@ -147,7 +147,7 @@ fun LibraryScreen(open: OpenAnime) {
                 }
                 is Load.Ready -> if (l.value.isEmpty()) item(span = { GridItemSpan(3) }) {
                     EmptyState("Здесь пусто", "Добавляйте тайтлы в «${vm.status.title}» кнопкой закладки на их странице", Icons.Rounded.BookmarkBorder, Modifier.padding(top = 10.dp))
-                } else items(l.value, key = { "l-${it.entry.seriesId}" }) { item ->
+                } else items(l.value, key = { "l-${it.entry.seriesId}" }, contentType = { "card" }) { item ->
                     Column(Modifier.animateItem()) {
                         PosterCard(item.stub, "library-l", { open(item.stub, "library-l") }, width = null)
                         val e = item.entry

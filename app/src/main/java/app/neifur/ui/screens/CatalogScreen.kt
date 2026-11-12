@@ -180,7 +180,7 @@ fun CatalogScreen(open: OpenAnime) {
                 ) {
                     if (vm.items.isEmpty()) items(12) { PosterCardSkeleton(width = null) }
                     else {
-                        items(vm.items, key = { it.id }) { a ->
+                        items(vm.items, key = { it.id }, contentType = { "card" }) { a ->
                             PosterCard(a.stub(), "catalog", { focus.clearFocus(); open(a.stub(), "catalog") }, Modifier.animateItem(), width = null)
                         }
                         if (vm.loading) item(span = { GridItemSpan(3) }) {

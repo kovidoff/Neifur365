@@ -45,7 +45,10 @@ android {
         }
         release {
             resValue("string", "app_name", "Neifur 365")
-            isMinifyEnabled = false
+            // R8: shrinks and optimizes the code (Compose runs noticeably smoother) and drops unused resources.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }

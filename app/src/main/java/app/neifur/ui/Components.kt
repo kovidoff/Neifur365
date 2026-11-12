@@ -50,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -100,15 +101,19 @@ fun Modifier.pressable(scale: Float = 0.96f, enabled: Boolean = true, onClick: (
         .clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
 }
 
+/** Loading placeholder. The sweep is read only while drawing, so a screen full of skeletons never recomposes. */
 fun Modifier.shimmer(): Modifier = composed {
     val t = rememberInfiniteTransition(label = "shimmer")
-    val x by t.animateFloat(0f, 1f, infiniteRepeatable(tween(1300, easing = LinearEasing), RepeatMode.Restart), label = "x")
-    background(
-        Brush.linearGradient(
-            listOf(Nf.Surface, Nf.SurfaceHi, Nf.Surface),
-            start = Offset(-600f + 1800f * x, 0f), end = Offset(1800f * x, 400f),
+    val x = t.animateFloat(0f, 1f, infiniteRepeatable(tween(1300, easing = LinearEasing), RepeatMode.Restart), label = "x")
+    drawBehind {
+        val p = x.value
+        drawRect(
+            Brush.linearGradient(
+                listOf(Nf.Surface, Nf.SurfaceHi, Nf.Surface),
+                start = Offset(-600f + 1800f * p, 0f), end = Offset(1800f * p, 400f),
+            )
         )
-    )
+    }
 }
 
 @Composable

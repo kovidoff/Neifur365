@@ -325,8 +325,6 @@ fun PlayerScreen(
 
         // ---- controls ----
         val showControls = controls && panel == null && failure == null && !locked
-        // Subtitles step up while the controls cover the bottom of the picture, and settle back when they hide.
-        LaunchedEffect(showControls) { player.liftSubtitles(showControls) }
         AnimatedVisibility(showControls, enter = fadeIn(tween(160)), exit = fadeOut(tween(260))) {
             Box(Modifier.fillMaxSize().background(Color(0x59000000))) {
                 Box(Modifier.fillMaxWidth().height(130.dp).background(Brush.verticalGradient(listOf(Color(0xB3000000), Color.Transparent))))

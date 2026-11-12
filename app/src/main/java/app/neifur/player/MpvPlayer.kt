@@ -185,15 +185,6 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         mpv.setPropertyBoolean("pause", false)
     }
 
-    /**
-     * Raises subtitles above the player controls while they are on screen. sub-pos moves ASS subtitles too
-     * (the margin options don't, short of overriding their styles), so the whole layer shifts up a little.
-     */
-    fun liftSubtitles(up: Boolean) {
-        if (released) return
-        mpv.setPropertyInt("sub-pos", if (up) 80 else 100)
-    }
-
     /** Voice-overs are Russian tracks; subtitle and raw releases keep the Japanese audio first. */
     fun preferAudio(langs: String) { if (!released) mpv.setPropertyString("alang", langs) }
 

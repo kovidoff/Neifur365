@@ -17,6 +17,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -178,11 +179,12 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
     var confirmLogout by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { vm.measureCache(ctx) }
 
-    Column(
-        Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding().verticalScroll(rememberScrollState())
-            .imePadding().padding(bottom = 128.dp)
+    // A lazy list: the tab opens by composing only what's on screen, which keeps the switch from Home smooth.
+    LazyColumn(
+        Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding().imePadding(),
+        contentPadding = PaddingValues(bottom = 128.dp),
     ) {
-        Row(Modifier.padding(start = if (onBack != null) 14.dp else 20.dp, top = 14.dp, end = 20.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        item(key = "header") { Row(Modifier.padding(start = if (onBack != null) 14.dp else 20.dp, top = 14.dp, end = 20.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) {
                 Box(Modifier.size(42.dp).clip(CircleShape).background(Nf.Surface).pressable(0.88f, onClick = onBack), contentAlignment = Alignment.Center) {
                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад", tint = Nf.Text, modifier = Modifier.size(22.dp))
@@ -190,12 +192,11 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
                 Spacer(Modifier.width(14.dp))
             }
             Text("Настройки", style = Type.Display, color = Nf.Text)
-        }
+        } }
 
-        Spacer(Modifier.height(10.dp))
-        AccountCard(vm) { confirmLogout = true }
+        item(key = "account") { Spacer(Modifier.height(10.dp)); AccountCard(vm) { confirmLogout = true } }
 
-        SectionLabel("Перевод")
+        item(key = "translation") { SectionLabel("Перевод")
         Card {
             SettingTitle("Как вы смотрите", "Что включать в новых тайтлах, пока вы не выбрали студию сами")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -216,9 +217,9 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
                 Divider()
                 ActionRow(Icons.Rounded.RestartAlt, "Выбор по тайтлам", "Запомнено для $pickCount ${plural(pickCount, "тайтла", "тайтлов", "тайтлов")}", "Сбросить", enabled = true) { confirmPicks = true }
             }
-        }
+        } }
 
-        SectionLabel("Плеер")
+        item(key = "player") { SectionLabel("Плеер")
         Card {
             SettingTitle("Качество видео", "Если такого нет у перевода, включится ближайшее ниже")
             Segmented(listOf(1080 to "1080p", 720 to "720p", 480 to "480p"), quality) { vm.setQuality(it) }
@@ -236,12 +237,11 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
                     ) { Text("Аа", style = Type.Title.copy(fontSize = (13 + i * 3).sp), color = if (on) Nf.Violet else Nf.Text) }
                 }
             }
-        }
+        } }
 
-        SectionLabel("Сайт Anime 365")
-        MirrorsCard(vm)
+        item(key = "site") { SectionLabel("Сайт Anime 365"); MirrorsCard(vm) }
 
-        SectionLabel("Данные")
+        item(key = "data") { SectionLabel("Данные")
         Card(padding = 6.dp) {
             ActionRow(
                 Icons.Rounded.History, "История просмотра",
@@ -254,10 +254,10 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
                 vm.cacheBytes?.let { if (it < 1L shl 20) "Меньше 1 МБ" else "${it / (1L shl 20)} МБ" } ?: "…",
                 "Очистить", enabled = (vm.cacheBytes ?: 0) > 0,
             ) { vm.clearCache(ctx) }
-        }
+        } }
 
         // ---------------- About ----------------
-        Column(Modifier.fillMaxWidth().padding(top = 34.dp, start = 28.dp, end = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        item(key = "about") { Column(Modifier.fillMaxWidth().padding(top = 34.dp, start = 28.dp, end = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             // Hidden for testing: five quick taps on the wordmark bring the welcome flow back.
             var taps by remember { mutableIntStateOf(0) }
             var lastTap by remember { mutableLongStateOf(0L) }
@@ -275,7 +275,7 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
                 style = Type.Caption, color = Nf.TextMute, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 modifier = Modifier.padding(top = 8.dp),
             )
-        }
+        } }
     }
 
     if (confirmHistory) AlertDialog(

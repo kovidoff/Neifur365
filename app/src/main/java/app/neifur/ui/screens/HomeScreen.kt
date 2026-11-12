@@ -28,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -70,6 +71,8 @@ data class HomeFeed(val ongoing: List<Series>, val popular: List<Series>, val th
 
 class HomeVm(private val c: Container) : ViewModel() {
     val feed = MutableStateFlow<Load<HomeFeed>>(Load.Loading)
+    /** Rows that already played their entrance: scrolling back to them must not replay it. */
+    val appeared = HashSet<String>()
     /** New episodes of what the viewer follows on the site; empty when signed out. */
     val fresh = MutableStateFlow<List<NewEpisode>>(emptyList())
     val continueWatching = c.prefs.history
@@ -119,25 +122,25 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit) {
             else -> {
                 val data = (f as? Load.Ready)?.value
                 LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 120.dp)) {
-                    item(key = "hero") {
+                    item(key = "hero", contentType = "hero") {
                         if (data == null) HeroSkeleton() else Hero(data.ongoing.take(7), open)
                     }
-                    if (cont.isNotEmpty()) item(key = "continue") {
-                        Appear(0) { ContinueRow(cont, open) }
+                    if (cont.isNotEmpty()) item(key = "continue", contentType = "continue") {
+                        Appear("continue", 0, vm.appeared) { ContinueRow(cont, open) }
                     }
-                    if (fresh.isNotEmpty()) item(key = "fresh") {
-                        Appear(1) { FreshRow(fresh, open) }
+                    if (fresh.isNotEmpty()) item(key = "fresh", contentType = "fresh") {
+                        Appear("fresh", 1, vm.appeared) { FreshRow(fresh, open) }
                     }
                     val rows = listOf(
                         "ongoing" to "Сейчас выходит", "year" to "Новинки года", "popular" to "Самое популярное", "movies" to "Полнометражные",
                     )
                     rows.forEachIndexed { i, (key, title) ->
-                        item(key = key) {
+                        item(key = key, contentType = "row") {
                             val list = when (key) {
                                 "ongoing" -> data?.ongoing?.drop(7); "year" -> data?.thisYear; "popular" -> data?.popular
                                 else -> data?.movies
                             }
-                            Appear(i + 2) { AnimeRow(title, key, list, open) }
+                            Appear(key, i + 2, vm.appeared, ready = list != null) { AnimeRow(title, key, list, open) }
                         }
                     }
                 }
@@ -154,7 +157,8 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit) {
         Box(
             Modifier.fillMaxWidth()
                 .background(Brush.verticalGradient(listOf(Color(0xB3000000), Color.Transparent)))
-                .background(Nf.Ink.copy(alpha = barAlpha * 0.96f))
+                // Read while drawing: the bar's fade follows the scroll without recomposing on every frame.
+                .drawBehind { drawRect(Nf.Ink.copy(alpha = barAlpha * 0.96f)) }
                 .statusBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp)
         ) {
             Wordmark(Modifier.align(Alignment.CenterStart))
@@ -167,11 +171,16 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit) {
     }
 }
 
-/** One-shot entrance: sections rise into place with a small stagger. */
+/**
+ * One-shot entrance: sections rise into place with a small stagger, once per screen. A row scrolled away and
+ * back (the list disposes it) shows up already in place, instead of fading in again under the finger.
+ */
 @Composable
-private fun Appear(index: Int, content: @Composable () -> Unit) {
-    val a = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
+private fun Appear(key: String, index: Int, played: MutableSet<String>, ready: Boolean = true, content: @Composable () -> Unit) {
+    val a = remember { Animatable(if (key in played) 1f else 0f) }
+    LaunchedEffect(ready) {
+        if (!ready || key in played) return@LaunchedEffect
+        played += key
         delay(60L * index.coerceAtMost(5))
         a.animateTo(1f, tween(480, easing = FastOutSlowInEasing))
     }
