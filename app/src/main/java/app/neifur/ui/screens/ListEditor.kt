@@ -117,18 +117,20 @@ fun ListEditor(
                         Label("Просмотрено серий")
                         Row(Modifier.padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
                             Stepper(Icons.Rounded.Remove, "Меньше", enabled = watched > 0) { onChange(status, watched - 1, score) }
-                            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                            // "3 из 13" on one line: the count reads as a number, not a lone glyph.
+                            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.Center) {
                                 Text(
-                                    "$watched", style = Type.Hero.copy(fontSize = 30.sp, lineHeight = 34.sp),
-                                    color = statusColor(status),
+                                    "$watched", style = Type.Title.copy(fontSize = 30.sp, lineHeight = 34.sp),
+                                    color = statusColor(status), modifier = Modifier.alignByBaseline(),
                                 )
                                 Text(
                                     when {
                                         total != null -> "из $total"
                                         aired != null -> "из $aired вышедших"
-                                        else -> "всего пока неизвестно"
+                                        else -> "из ?"
                                     },
-                                    style = Type.Caption, color = Nf.TextMute,
+                                    style = Type.Title.copy(fontSize = 16.sp), color = Nf.TextMute,
+                                    modifier = Modifier.alignByBaseline().padding(start = 8.dp),
                                 )
                             }
                             Stepper(Icons.Rounded.Add, "Больше", enabled = cap == null || watched < cap) {

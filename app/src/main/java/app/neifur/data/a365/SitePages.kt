@@ -35,21 +35,6 @@ internal object SitePages {
         return series to episode
     }
 
-    fun newEpisodes(html: String, base: String): List<NewEpisode> {
-        val doc = Jsoup.parse(html, base)
-        return doc.select("#m-index-personal-episodes div.m-new-episode").mapNotNull { el ->
-            val href = el.selectFirst("a[href]")?.absUrl("href") ?: return@mapNotNull null
-            val (series, episode) = ids(href) ?: return@mapNotNull null
-            val style = el.selectFirst("div.circle[style]")?.attr("style").orEmpty()
-            val poster = Regex("""url\('?(.+?)'?\)""").find(style)?.groupValues?.get(1)
-                ?.replace(".140x140.1", "")?.let { resolve(base, it) }
-            val title = el.selectFirst("h5.line-1 a")?.text()?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-            val label = el.selectFirst("span.online-h")?.text()?.trim().orEmpty()
-            val note = Regex("""\((.+?)\)""").find(el.selectFirst("span.title")?.text().orEmpty())?.groupValues?.get(1)?.trim()
-            NewEpisode(series, episode, title, poster, label, note)
-        }
-    }
-
     /**
      * Rows of a list page. The "all" page (`/users/<id>/list`) holds every list, one card per status
      * (`data-status`), so one request brings in everything.

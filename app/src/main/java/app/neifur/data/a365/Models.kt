@@ -192,7 +192,3 @@ data class ListEntry(
 /** The viewer's own record for one title; [status] null means "not in the list". */
 data class ListRecord(val status: ListStatus?, val watched: Int, val score: Int?)
 
-/** A row of the "new episodes of what you watch" feed. */
-data class NewEpisode(
-    val seriesId: Long, val episodeId: Long, val title: String, val poster: String?, val episodeLabel: String, val note: String?,
-)

@@ -75,6 +75,7 @@ class Lists(private val api: Anime365, private val account: Account, private val
                 entries.associate { e -> e.seriesId to ListedTitle(e, cards[e.seriesId], known[e.seriesId]?.aired) }
             }.onSuccess { titles ->
                 _state.value = ListsState(loaded = true, titles = titles, updatedAt = System.currentTimeMillis())
+                titles.values.filter { it.series == null }.forEach { fill(it.entry.seriesId) }
                 countAired(titles.values.filter { it.airing && (it.status == ListStatus.Watching || it.status == ListStatus.Planned) })
             }.onFailure { e ->
                 if (e is kotlinx.coroutines.CancellationException) throw e
@@ -116,8 +117,24 @@ class Lists(private val api: Anime365, private val account: Account, private val
             }
             s.copy(titles = titles)
         }
+        if (status != null && (before?.series == null || (series?.airing == true && before.aired == null))) fill(seriesId)
         return runCatching { api.setListRecord(seriesId, status, watched, score) }.onFailure {
             _state.update { s -> s.copy(titles = if (before == null) s.titles - seriesId else s.titles + (seriesId to before)) }
+        }
+    }
+
+    /**
+     * Loads the card (poster, title, episode count) and, for airing titles, how many episodes are out, for a title
+     * that got into the lists without them: added from the title page, or by the site itself when the player marked
+     * an episode. Without it the row would show up blank.
+     */
+    private fun fill(seriesId: Long) = scope.launch {
+        val full = runCatching { api.series(seriesId) }.getOrNull() ?: return@launch
+        val aired = if (full.airing) full.playable.count { it.episodeType != "preview" } else null
+        _state.update { s ->
+            val t = s.titles[seriesId] ?: return@update s
+            val entry = if (t.entry.title.isBlank()) t.entry.copy(title = full.title) else t.entry
+            s.copy(titles = s.titles + (seriesId to t.copy(entry = entry, series = full, aired = aired ?: t.aired)))
         }
     }
 
@@ -142,6 +159,8 @@ class Lists(private val api: Anime365, private val account: Account, private val
             }
             s.copy(titles = titles)
         }
+        val now = _state.value.titles[seriesId]
+        if (now != null && (now.series == null || (now.airing && now.aired == null))) fill(seriesId)
     }
 
     /** The title's record: from the loaded lists, or asked from the site when they aren't loaded yet. */

@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import app.neifur.AnimeStub
@@ -44,8 +45,8 @@ import app.neifur.Container
 import app.neifur.OpenAnime
 import app.neifur.core.userMessage
 import app.neifur.data.WatchEntry
-import app.neifur.data.a365.AccountState
-import app.neifur.data.a365.NewEpisode
+import app.neifur.data.a365.ListStatus
+import app.neifur.data.a365.ListedTitle
 import app.neifur.data.a365.Series
 import app.neifur.nfViewModel
 import app.neifur.stub
@@ -73,20 +74,18 @@ class HomeVm(private val c: Container) : ViewModel() {
     val feed = MutableStateFlow<Load<HomeFeed>>(Load.Loading)
     /** Rows that already played their entrance: scrolling back to them must not replay it. */
     val appeared = HashSet<String>()
-    /** New episodes of what the viewer follows on the site; empty when signed out. */
-    val fresh = MutableStateFlow<List<NewEpisode>>(emptyList())
+    /** The viewer's Anime 365 lists: what's new in "Смотрю", and which posters are already in a list. */
+    val lists = c.lists.state
     val continueWatching = c.prefs.history
         .map { h -> h.distinctBy { it.animeId }.take(12) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
         load()
-        viewModelScope.launch {
-            c.account.state.collect { s ->
-                fresh.value = if (s is AccountState.SignedIn) runCatching { c.a365.newEpisodes() }.getOrDefault(emptyList()) else emptyList()
-            }
-        }
     }
+
+    /** New episodes come out while the app sits in the background: reread the lists when Home shows up again. */
+    fun refreshLists() = c.lists.refreshIfStale()
 
     fun load() {
         feed.value = Load.Loading
@@ -110,7 +109,11 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit) {
     val vm = nfViewModel { HomeVm(it) }
     val feed by vm.feed.collectAsStateWithLifecycle()
     val cont by vm.continueWatching.collectAsStateWithLifecycle()
-    val fresh by vm.fresh.collectAsStateWithLifecycle()
+    val lists by vm.lists.collectAsStateWithLifecycle()
+    // Only what the viewer is watching: a planned title's new episode isn't news to them.
+    val fresh = remember(lists) { lists.of(ListStatus.Watching).filter { it.behind > 0 && it.series != null } }
+    val marks = remember(lists) { lists.titles.mapValues { it.value.status } }
+    LifecycleResumeEffect(Unit) { vm.refreshLists(); onPauseOrDispose {} }
     val listState = rememberLazyListState()
 
     Box(Modifier.fillMaxSize()) {
@@ -140,7 +143,7 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit) {
                                 "ongoing" -> data?.ongoing?.drop(7); "year" -> data?.thisYear; "popular" -> data?.popular
                                 else -> data?.movies
                             }
-                            Appear(key, i + 2, vm.appeared, ready = list != null) { AnimeRow(title, key, list, open) }
+                            Appear(key, i + 2, vm.appeared, ready = list != null) { AnimeRow(title, key, list, marks, open) }
                         }
                     }
                 }
@@ -270,14 +273,14 @@ private fun HeroSkeleton() {
 }
 
 @Composable
-private fun AnimeRow(title: String, key: String, list: List<Series>?, open: OpenAnime) {
+private fun AnimeRow(title: String, key: String, list: List<Series>?, marks: Map<Long, ListStatus?>, open: OpenAnime) {
     if (list != null && list.isEmpty()) return
     Column(Modifier.padding(top = 26.dp)) {
         SectionTitle(title)
         Spacer(Modifier.height(14.dp))
         LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             if (list == null) items(6) { PosterCardSkeleton() }
-            else items(list, key = { it.id }) { a -> PosterCard(a.stub(), key, { open(a.stub(), key) }) }
+            else items(list, key = { it.id }) { a -> PosterCard(a.stub(), key, { open(a.stub(), key) }, listStatus = marks[a.id]) }
         }
     }
 }
@@ -312,27 +315,35 @@ private fun ContinueRow(entries: List<WatchEntry>, open: OpenAnime) {
     }
 }
 
-/** "Новые серии": episodes that came out for titles in the viewer's Anime 365 list. */
+/**
+ * "Новые серии": titles in "Смотрю" with episodes out that the viewer hasn't watched yet. The badge counts them,
+ * the caption names the one to watch next.
+ */
 @Composable
-private fun FreshRow(items: List<NewEpisode>, open: OpenAnime) {
+private fun FreshRow(items: List<ListedTitle>, open: OpenAnime) {
     Column(Modifier.padding(top = 22.dp)) {
-        SectionTitle("Новые серии в ваших списках")
+        SectionTitle("Новые серии")
         Spacer(Modifier.height(14.dp))
         LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(items, key = { "${it.seriesId}-${it.episodeId}" }) { e ->
-                val stub = AnimeStub(e.seriesId.toString(), e.title, e.poster)
+            items(items, key = { it.entry.seriesId }) { t ->
+                val series = t.series ?: return@items
+                val stub = series.stub()
                 Column(Modifier.width(128.dp).pressable { open(stub, "fresh") }) {
-                    Box {
-                        PosterImage(e.poster, Modifier.sharedPoster("poster/fresh/${e.seriesId}").fillMaxWidth().aspectRatio(0.7f).clip(PosterShape))
+                    // The badge lives inside the shared poster, so it travels with it instead of popping in after.
+                    Box(Modifier.sharedPoster("poster/fresh/${series.id}").fillMaxWidth().aspectRatio(0.7f).clip(PosterShape)) {
+                        PosterImage(series.posterUrl ?: series.posterUrlSmall, Modifier.fillMaxSize())
                         Text(
-                            e.episodeLabel.ifBlank { "Новая серия" }, style = Type.Caption, color = Nf.Ink,
+                            if (t.behind == 1) "Новая" else "+${t.behind}", style = Type.Caption, color = Nf.Ink,
                             modifier = Modifier.align(Alignment.BottomStart).padding(7.dp).clip(RoundedCornerShape(8.dp))
                                 .background(Nf.Mint).padding(horizontal = 7.dp, vertical = 3.dp),
                         )
                     }
                     Spacer(Modifier.height(9.dp))
-                    Text(e.title, style = Type.Label, color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    e.note?.let { Text(it, style = Type.Caption, color = Nf.TextMute, maxLines = 1, modifier = Modifier.padding(top = 2.dp)) }
+                    Text(series.title, style = Type.Label, color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        "Дальше ${t.entry.watched + 1} серия", style = Type.Caption, color = Nf.Mint, maxLines = 1,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
                 }
             }
         }

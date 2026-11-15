@@ -334,12 +334,6 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
 
     fun logout() = cookies.clear()
 
-    suspend fun newEpisodes(): List<NewEpisode> = mirrored { base ->
-        val html = text(Request.Builder().url("$base/?ajax=m-index-personal-episodes").build())
-        if (SitePages.isSignedOut(html)) throw SignInRequired()
-        SitePages.newEpisodes(html, base)
-    }
-
     /** Every list of the viewer at once, each row with its status. */
     suspend fun allLists(userId: Long): List<ListEntry> {
         val html = page("/users/$userId/list?dynpage=1")

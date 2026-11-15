@@ -64,6 +64,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.neifur.AnimeStub
+import app.neifur.data.a365.ListStatus
+import app.neifur.ui.screens.statusColor
+import app.neifur.ui.screens.statusIcon
 import app.neifur.data.shikimori.kindLabel
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
@@ -144,22 +147,34 @@ fun ScoreBadge(score: Double?, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun PosterCard(stub: AnimeStub, origin: String, onClick: () -> Unit, modifier: Modifier = Modifier, width: Dp? = 128.dp) {
+fun PosterCard(
+    stub: AnimeStub, origin: String, onClick: () -> Unit, modifier: Modifier = Modifier, width: Dp? = 128.dp,
+    listStatus: ListStatus? = null,
+) {
     Column(
         (if (width != null) modifier.width(width) else modifier).pressable(onClick = onClick)
     ) {
-        Box {
-            PosterImage(
-                stub.poster,
-                Modifier.sharedPoster("poster/$origin/${stub.id}").fillMaxWidth().aspectRatio(0.7f).clip(PosterShape),
-            )
+        // Badges sit inside the shared poster: they fly with it to and from the title page instead of being
+        // covered by it and popping back in when the transition ends.
+        Box(Modifier.sharedPoster("poster/$origin/${stub.id}").fillMaxWidth().aspectRatio(0.7f).clip(PosterShape)) {
+            PosterImage(stub.poster, Modifier.fillMaxSize())
             ScoreBadge(stub.score, Modifier.align(Alignment.TopStart).padding(7.dp))
+            if (listStatus != null) ListMark(listStatus, Modifier.align(Alignment.TopEnd).padding(7.dp))
         }
         Spacer(Modifier.height(9.dp))
         Text(stub.title, style = Type.Label, color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
         val meta = listOfNotNull(stub.year?.toString(), kindLabel(stub.kind).takeIf { it.isNotBlank() }).joinToString(" · ")
         if (meta.isNotBlank()) Text(meta, style = Type.Caption, color = Nf.TextMute, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
     }
+}
+
+/** A small round mark on a poster: the title is in one of the viewer's lists (coloured by which). */
+@Composable
+fun ListMark(status: ListStatus, modifier: Modifier = Modifier) {
+    Box(
+        modifier.size(22.dp).clip(CircleShape).background(Color(0xD9090910)),
+        contentAlignment = Alignment.Center,
+    ) { Icon(statusIcon(status), status.title, tint = statusColor(status), modifier = Modifier.size(14.dp)) }
 }
 
 @Composable
