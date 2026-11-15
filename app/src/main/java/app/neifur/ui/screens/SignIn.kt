@@ -82,6 +82,8 @@ class SignInVm(private val c: Container) : ViewModel() {
     /** Address of the mirror in use, for the in-app site page. */
     var base by mutableStateOf<String?>(null)
         private set
+    val userAgent: String get() = c.a365.userAgent
+    fun isSiteHost(host: String?) = c.a365.isSiteHost(host)
 
     init { viewModelScope.launch { base = runCatching { c.a365.baseUrl() }.getOrNull() } }
 
@@ -225,48 +227,104 @@ fun SignedInCard(p: Profile) {
 }
 
 /**
- * The site's own sign-in page inside the app. Once it navigates away from the login form with a session,
- * its cookies are handed to the app's client and the page closes itself.
+ * The site's own sign-in page inside the app, for accounts made through VK, Google or Shikimori.
+ *
+ * The site signs in without reloading the page (its "dynpage" requests), so waiting for a page load to finish
+ * misses it. Instead the page's cookies are watched while it is open: whenever they change, the app tries them
+ * against the profile page, and a last try is made when the page is closed. The page and the app present the
+ * same browser identity to the site.
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun SiteSignIn(base: String, vm: SignInVm, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     var loading by remember { mutableStateOf(true) }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    var web by remember { mutableStateOf<WebView?>(null) }
+    var done by remember { mutableStateOf(false) }
+    var lastTried by remember { mutableStateOf<String?>(null) }
+    var checking by remember { mutableStateOf(false) }
+
+    /** Cookies of the address the page is on now (sign-in through VK or Google can come back on another mirror). */
+    fun currentCookies(): String? {
+        val host = web?.url?.let { Uri.parse(it).host }?.takeIf { vm.isSiteHost(it) } ?: Uri.parse(base).host
+        val cm = CookieManager.getInstance()
+        cm.flush()
+        return cm.getCookie("https://$host")
+    }
+
+    suspend fun tryAdopt(force: Boolean = false): Boolean {
+        if (done || checking) return done
+        val cookies = currentCookies() ?: return false
+        if (!force && cookies == lastTried) return false
+        lastTried = cookies
+        checking = true
+        val ok = runCatching { vm.adopt(cookies) }.getOrDefault(false)
+        checking = false
+        if (ok) done = true
+        return ok
+    }
+
+    fun close() {
+        scope.launch {
+            tryAdopt(force = true)
+            onClose()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        while (!done) {
+            delay(1500)
+            tryAdopt()
+        }
+        delay(1200)
+        onClose()
+    }
+
+    Dialog(onDismissRequest = ::close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Column(Modifier.fillMaxSize().background(Nf.Ink).systemBarsPadding()) {
             Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.Close, "Закрыть", tint = Nf.Text, modifier = Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onClose).padding(10.dp))
+                Icon(Icons.Rounded.Close, "Закрыть", tint = Nf.Text, modifier = Modifier.size(44.dp).clip(CircleShape).clickable(onClick = ::close).padding(10.dp))
                 Column(Modifier.weight(1f).padding(start = 6.dp)) {
                     Text("Вход на сайте", style = Type.Title, color = Nf.Text)
                     Text(Uri.parse(base).host.orEmpty(), style = Type.Caption, color = Nf.TextMute)
                 }
             }
             Box(Modifier.fillMaxWidth().height(2.dp)) {
-                if (loading) LinearProgressIndicator(Modifier.fillMaxSize(), color = Nf.Violet, trackColor = Color.Transparent)
+                if (loading || checking) LinearProgressIndicator(Modifier.fillMaxSize(), color = Nf.Violet, trackColor = Color.Transparent)
             }
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { c ->
-                    CookieManager.getInstance().setAcceptCookie(true)
-                    WebView(c).apply {
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        // The plain Chrome identity: some sign-in providers refuse pages that look embedded.
-                        settings.userAgentString = settings.userAgentString.replace("; wv", "")
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-                        webViewClient = object : WebViewClient() {
-                            override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) { loading = true }
-                            override fun onPageFinished(view: WebView, url: String) {
-                                loading = false
-                                if (url.contains("/users/login") || !url.startsWith(base)) return
-                                val cookies = CookieManager.getInstance().getCookie(base) ?: return
-                                scope.launch { if (vm.adopt(cookies)) onClose() }
+            Box(Modifier.weight(1f)) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { c ->
+                        CookieManager.getInstance().setAcceptCookie(true)
+                        WebView(c).apply {
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            settings.userAgentString = vm.userAgent
+                            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) { loading = true }
+                                override fun onPageFinished(view: WebView, url: String) {
+                                    loading = false
+                                    if (vm.isSiteHost(Uri.parse(url).host)) scope.launch { tryAdopt() }
+                                }
                             }
+                            loadUrl("$base/users/login")
+                            web = this
                         }
-                        loadUrl("$base/users/login")
+                    },
+                )
+                // Success: say so over the page, then the sheet takes over with the signed-in card.
+                androidx.compose.animation.AnimatedVisibility(done, enter = fadeIn(), exit = fadeOut()) {
+                    Box(Modifier.fillMaxSize().background(Nf.Ink.copy(alpha = 0.92f)), contentAlignment = Alignment.Center) {
+                        vm.profile?.let { SignedInCard(it) }
                     }
-                },
+                }
+            }
+            Text(
+                if (done) "Готово — вы вошли" else "Войдите на странице любым способом — приложение подхватит вход само",
+                style = Type.Caption, color = if (done) Nf.Mint else Nf.TextMute, textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().background(Nf.Surface).padding(horizontal = 20.dp, vertical = 12.dp),
             )
         }
     }

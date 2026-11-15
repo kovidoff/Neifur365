@@ -92,11 +92,22 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
     }
 
     @Volatile private var known: Set<String> = BUILTIN.toSet()
+
+    /** Whether [host] is one of the site's addresses (built-in or added by the viewer). */
+    fun isSiteHost(host: String?): Boolean = host != null && (host in known || BUILTIN.any { host.endsWith(it) })
     val cookies = SessionCookies(context) { h -> h in known || BUILTIN.any { h.endsWith(it) } }
+
+    /**
+     * The phone's own browser identity (WebView's, without the "wv" mark). The in-app site page uses the same one,
+     * so a session signed in there is the same browser to the site when the app carries it on.
+     */
+    val userAgent: String by lazy {
+        runCatching { android.webkit.WebSettings.getDefaultUserAgent(context).replace("; wv", "") }.getOrDefault(BROWSER_UA)
+    }
 
     private val http = base.newBuilder()
         .cookieJar(cookies)
-        .addInterceptor { chain -> chain.proceed(chain.request().newBuilder().header("User-Agent", BROWSER_UA).build()) }
+        .addInterceptor { chain -> chain.proceed(chain.request().newBuilder().header("User-Agent", userAgent).build()) }
         .build()
     private val probeHttp = http.newBuilder().callTimeout(9, TimeUnit.SECONDS).build()
 

@@ -39,8 +39,10 @@ class Account(private val api: Anime365, private val scope: CoroutineScope) {
         return p
     }
 
+    /** Signs out of the app and of the in-app site page too, so the next site sign-in can be another account. */
     fun logout() {
         api.logout()
+        runCatching { android.webkit.CookieManager.getInstance().apply { removeAllCookies(null); flush() } }
         _state.value = AccountState.SignedOut
     }
 }
