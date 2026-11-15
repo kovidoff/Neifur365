@@ -258,7 +258,10 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         if (eps.isNotEmpty()) loadTranslations()
     }
 
-    /** Where to resume: the unfinished episode, the one after the last finished, or after the site's counter. */
+    /**
+     * Where to resume: the unfinished episode or the one after the last finished, unless the site's counter is
+     * further along (episodes marked by hand in the list, or watched elsewhere): then the one after it.
+     */
     private suspend fun targetIndex(eps: List<Episode>): Int {
         if (eps.isEmpty()) return -1
         val h = c.prefs.history.first().filter { it.animeId == seriesId }
@@ -269,11 +272,8 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
             !last.finished -> eps.indexOfFirst { it.number == last.episode }
             else -> eps.indexOfFirst { it.number > last.episode }.takeIf { it >= 0 } ?: eps.lastIndex
         }
-        return when {
-            local >= 0 -> local
-            site > 0 -> eps.indexOfFirst { it.number > site }.takeIf { it >= 0 } ?: eps.lastIndex
-            else -> 0
-        }
+        val fromSite = if (site > 0) eps.indexOfFirst { it.number > site }.takeIf { it >= 0 } ?: eps.lastIndex else -1
+        return maxOf(local, fromSite, 0)
     }
 
     private suspend fun retarget() {

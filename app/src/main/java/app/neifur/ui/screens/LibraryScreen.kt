@@ -30,6 +30,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
@@ -114,7 +117,7 @@ fun LibraryScreen(open: OpenAnime) {
                 item(span = { GridItemSpan(3) }, key = "head") { Header(account) }
 
                 if (recent.isNotEmpty()) item(span = { GridItemSpan(3) }, key = "continue") {
-                    ContinueStrip(recent, open, onForget = { vm.forget(it) })
+                    ContinueStrip(recent, lists.titles, open, onForget = { vm.forget(it) })
                 }
 
                 if (signedIn) {
@@ -257,15 +260,17 @@ private fun WideRow(t: ListedTitle, modifier: Modifier, onOpen: () -> Unit, onEd
         if (t.status == ListStatus.Watching && t.series?.isMovie != true) {
             val canBump = t.total?.let { t.entry.watched < it } ?: true
             Spacer(Modifier.width(10.dp))
-            Box(
-                Modifier.size(44.dp).clip(CircleShape).background(if (canBump) c.copy(alpha = 0.16f) else Nf.SurfaceHi)
-                    .pressable(0.88f, enabled = canBump) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onBump() },
-                contentAlignment = Alignment.Center,
+            // Marks the next episode watched: "+1 серия", in a rounded square like the app's other tiles.
+            val tint = if (canBump) c else Nf.TextMute
+            Column(
+                Modifier.size(54.dp).clip(RoundedCornerShape(16.dp)).background(if (canBump) c.copy(alpha = 0.14f) else Nf.SurfaceHi)
+                    .border(1.dp, if (canBump) c.copy(alpha = 0.35f) else Color.Transparent, RoundedCornerShape(16.dp))
+                    .pressable(0.9f, enabled = canBump) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onBump() }
+                    .semantics(mergeDescendants = true) { contentDescription = "Отметить серию просмотренной" },
+                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.Add, "Отметить серию", tint = if (canBump) c else Nf.TextMute, modifier = Modifier.size(16.dp))
-                    Text("1", style = Type.Title.copy(fontSize = 14.sp), color = if (canBump) c else Nf.TextMute)
-                }
+                Text("+1", style = Type.Title.copy(fontSize = 17.sp, lineHeight = 19.sp), color = tint, textAlign = TextAlign.Center)
+                Text("серия", style = Type.Caption.copy(fontSize = 10.sp, lineHeight = 12.sp), color = tint.copy(alpha = 0.8f), textAlign = TextAlign.Center)
             }
         }
     }
@@ -320,7 +325,7 @@ private fun EmptyList(s: ListStatus) {
 
 /** Episodes started on this phone, newest first. The cross forgets a title entirely (progress and studio). */
 @Composable
-private fun ContinueStrip(recent: List<WatchEntry>, open: OpenAnime, onForget: (String) -> Unit) {
+private fun ContinueStrip(recent: List<WatchEntry>, listed: Map<Long, ListedTitle>, open: OpenAnime, onForget: (String) -> Unit) {
     Column(Modifier.padding(top = 4.dp)) {
         Text("Продолжить просмотр", style = Type.Section, color = Nf.Text, modifier = Modifier.padding(top = 6.dp, bottom = 12.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(end = 4.dp)) {
@@ -336,10 +341,11 @@ private fun ContinueStrip(recent: List<WatchEntry>, open: OpenAnime, onForget: (
                     Column(Modifier.weight(1f)) {
                         Text(e.title, style = Type.Label, color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(3.dp))
-                        Text(if (e.finished) "Серия ${e.episode} просмотрена" else "Серия ${e.episode} · ${remaining(e)}", style = Type.Caption, color = Nf.TextMute)
+                        val (line, progress) = continueLine(e, listed[e.animeId.toLongOrNull()])
+                        Text(line, style = Type.Caption, color = Nf.TextMute)
                         Spacer(Modifier.height(8.dp))
                         Box(Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(Nf.Line)) {
-                            Box(Modifier.fillMaxWidth(e.progress).fillMaxHeight().clip(CircleShape).background(Nf.Violet))
+                            Box(Modifier.fillMaxWidth(progress).fillMaxHeight().clip(CircleShape).background(Nf.Violet))
                         }
                     }
                     Icon(

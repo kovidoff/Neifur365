@@ -129,7 +129,7 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit) {
                         if (data == null) HeroSkeleton() else Hero(data.ongoing.take(7), open)
                     }
                     if (cont.isNotEmpty()) item(key = "continue", contentType = "continue") {
-                        Appear("continue", 0, vm.appeared) { ContinueRow(cont, open) }
+                        Appear("continue", 0, vm.appeared) { ContinueRow(cont, lists.titles, open) }
                     }
                     if (fresh.isNotEmpty()) item(key = "fresh", contentType = "fresh") {
                         Appear("fresh", 1, vm.appeared) { FreshRow(fresh, open) }
@@ -286,7 +286,7 @@ private fun AnimeRow(title: String, key: String, list: List<Series>?, marks: Map
 }
 
 @Composable
-private fun ContinueRow(entries: List<WatchEntry>, open: OpenAnime) {
+private fun ContinueRow(entries: List<WatchEntry>, listed: Map<Long, ListedTitle>, open: OpenAnime) {
     Column(Modifier.padding(top = 22.dp)) {
         SectionTitle("Продолжить просмотр")
         Spacer(Modifier.height(14.dp))
@@ -303,10 +303,11 @@ private fun ContinueRow(entries: List<WatchEntry>, open: OpenAnime) {
                     Column(Modifier.weight(1f)) {
                         Text(e.title, style = Type.Label, color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(4.dp))
-                        Text(if (e.finished) "Серия ${e.episode} просмотрена" else "Серия ${e.episode} · ${remaining(e)}", style = Type.Caption, color = Nf.TextMute)
+                        val (line, progress) = continueLine(e, listed[e.animeId.toLongOrNull()])
+                        Text(line, style = Type.Caption, color = Nf.TextMute)
                         Spacer(Modifier.height(9.dp))
                         Box(Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(Nf.Line)) {
-                            Box(Modifier.fillMaxWidth(e.progress).fillMaxHeight().clip(CircleShape).background(Nf.Violet))
+                            Box(Modifier.fillMaxWidth(progress).fillMaxHeight().clip(CircleShape).background(Nf.Violet))
                         }
                     }
                 }
@@ -348,6 +349,19 @@ private fun FreshRow(items: List<ListedTitle>, open: OpenAnime) {
             }
         }
     }
+}
+
+/**
+ * What a "Продолжить просмотр" card says, and its bar. The phone remembers where playback stopped; the list on the
+ * site may be further along (episodes marked by hand, or watched elsewhere), and then it wins.
+ */
+fun continueLine(e: WatchEntry, listed: ListedTitle?): Pair<String, Float> {
+    val w = listed?.entry?.watched ?: 0
+    if (w >= e.episode && w > 0) {
+        val total = listed?.total
+        return if (total != null && w >= total) "Все серии просмотрены" to 1f else "Дальше серия ${w + 1}" to 0f
+    }
+    return if (e.finished) "Серия ${e.episode} просмотрена" to 1f else "Серия ${e.episode} · ${remaining(e)}" to e.progress
 }
 
 fun remaining(e: WatchEntry): String {
