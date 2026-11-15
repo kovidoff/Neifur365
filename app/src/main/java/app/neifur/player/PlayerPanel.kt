@@ -58,7 +58,13 @@ import androidx.compose.ui.unit.sp
 import app.neifur.data.a365.Episode
 import app.neifur.data.a365.Translation
 import app.neifur.data.a365.TranslationKind
+import app.neifur.ui.FavouriteDot
+import app.neifur.ui.FavouriteStar
+import app.neifur.ui.FavouriteStudios
+import app.neifur.ui.FavouriteTint
+import app.neifur.ui.ListOverline
 import app.neifur.ui.Nf
+import app.neifur.ui.rememberFavouriteStudios
 import app.neifur.ui.Type
 import app.neifur.ui.pressable
 import java.util.Locale
@@ -195,6 +201,7 @@ private fun Tabs(tabs: List<PanelTab>, current: PanelTab, onTab: (PanelTab) -> U
 private fun TranslationTab(stream: StreamUi, onPick: (Translation) -> Unit) {
     val kinds = stream.options.keys.toList()
     var kind by remember(stream.options) { mutableStateOf(stream.current?.kind?.takeIf { it in kinds } ?: kinds.firstOrNull()) }
+    val fav = rememberFavouriteStudios()
     Column(Modifier.fillMaxSize()) {
         if (kinds.size > 1) LazyRow(
             contentPadding = PaddingValues(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -212,27 +219,58 @@ private fun TranslationTab(stream: StreamUi, onPick: (Translation) -> Unit) {
                     Icon(kindIcon(k), null, tint = if (on) tint else Color(0x99FFFFFF), modifier = Modifier.size(15.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("${k.short} · ${stream.options[k]?.size ?: 0}", style = Type.Label, color = if (on) Color.White else Color(0xB3FFFFFF))
+                    if (stream.options[k].orEmpty().any { it.pickKey in fav }) FavouriteDot()
                 }
             }
         }
-        LazyColumn(contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // Starred studios first, under their own heading, then the rest.
+        val all = stream.options[kind].orEmpty()
+        val favs = all.filter { it.pickKey in fav }
+        val rest = all.filterNot { it.pickKey in fav }
+        val listState = rememberLazyListState()
+        val favKeys = favs.map { it.pickKey }
+        var seenFavs by remember(kind) { mutableStateOf(favKeys) }
+        LaunchedEffect(favKeys) {
+            if (favKeys.size > seenFavs.size && listState.firstVisibleItemIndex < 8) listState.animateScrollToItem(0)
+            seenFavs = favKeys
+        }
+        LazyColumn(state = listState, contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (stream.options.isEmpty()) item { Hint("Список переводов загружается…") }
-            items(stream.options[kind].orEmpty(), key = { "t${it.id}" }) { t ->
-                val on = t.pickKey == stream.current?.pickKey
-                OptionRow(selected = on, onClick = { if (!on) onPick(t) }) {
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(t.author, style = Type.Title.copy(fontSize = 15.sp), color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                            if (on) Badge("Сейчас", kindTint(t.kind))
-                        }
-                        val people = t.authorsList.joinToString(", ").takeIf { it.isNotBlank() && it != t.author }
-                        Text(
-                            listOfNotNull(t.qualityLabel.takeIf { it.isNotBlank() }, people).joinToString(" · "),
-                            style = Type.Caption, color = Color(0x80FFFFFF), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp),
-                        )
-                    }
+            if (favs.isNotEmpty()) {
+                item(key = "h-fav") { ListOverline("Любимые", FavouriteTint, star = true, modifier = Modifier.animateItem().padding(start = 12.dp, top = 4.dp, bottom = 2.dp)) }
+                items(favs, key = { "t${it.id}" }) { t -> TranslationRow(t, stream, true, fav, onPick, Modifier.animateItem()) }
+                if (rest.isNotEmpty()) item(key = "h-rest") {
+                    ListOverline("Остальные", Color(0x73FFFFFF), modifier = Modifier.animateItem().padding(start = 12.dp, top = 12.dp, bottom = 2.dp))
                 }
             }
+            items(rest, key = { "t${it.id}" }) { t -> TranslationRow(t, stream, false, fav, onPick, Modifier.animateItem()) }
+        }
+    }
+}
+
+@Composable
+private fun TranslationRow(t: Translation, stream: StreamUi, isFav: Boolean, fav: FavouriteStudios, onPick: (Translation) -> Unit, modifier: Modifier) {
+    val on = t.pickKey == stream.current?.pickKey
+    Box(
+        modifier.then(
+            if (isFav && !on) Modifier.clip(RoundedCornerShape(16.dp)).background(FavouriteTint.copy(alpha = 0.06f))
+                .border(1.dp, FavouriteTint.copy(alpha = 0.16f), RoundedCornerShape(16.dp))
+            else Modifier
+        )
+    ) {
+        OptionRow(selected = on, onClick = { if (!on) onPick(t) }) {
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(t.author, style = Type.Title.copy(fontSize = 15.sp), color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (on) Badge("Сейчас", kindTint(t.kind))
+                }
+                val people = t.authorsList.joinToString(", ").takeIf { it.isNotBlank() && it != t.author }
+                Text(
+                    listOfNotNull(t.qualityLabel.takeIf { it.isNotBlank() }, people).joinToString(" · "),
+                    style = Type.Caption, color = Color(0x80FFFFFF), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            FavouriteStar(isFav, { fav.toggle(t.pickKey, t.author) }, idle = Color(0x66FFFFFF))
         }
     }
 }

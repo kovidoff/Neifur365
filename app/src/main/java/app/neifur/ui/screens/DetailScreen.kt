@@ -363,7 +363,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         pickKey = s.key
         val r = play as? PlayState.Ready ?: return
         play = r.copy(studio = s, started = true)
-        viewModelScope.launch { c.prefs.setPick(seriesId ?: return@launch, s.key, s.author) }
+        viewModelScope.launch { c.prefs.setPick(seriesId ?: return@launch, s.key) }
     }
 
     private suspend fun loadRecord() {
@@ -860,6 +860,21 @@ private fun Available(r: PlayState.Ready, accent: Color, onClick: () -> Unit) {
             if (r.kinds.size > 4) Text("ещё ${r.kinds.size - 4}", style = Type.Label, color = Nf.TextMute)
         }
         Icon(Icons.Rounded.ChevronRight, null, tint = Nf.TextMute, modifier = Modifier.size(18.dp))
+    }
+    // The viewer's starred studios that have this title: the first thing worth knowing before choosing.
+    val fav = rememberFavouriteStudios()
+    val here = r.studios.orEmpty().values.flatten().filter { it.key in fav }.map { it.author }.distinct()
+    if (here.isNotEmpty()) Row(
+        Modifier.padding(top = 6.dp).clip(RoundedCornerShape(12.dp)).background(FavouriteTint.copy(alpha = 0.08f))
+            .clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.Star, null, tint = FavouriteTint, modifier = Modifier.size(15.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            (if (here.size == 1) "Есть ваша любимая: " else "Есть ваши любимые: ") + here.take(3).joinToString(", ") + if (here.size > 3) " и ещё ${here.size - 3}" else "",
+            style = Type.Label, color = FavouriteTint, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

@@ -45,6 +45,7 @@ class Prefs(private val context: Context) {
     private val KEY_QUALITY = intPreferencesKey("quality")
     private val KEY_PICKS = stringPreferencesKey("translation_picks")
     private val KEY_FAVOURITE_AUTHORS = stringPreferencesKey("favourite_authors")
+    private val KEY_FAVOURITE_STUDIOS = stringPreferencesKey("favourite_studios")
     private val KEY_KIND = stringPreferencesKey("preferred_kind")
     private val KEY_AUDIO_PREF = stringPreferencesKey("audio_pref")
     private val KEY_SUB_PREF = stringPreferencesKey("sub_pref")
@@ -126,33 +127,43 @@ class Prefs(private val context: Context) {
     suspend fun pick(animeId: String): String? =
         context.store.data.first()[KEY_PICKS]?.lineSequence()?.firstOrNull { it.startsWith("$animeId\t") }?.substringAfter('\t')
 
-    /** [author] is the studio's display name, kept for the "favourite studios" list in Settings. */
-    suspend fun setPick(animeId: String, key: String, author: String) = context.store.edit { p ->
+    /** Remembers the studio a title plays in. It does not make the studio a favourite: that is the viewer's call (★). */
+    suspend fun setPick(animeId: String, key: String) = context.store.edit { p ->
         val lines = p[KEY_PICKS]?.lines()?.filterNot { it.startsWith("$animeId\t") } ?: emptyList()
         p[KEY_PICKS] = (listOf("$animeId\t$key") + lines).take(400).joinToString("\n")
-        // Studios picked by hand rank first on titles the viewer hasn't opened yet.
-        val fav = p[KEY_FAVOURITE_AUTHORS]?.lines().orEmpty().filterNot { it.substringBefore('\t') == key }
-        p[KEY_FAVOURITE_AUTHORS] = (listOf("$key\t$author") + fav).take(12).joinToString("\n")
     }
 
-    /** Pick keys of the studios chosen by hand, most recent first. */
+    /** Pick keys of the favourite studios, most recently starred first. */
     suspend fun favouriteAuthors(): List<String> = favouriteStudios.first().map { it.first }
 
-    /** (pick key, display name) of the studios chosen by hand, most recent first. */
+    /**
+     * (pick key, display name) of the studios the viewer starred. They come first in every translation list and
+     * are what a new title starts in. Kept under a new key: the old list filled itself with every studio tried.
+     */
     val favouriteStudios: Flow<List<Pair<String, String>>> = context.store.data.map { p ->
-        p[KEY_FAVOURITE_AUTHORS]?.lines().orEmpty().filter { it.isNotBlank() }.map { l ->
+        p[KEY_FAVOURITE_STUDIOS]?.lines().orEmpty().filter { it.isNotBlank() }.map { l ->
             val key = l.substringBefore('\t')
             key to (l.substringAfter('\t', "").ifBlank { key.substringAfter('|').replaceFirstChar { it.uppercase() } })
         }
     }.distinctUntilChanged()
 
+    /** Stars or unstars a studio ([name] is how it's shown in Settings). */
+    suspend fun toggleFavouriteStudio(key: String, name: String) = context.store.edit { p ->
+        val cur = p[KEY_FAVOURITE_STUDIOS]?.lines().orEmpty().filter { it.isNotBlank() }
+        val had = cur.any { it.substringBefore('\t') == key }
+        val rest = cur.filterNot { it.substringBefore('\t') == key }
+        p[KEY_FAVOURITE_STUDIOS] = (if (had) rest else listOf("$key\t$name") + rest).take(30).joinToString("\n")
+        p.remove(KEY_FAVOURITE_AUTHORS)
+    }
+
     suspend fun removeFavouriteStudio(key: String) = context.store.edit { p ->
-        p[KEY_FAVOURITE_AUTHORS] = p[KEY_FAVOURITE_AUTHORS]?.lines().orEmpty().filterNot { it.substringBefore('\t') == key }.joinToString("\n")
+        p[KEY_FAVOURITE_STUDIOS] = p[KEY_FAVOURITE_STUDIOS]?.lines().orEmpty().filterNot { it.substringBefore('\t') == key }.joinToString("\n")
     }
 
     /** How many titles have a translation chosen by hand. */
     val pickCount: Flow<Int> = context.store.data.map { p -> p[KEY_PICKS]?.lines()?.count { it.isNotBlank() } ?: 0 }.distinctUntilChanged()
 
+    /** Forgets the studio chosen per title. Favourite studios stay: they were starred on purpose. */
     suspend fun clearPicks() = context.store.edit { it.remove(KEY_PICKS); it.remove(KEY_FAVOURITE_AUTHORS) }
 
     // --- history and favourites ----------------------------------------------------------------------

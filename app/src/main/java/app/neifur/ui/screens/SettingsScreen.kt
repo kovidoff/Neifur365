@@ -212,8 +212,8 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
             Divider()
             SettingTitle(
                 "Любимые студии",
-                if (studios.isEmpty()) "Появятся, когда вы выберете перевод на странице тайтла или в плеере"
-                else "Их Neifur 365 ставит первыми на новых тайтлах. Сверху — последняя выбранная",
+                if (studios.isEmpty()) "Отмечайте студии звёздочкой ★ в списке переводов — на странице тайтла или в плеере"
+                else "Стоят первыми в списке переводов любого тайтла. Добавляются звёздочкой ★",
             )
             if (studios.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 studios.forEach { (key, name) -> StudioChip(key, name) { vm.removeStudio(key) } }

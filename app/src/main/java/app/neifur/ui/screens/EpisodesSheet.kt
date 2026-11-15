@@ -54,6 +54,12 @@ import app.neifur.data.a365.Studio
 import app.neifur.data.a365.Studios
 import app.neifur.data.a365.TranslationKind
 import app.neifur.ui.EmptyState
+import app.neifur.ui.FavouriteDot
+import app.neifur.ui.FavouriteStar
+import app.neifur.ui.FavouriteStudios
+import app.neifur.ui.FavouriteTint
+import app.neifur.ui.ListOverline
+import app.neifur.ui.rememberFavouriteStudios
 import app.neifur.ui.Nf
 import app.neifur.ui.Tag
 import app.neifur.ui.Type
@@ -365,6 +371,7 @@ private fun TranslationsPage(
         mutableStateOf(state?.studio?.kind?.takeIf { it in kinds } ?: preferred.takeIf { it in kinds } ?: kinds.firstOrNull())
     }
     val scope = state?.scope.orEmpty()
+    val fav = rememberFavouriteStudios()
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(start = if (showBack) 12.dp else 22.dp, end = 22.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             if (showBack) {
@@ -411,6 +418,7 @@ private fun TranslationsPage(
                     Icon(kindIcon(k), null, tint = if (on) accent else Nf.TextMute, modifier = Modifier.size(15.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("${k.title} · ${groups[k]?.size ?: 0}", style = Type.Label, color = if (on) accent else Nf.TextDim)
+                    if (groups[k].orEmpty().any { it.key in fav }) FavouriteDot()
                 }
             }
         }
@@ -419,42 +427,81 @@ private fun TranslationsPage(
             style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(horizontal = 22.dp, vertical = 4.dp),
         )
         val list = groups[kind].orEmpty().let { l -> if (ep != null) l.sortedByDescending { it.has(ep.id) } else l }
-        LazyColumn(contentPadding = PaddingValues(top = 6.dp, bottom = 28.dp)) {
-            items(list, key = { it.key }) { s ->
-                val on = s.key == state.studio?.key
-                val lacks = ep != null && !s.has(ep.id)
-                Column(
-                    Modifier.padding(horizontal = 12.dp, vertical = 2.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp))
-                        .background(if (on) accent.copy(alpha = 0.10f) else Color.Transparent)
-                        .clickable(enabled = !lacks) { onPick(s) }.padding(horizontal = 12.dp, vertical = 12.dp),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(s.author, style = Type.Title, color = if (on) accent else if (lacks) Nf.TextMute else Nf.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            when {
-                                lacks -> Text("Нет ${ep!!.label.lowercase()}", style = Type.Caption, color = Nf.Amber.copy(alpha = 0.8f), modifier = Modifier.padding(top = 2.dp))
-                                s.people.isNotEmpty() -> Text(
-                                    s.people.joinToString(", "), style = Type.Caption, color = Nf.TextMute, maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp),
-                                )
-                            }
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        if (s.qualityLabel.isNotBlank()) Tag(s.qualityLabel, if (s.bestHeight >= 1080 && !lacks) Nf.Mint else Nf.TextDim)
-                        when {
-                            on -> Icon(Icons.Rounded.Check, null, tint = accent, modifier = Modifier.padding(start = 10.dp).size(20.dp))
-                            ep != null && !lacks -> Box(
-                                Modifier.padding(start = 10.dp).size(30.dp).clip(CircleShape).background(accent.copy(alpha = 0.16f)),
-                                contentAlignment = Alignment.Center,
-                            ) { Icon(Icons.Rounded.PlayArrow, "Смотреть", tint = accent, modifier = Modifier.size(18.dp)) }
-                        }
-                    }
-                    if (scope.size > 1) {
-                        CoverageBar(s, scope, if (lacks) Nf.TextMute else if (on) accent else accent.copy(alpha = 0.6f), Modifier.padding(top = 10.dp), height = 5.dp)
-                        Text(Studios.coverageText(s, scope), style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 5.dp))
-                    }
+        // Starred studios lead, in a block of their own; the rest follow in the site's order.
+        val favs = list.filter { it.key in fav }
+        val rest = list.filterNot { it.key in fav }
+        // A newly starred studio moves into "Любимые" at the top: follow it there instead of leaving it off screen.
+        val listState = rememberLazyListState()
+        val favKeys = favs.map { it.key }
+        var seenFavs by remember(kind) { mutableStateOf(favKeys) }
+        LaunchedEffect(favKeys) {
+            if (favKeys.size > seenFavs.size && listState.firstVisibleItemIndex < 8) listState.animateScrollToItem(0)
+            seenFavs = favKeys
+        }
+        LazyColumn(state = listState, contentPadding = PaddingValues(top = 6.dp, bottom = 28.dp)) {
+            if (favs.isNotEmpty()) {
+                item(key = "h-fav") {
+                    ListOverline("Любимые", FavouriteTint, star = true, modifier = Modifier.animateItem().padding(start = 24.dp, top = 8.dp, bottom = 6.dp))
+                }
+                items(favs, key = { it.key }) { s -> StudioRow(s, state, ep, accent, scope, true, fav, onPick, Modifier.animateItem()) }
+                if (rest.isNotEmpty()) item(key = "h-rest") {
+                    ListOverline("Остальные", Nf.TextMute, modifier = Modifier.animateItem().padding(start = 24.dp, top = 18.dp, bottom = 6.dp))
                 }
             }
+            items(rest, key = { it.key }) { s -> StudioRow(s, state, ep, accent, scope, false, fav, onPick, Modifier.animateItem()) }
+        }
+    }
+}
+
+/**
+ * One studio of the picker. A favourite sits on a faint gold wash with a gold star; any row can be starred or
+ * unstarred from its star without picking it.
+ */
+@Composable
+private fun StudioRow(
+    s: Studio, state: PlayState.Ready, ep: Episode?, accent: Color, scope: List<Episode>, isFav: Boolean,
+    fav: FavouriteStudios, onPick: (Studio) -> Unit, modifier: Modifier,
+) {
+    val on = s.key == state.studio?.key
+    val lacks = ep != null && !s.has(ep.id)
+    val shape = RoundedCornerShape(16.dp)
+    Column(
+        modifier.padding(horizontal = 12.dp, vertical = 2.dp).fillMaxWidth().clip(shape)
+            .background(
+                when {
+                    on -> accent.copy(alpha = 0.10f)
+                    isFav -> FavouriteTint.copy(alpha = if (lacks) 0.03f else 0.06f)
+                    else -> Color.Transparent
+                }
+            )
+            .then(if (isFav) Modifier.border(1.dp, FavouriteTint.copy(alpha = if (on) 0.4f else 0.16f), shape) else Modifier)
+            .clickable(enabled = !lacks) { onPick(s) }.padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(s.author, style = Type.Title, color = if (on) accent else if (lacks) Nf.TextMute else Nf.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                when {
+                    lacks -> Text("Нет ${ep!!.label.lowercase()}", style = Type.Caption, color = Nf.Amber.copy(alpha = 0.8f), modifier = Modifier.padding(top = 2.dp))
+                    s.people.isNotEmpty() -> Text(
+                        s.people.joinToString(", "), style = Type.Caption, color = Nf.TextMute, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+            }
+            FavouriteStar(isFav, { fav.toggle(s.key, s.author) })
+            Spacer(Modifier.width(4.dp))
+            if (s.qualityLabel.isNotBlank()) Tag(s.qualityLabel, if (s.bestHeight >= 1080 && !lacks) Nf.Mint else Nf.TextDim)
+            when {
+                on -> Icon(Icons.Rounded.Check, null, tint = accent, modifier = Modifier.padding(start = 10.dp).size(20.dp))
+                ep != null && !lacks -> Box(
+                    Modifier.padding(start = 10.dp).size(30.dp).clip(CircleShape).background(accent.copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Rounded.PlayArrow, "Смотреть", tint = accent, modifier = Modifier.size(18.dp)) }
+            }
+        }
+        if (scope.size > 1) {
+            CoverageBar(s, scope, if (lacks) Nf.TextMute else if (on) accent else accent.copy(alpha = 0.6f), Modifier.padding(top = 8.dp), height = 5.dp)
+            Text(Studios.coverageText(s, scope), style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 5.dp))
         }
     }
 }

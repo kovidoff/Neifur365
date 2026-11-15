@@ -206,7 +206,7 @@ class PlayerActivity : ComponentActivity() {
     private fun switchTranslation(t: Translation) {
         pick = t.pickKey
         pickName = t.author
-        lifecycleScope.launch { container.prefs.setPick(session.anime.id, t.pickKey, t.author) }
+        lifecycleScope.launch { container.prefs.setPick(session.anime.id, t.pickKey) }
         stream = stream.copy(current = t)
         loadEpisode(index, resumeAt = player.position.takeIf { player.loaded }, keep = true)
     }
