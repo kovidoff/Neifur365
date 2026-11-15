@@ -203,7 +203,17 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
             }
         }
         // Back from the player: the next episode becomes the target.
-        viewModelScope.launch { c.prefs.history.drop(1).collect { retarget() } }
+        // Also re-read the studio choice: forgetting the title (the cross in "Продолжить просмотр") drops it, and a
+        // page kept alive in another tab's back stack must turn back into a new title instead of keeping the studio.
+        viewModelScope.launch {
+            c.prefs.history.drop(1).collect {
+                val id = seriesId ?: return@collect
+                pickKey = c.prefs.pick(id)
+                startedHint = localStarted(id)
+                retarget()
+                if ((play as? PlayState.Ready)?.studios != null) applyStudios(keepChoice = pickKey != null)
+            }
+        }
     }
 
     /**
@@ -217,8 +227,13 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
     var extrasPending by mutableStateOf(true)
         private set
 
+    /**
+     * Started means watched: an episode played on this phone. A studio remembered for the title doesn't count on
+     * its own (it's saved as soon as one is tapped), so a title taken out of the lists and forgotten in
+     * "Продолжить просмотр" reads as new again.
+     */
     private suspend fun localStarted(id: String): Boolean =
-        c.prefs.pick(id) != null || c.prefs.history.first().any { it.animeId == id }
+        c.prefs.history.first().any { it.animeId == id }
 
     fun load() {
         error = null
@@ -328,8 +343,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         val studios = Studios.build(synchronized(translations) { translations.toList() })
         val kind = runCatching { TranslationKind.valueOf(c.prefs.preferredKind.first()) }.getOrDefault(TranslationKind.VoiceRu)
         val keep = r.studio?.key?.takeIf { keepChoice }
-        val started = pickKey != null || r.watchedOnSite > 0 ||
-            c.prefs.history.first().any { it.animeId == seriesId }
+        val started = r.watchedOnSite > 0 || c.prefs.history.first().any { it.animeId == seriesId }
         // A title the viewer hasn't started gets no studio yet: they choose one when they press play.
         val chosen = if (!started) null else studios.firstOrNull { it.key == keep }
             ?: Studios.choose(studios, pickKey, kind, c.prefs.favouriteAuthors(), scope, scope.indexOfFirst { it.id == r.episodes.getOrNull(r.target)?.id })
