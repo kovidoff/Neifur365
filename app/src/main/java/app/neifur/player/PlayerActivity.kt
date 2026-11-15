@@ -338,6 +338,16 @@ class PlayerActivity : ComponentActivity() {
         if (inPip) finish()
     }
 
+    /**
+     * Leaving the player: bring the system bars back here, while still in landscape, and tell the screen below to
+     * re-seat them. HyperOS otherwise keeps the gesture line where it was in landscape (mid-screen in portrait).
+     */
+    override fun finish() {
+        WindowCompat.getInsetsController(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
+        container.reseatBars = true
+        super.finish()
+    }
+
     override fun onDestroy() {
         runCatching { unregisterReceiver(pipReceiver) }
         if (::player.isInitialized) player.release()

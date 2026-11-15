@@ -70,6 +70,23 @@ class MainActivity : ComponentActivity() {
         setContent { NeifurTheme { AppRoot() } }
     }
 
+    /**
+     * Back from the landscape player, HyperOS can leave the gesture line where landscape had it (mid-screen). Hiding
+     * and showing the navigation bar once, after the window is back in portrait, makes the system place it again.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus || !container.reseatBars) return
+        container.reseatBars = false
+        // Once the rotation back to portrait has settled (the focus arrives a little before it does).
+        window.decorView.postDelayed({
+            androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+                hide(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
+                show(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
+            }
+        }, 450)
+    }
+
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         takeOpenRequest(intent)

@@ -61,6 +61,9 @@ class Container(app: Application) {
 
     @Volatile var session: PlaySession? = null
 
+    /** The player just closed: the main screen re-seats the system bars once it is back in portrait. */
+    @Volatile var reseatBars = false
+
     /** A title to open once the app is on screen (tapped in a new-episode notification). */
     val pendingOpen = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 }
