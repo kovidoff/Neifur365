@@ -28,6 +28,8 @@ import coil3.request.crossfade
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /** The little a screen needs to draw a title before its full data arrives. */
 data class AnimeStub(
@@ -58,6 +60,9 @@ class Container(app: Application) {
     fun remember(stub: AnimeStub) { stubs[stub.id] = stub }
 
     @Volatile var session: PlaySession? = null
+
+    /** A title to open once the app is on screen (tapped in a new-episode notification). */
+    val pendingOpen = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 }
 
 class NeifurApp : Application(), SingletonImageLoader.Factory {
@@ -67,6 +72,8 @@ class NeifurApp : Application(), SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
         container = Container(this)
+        // Keeps the hourly new-episode check alive across updates and reboots (WorkManager restores it itself).
+        container.scope.launch { if (container.prefs.alerts.first()) app.neifur.alerts.EpisodeAlerts.schedule(this@NeifurApp, true) }
     }
 
     override fun newImageLoader(context: PlatformContext): ImageLoader =

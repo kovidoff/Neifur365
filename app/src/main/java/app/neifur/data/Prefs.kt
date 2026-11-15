@@ -50,6 +50,12 @@ class Prefs(private val context: Context) {
     private val KEY_SUB_PREF = stringPreferencesKey("sub_pref")
     private val KEY_SUB_SCALE = stringPreferencesKey("sub_scale")
     private val KEY_ONBOARDED = stringPreferencesKey("onboarded")
+    private val KEY_ALERTS = stringPreferencesKey("alerts")
+    private val KEY_ALERTS_MODE = stringPreferencesKey("alerts_mode")
+    private val KEY_ALERTS_PLANNED = stringPreferencesKey("alerts_planned")
+    private val KEY_ALERTS_SEEN = stringPreferencesKey("alerts_seen")
+    private val KEY_ALERTS_ASKED = stringPreferencesKey("alerts_asked")
+    private val KEY_ALERTS_CHECKED = stringPreferencesKey("alerts_checked")
 
     private val historySer = ListSerializer(WatchEntry.serializer())
     private val favSer = ListSerializer(SavedAnime.serializer())
@@ -71,6 +77,37 @@ class Prefs(private val context: Context) {
     val onboarded: Flow<Boolean> = context.store.data.map { it[KEY_ONBOARDED] == "1" }.distinctUntilChanged()
     suspend fun beginOnboarding() = context.store.edit { if (it[KEY_ONBOARDED] != "0") it[KEY_ONBOARDED] = "0" }
     suspend fun setOnboarded() = context.store.edit { it[KEY_ONBOARDED] = "1" }
+
+    // --- new-episode notifications ---
+    val alerts: Flow<Boolean> = context.store.data.map { it[KEY_ALERTS] == "1" }.distinctUntilChanged()
+    suspend fun setAlerts(on: Boolean) = context.store.edit { it[KEY_ALERTS] = if (on) "1" else "0"; it[KEY_ALERTS_ASKED] = "1" }
+
+    /** True: wait until the viewer's own studio has the episode. False: tell as soon as it's out in any translation. */
+    val alertsMyStudio: Flow<Boolean> = context.store.data.map { it[KEY_ALERTS_MODE] == "studio" }.distinctUntilChanged()
+    suspend fun setAlertsMyStudio(on: Boolean) = context.store.edit { it[KEY_ALERTS_MODE] = if (on) "studio" else "any" }
+
+    /** Also airing titles from "Запланировано". */
+    val alertsPlanned: Flow<Boolean> = context.store.data.map { it[KEY_ALERTS_PLANNED] == "1" }.distinctUntilChanged()
+    suspend fun setAlertsPlanned(on: Boolean) = context.store.edit { it[KEY_ALERTS_PLANNED] = if (on) "1" else "0" }
+
+    /** The Lists tab offered notifications once (accepted or not): it doesn't ask again. */
+    val alertsAsked: Flow<Boolean> = context.store.data.map { it[KEY_ALERTS_ASKED] == "1" }.distinctUntilChanged()
+    suspend fun dismissAlertsOffer() = context.store.edit { it[KEY_ALERTS_ASKED] = "1" }
+
+    /** When the last check ran (ms), for "проверено в 10:42". */
+    val alertsChecked: Flow<Long> = context.store.data.map { it[KEY_ALERTS_CHECKED]?.toLongOrNull() ?: 0L }.distinctUntilChanged()
+
+    /** The newest episode already told about (or already out when tracking began), per title. */
+    suspend fun alertsSeen(): Map<Long, Int> = context.store.data.first()[KEY_ALERTS_SEEN].orEmpty().lines().mapNotNull { l ->
+        val id = l.substringBefore('\t').toLongOrNull() ?: return@mapNotNull null
+        val n = l.substringAfter('\t').toIntOrNull() ?: return@mapNotNull null
+        id to n
+    }.toMap()
+
+    suspend fun saveAlertsSeen(seen: Map<Long, Int>, checkedAt: Long) = context.store.edit { p ->
+        p[KEY_ALERTS_SEEN] = seen.entries.joinToString("\n") { "${it.key}\t${it.value}" }
+        p[KEY_ALERTS_CHECKED] = checkedAt.toString()
+    }
 
     // --- playback ------------------------------------------------------------------------------------
     /**

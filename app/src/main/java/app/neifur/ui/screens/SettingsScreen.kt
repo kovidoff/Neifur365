@@ -196,6 +196,11 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
 
         item(key = "account") { Spacer(Modifier.height(10.dp)); AccountCard(vm) { confirmLogout = true } }
 
+        item(key = "alerts") {
+            val acc by vm.account.collectAsStateWithLifecycle()
+            SectionLabel("Уведомления"); AlertsSettings(signedIn = acc is AccountState.SignedIn)
+        }
+
         item(key = "translation") { SectionLabel("Перевод")
         Card {
             SettingTitle("Как вы смотрите", "Что включать в новых тайтлах, пока вы не выбрали студию сами")

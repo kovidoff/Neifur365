@@ -66,7 +66,19 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(SystemBarStyle.dark(AColor.TRANSPARENT), SystemBarStyle.dark(AColor.TRANSPARENT))
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) takeOpenRequest(intent)
         setContent { NeifurTheme { AppRoot() } }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        takeOpenRequest(intent)
+    }
+
+    /** A tapped new-episode notification names the title to open. */
+    private fun takeOpenRequest(intent: android.content.Intent?) {
+        intent?.getStringExtra(app.neifur.alerts.EpisodeAlerts.EXTRA_SERIES)?.let { container.pendingOpen.value = it }
+        intent?.removeExtra(app.neifur.alerts.EpisodeAlerts.EXTRA_SERIES)
     }
 }
 
@@ -94,6 +106,15 @@ private fun AppRoot() {
     val open: OpenAnime = { stub, origin ->
         container.remember(stub)
         nav.navigate("detail/${stub.id}?origin=${Uri.encode(origin)}") { launchSingleTop = true }
+    }
+
+    // Opening a title from a notification: wait for the welcome flow to be out of the way, then go there.
+    val pending by container.pendingOpen.collectAsStateWithLifecycle()
+    LaunchedEffect(pending, onboarded) {
+        val id = pending ?: return@LaunchedEffect
+        if (onboarded != true) return@LaunchedEffect
+        container.pendingOpen.value = null
+        nav.navigate("detail/$id?origin=notification") { launchSingleTop = true }
     }
 
     SharedTransitionLayout {

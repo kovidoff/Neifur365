@@ -61,6 +61,8 @@ class LibraryVm(private val c: Container) : ViewModel() {
     val lists = c.lists.state
     val history = c.prefs.history
     val favorites = c.prefs.favorites
+    val alertsAsked = c.prefs.alertsAsked
+    val alertsOn = c.prefs.alerts
     var status by mutableStateOf(ListStatus.Watching)
     var notice by mutableStateOf<String?>(null)
 
@@ -90,6 +92,8 @@ fun LibraryScreen(open: OpenAnime) {
     val lists by vm.lists.collectAsStateWithLifecycle()
     val history by vm.history.collectAsStateWithLifecycle(emptyList())
     val favorites by vm.favorites.collectAsStateWithLifecycle(emptyList())
+    val alertsAsked by vm.alertsAsked.collectAsStateWithLifecycle(true)
+    val alertsOn by vm.alertsOn.collectAsStateWithLifecycle(true)
     val recent = history.distinctBy { it.animeId }.take(12)
     var editing by remember { mutableStateOf<ListedTitle?>(null) }
     var signIn by remember { mutableStateOf(false) }
@@ -123,6 +127,10 @@ fun LibraryScreen(open: OpenAnime) {
                 if (signedIn) {
                     item(span = { GridItemSpan(3) }, key = "tabs") {
                         StatusTabs(vm.status, { lists.count(it) }, lists.loaded) { vm.status = it }
+                    }
+                    // Asked once, where it makes sense: above what the viewer is watching.
+                    if (vm.status == ListStatus.Watching && lists.loaded && lists.count(ListStatus.Watching) > 0 && !alertsAsked && !alertsOn) {
+                        item(span = { GridItemSpan(3) }, key = "alerts-offer") { AlertsOffer(Modifier.animateItem()) }
                     }
                     when {
                         !lists.loaded && lists.error != null -> item(span = { GridItemSpan(3) }) {

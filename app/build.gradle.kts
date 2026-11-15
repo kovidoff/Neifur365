@@ -78,6 +78,7 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.9.4")
     implementation("androidx.datastore:datastore-preferences:1.1.7")
     implementation("androidx.palette:palette-ktx:1.0.0")
+    implementation("androidx.work:work-runtime-ktx:2.10.1")
     // Installs the baseline profiles that Compose ships, so release builds start and scroll without JIT stutter.
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
 
