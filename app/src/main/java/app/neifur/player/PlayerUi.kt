@@ -708,7 +708,7 @@ private fun TranslationChip(stream: StreamUi, subsOn: Boolean, onClick: () -> Un
     }
 }
 
-private fun qualityLabel(h: Int) = when { h >= 2160 -> "4K"; else -> "${h}p" }
+private fun qualityLabel(h: Int) = "${h}p"
 
 @Composable
 private fun TextPill(text: String, highlight: Boolean, onClick: () -> Unit) {

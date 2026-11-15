@@ -355,7 +355,7 @@ fun QuickMenuHost(menu: QuickMenu?, player: MpvPlayer, stream: StreamUi, onHeigh
                         MenuTitle("Качество")
                         stream.heights.forEach { h ->
                             MenuRow(
-                                "${h}p", when { h >= 2160 -> "4K"; h >= 1080 -> "Full HD"; h >= 720 -> "HD"; else -> "Экономит трафик" },
+                                "${h}p", when { h >= 1080 -> "Full HD"; h >= 720 -> "HD"; else -> "Экономит трафик" },
                                 selected = h == stream.height,
                             ) { if (h != stream.height) onHeight(h); onClose() }
                         }

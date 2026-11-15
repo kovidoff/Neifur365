@@ -168,7 +168,7 @@ class SettingsVm(private val c: Container) : ViewModel() {
 fun SettingsScreen(onBack: (() -> Unit)? = null) {
     val vm = nfViewModel { SettingsVm(it) }
     val ctx = LocalContext.current
-    val quality by vm.quality.collectAsStateWithLifecycle(app.neifur.data.a365.BEST_QUALITY)
+    val quality by vm.quality.collectAsStateWithLifecycle(1080)
     val kind by vm.preferredKind.collectAsStateWithLifecycle("VoiceRu")
     val history by vm.history.collectAsStateWithLifecycle(emptyList())
     val subScale by vm.subScale.collectAsStateWithLifecycle(1.0)
@@ -221,14 +221,12 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
 
         item(key = "player") { SectionLabel("Плеер")
         Card {
-            SettingTitle(
-                "Качество видео",
-                if (quality == app.neifur.data.a365.BEST_QUALITY) "Самое высокое, что отдаёт Anime 365 — сейчас это 1080p"
-                else "Если такого нет у перевода, включится ближайшее ниже",
-            )
-            Segmented(
-                listOf(app.neifur.data.a365.BEST_QUALITY to "Наилучшее", 1080 to "1080p", 720 to "720p", 480 to "480p"), quality,
-            ) { vm.setQuality(it) }
+            SettingTitle("Качество видео", "Если такого нет у перевода, включится ближайшее ниже")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                QualityTile(1080, "Full HD", 3, quality) { vm.setQuality(it) }
+                QualityTile(720, "HD", 2, quality) { vm.setQuality(it) }
+                QualityTile(480, "Экономия", 1, quality) { vm.setQuality(it) }
+            }
             Divider()
             SettingTitle("Размер субтитров", null)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -473,6 +471,33 @@ private fun MirrorRow(m: MirrorStatus, auto: Boolean, onPick: () -> Unit, onRemo
             Icons.Rounded.Close, "Удалить адрес", tint = Nf.TextMute,
             modifier = Modifier.size(36.dp).clip(CircleShape).clickable(onClick = onRemove).padding(9.dp),
         ) else if (m.active) Icon(Icons.Rounded.Check, null, tint = Nf.Violet, modifier = Modifier.padding(end = 8.dp).size(18.dp))
+    }
+}
+
+/** One quality choice: the height big, a word under it, and bars that show how sharp it is. */
+@Composable
+private fun RowScope.QualityTile(height: Int, caption: String, bars: Int, selected: Int, onPick: (Int) -> Unit) {
+    val on = height == selected
+    val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.16f) else Nf.Ink, label = "qt")
+    val br by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.6f) else Nf.Line, label = "qtb")
+    Column(
+        Modifier.weight(1f).height(92.dp).clip(RoundedCornerShape(18.dp)).background(bg).border(1.dp, br, RoundedCornerShape(18.dp))
+            .pressable(0.95f) { onPick(height) }.padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
+            repeat(3) { i ->
+                val lit = i < bars
+                Box(
+                    Modifier.width(5.dp).height((6 + i * 4).dp).clip(RoundedCornerShape(2.dp))
+                        .background(if (lit) (if (on) Nf.Violet else Nf.TextDim) else Nf.Line)
+                )
+            }
+        }
+        Column {
+            Text("${height}p", style = Type.Title.copy(fontSize = 17.sp), color = if (on) Nf.Text else Nf.TextDim)
+            Text(caption, style = Type.Caption, color = if (on) Nf.Violet else Nf.TextMute, maxLines = 1)
+        }
     }
 }
 

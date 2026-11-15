@@ -152,9 +152,6 @@ enum class TranslationKind(val title: String, val short: String, val inline: Str
  */
 const val MAX_STREAM_HEIGHT = 1080
 
-/** The "Наилучшее" quality setting: the highest stream the site gives, with no cap. */
-const val BEST_QUALITY = 9999
-
 @Serializable
 data class EmbedStream(val height: Int = 0, val urls: List<String> = emptyList())
 
