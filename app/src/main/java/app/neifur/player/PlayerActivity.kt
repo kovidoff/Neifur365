@@ -195,6 +195,7 @@ class PlayerActivity : ComponentActivity() {
                 player.preferAudio(if (tr.kind == TranslationKind.VoiceRu) "ru,rus" else if (tr.kind == TranslationKind.VoiceEn) "en,eng" else "ja,jpn,jp")
                 val subLang = if (tr.kind == TranslationKind.SubEn) "en" else if (tr.typeLang.isNotBlank()) tr.typeLang else "ru"
                 player.load(s.urls.first(), start, subs?.let { Triple(it, tr.author, subLang) }, c.a365.baseUrl() + "/")
+                watchOpening(start)
             }.onFailure {
                 if (it !is kotlinx.coroutines.CancellationException) { error = it.userMessage(); reconnecting = false }
             }
@@ -221,6 +222,32 @@ class PlayerActivity : ComponentActivity() {
             runCatching { container.a365.markWatched(tr.id) }
                 .onSuccess { session.anime.id.toLongOrNull()?.let { container.lists.reload(it) } }
                 .onFailure { marked -= tr.id }
+        }
+    }
+
+    private var channelChecked = false
+    private var openJob: Job? = null
+
+    /**
+     * Video that never starts usually means the account's Anime 365 channel doesn't get through from this network
+     * (the site's "без CDN" one is blocked by many Russian providers). Ten seconds without the file opening: test
+     * the channels once, switch the account to one that works, and reopen the episode with links from it.
+     */
+    private fun watchOpening(start: Double) {
+        openJob?.cancel()
+        if (channelChecked) return
+        openJob = lifecycleScope.launch {
+            delay(10_000)
+            if (player.loaded || error != null || channelChecked) return@launch
+            channelChecked = true
+            notice = "Видео не грузится — проверяем каналы Anime 365…"
+            val fix = runCatching { container.a365.fixChannel() }.getOrNull()
+            if (player.loaded) return@launch
+            if (fix != null) {
+                val (old, new) = fix
+                notice = (old?.let { "Канал «${it.label}» не работает в вашей сети, " } ?: "") + "включили «${new.label}»"
+                loadEpisode(index, resumeAt = start, height = stream.height.takeIf { it > 0 }, keep = true)
+            } else notice = null
         }
     }
 

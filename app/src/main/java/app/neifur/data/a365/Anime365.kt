@@ -366,4 +366,65 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
 
     /** Marks the episode of this translation as watched; the site moves the list counter itself. */
     suspend fun markWatched(translationId: Long) { post("/translations/watched/$translationId", emptyMap()) }
+
+    // --- video channels ----------------------------------------------------------------------------------
+
+    /** The account's video channels and which one it uses, from the site's connection test page. */
+    suspend fun channels(): ChannelSetup =
+        ChannelPage.parse(page("/diagnostic")) ?: throw ApiError("Не получилось узнать каналы Anime 365")
+
+    /** Switches the account to channel [id]: every video link after this comes from it. */
+    suspend fun setChannel(id: Int) {
+        val raw = post("/diagnostic/setChannel", mapOf("channel" to id.toString()))
+        val ok = runCatching { AppJson.parseToJsonElement(raw).jsonObject["ok"]?.jsonPrimitive?.content == "true" }.getOrDefault(false)
+        if (!ok) throw ApiError("Anime 365 не переключил канал")
+    }
+
+    private val channelHttp by lazy {
+        http.newBuilder().readTimeout(4, TimeUnit.SECONDS).callTimeout(8, TimeUnit.SECONDS).build()
+    }
+
+    /**
+     * Downloads a few seconds of the channel's test file and returns the speed. A channel the network blocks
+     * answers, sends ~20 KB and goes silent, so it comes out at a few KB/s rather than failing outright.
+     */
+    suspend fun measure(channel: VideoChannel): ChannelSpeed = withContext(Dispatchers.IO) {
+        suspend fun one(url: String): Double {
+            val t0 = System.nanoTime()
+            var got = 0L
+            runCatching {
+                channelHttp.newCall(Request.Builder().url(url).header("Range", "bytes=0-7999999").build()).await().use { r ->
+                    if (!r.isSuccessful) return@use
+                    val src = r.body?.source() ?: return@use
+                    val buf = okio.Buffer()
+                    while (System.nanoTime() - t0 < 5_000_000_000L && got < 8_000_000) {
+                        val n = src.read(buf, 64 * 1024)
+                        if (n < 0) break
+                        got += n; buf.clear()
+                    }
+                }
+            }
+            val sec = (System.nanoTime() - t0) / 1e9
+            return if (sec > 0) got / sec else 0.0
+        }
+        val main = one(channel.testUrl)
+        val best = if (main < ChannelSpeed.WORKS && channel.fallbackUrl != null) maxOf(main, one(channel.fallbackUrl)) else main
+        ChannelSpeed(best)
+    }
+
+    /**
+     * When video won't load: if the account's channel doesn't get through from here, measures the others and
+     * switches to the fastest that does. Returns (old, new) when it switched, null when the channel was fine or
+     * nothing better works.
+     */
+    suspend fun fixChannel(): Pair<VideoChannel?, VideoChannel>? = coroutineScope {
+        val setup = channels()
+        val current = setup.currentChannel
+        if (current != null && measure(current).works) return@coroutineScope null
+        val others = setup.channels.filter { it.id != setup.current }
+        val speeds = others.map { ch -> async { ch to measure(ch) } }.awaitAll()
+        val best = speeds.filter { it.second.works }.maxByOrNull { it.second.bytesPerSec }?.first ?: return@coroutineScope null
+        setChannel(best.id)
+        current to best
+    }
 }
