@@ -177,7 +177,17 @@ enum class ListStatus(val id: Int, val path: String, val title: String) {
     companion object { fun of(id: Int) = entries.firstOrNull { it.id == id } }
 }
 
-data class ListEntry(val seriesId: Long, val title: String, val watched: Int, val total: Int?, val score: Int?)
+/** The site's own words for each score. */
+fun scoreLabel(score: Int): String = when (score) {
+    10 -> "Шедевр"; 9 -> "Великолепно"; 8 -> "Очень хорошо"; 7 -> "Хорошо"; 6 -> "Неплохо"
+    5 -> "Средне"; 4 -> "Плохо"; 3 -> "Очень плохо"; 2 -> "Ужасно"; 1 -> "Отвратительно"; else -> "Без оценки"
+}
+
+/** One row of the viewer's Anime 365 lists. [total] is null while the site doesn't know it ("3 / ?"). */
+data class ListEntry(
+    val seriesId: Long, val title: String, val watched: Int, val total: Int?, val score: Int?,
+    val status: ListStatus? = null,
+)
 
 /** The viewer's own record for one title; [status] null means "not in the list". */
 data class ListRecord(val status: ListStatus?, val watched: Int, val score: Int?)

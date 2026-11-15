@@ -217,7 +217,11 @@ class PlayerActivity : ComponentActivity() {
         if (player.duration <= 0 || player.position / player.duration < 0.85 || tr.id in marked) return
         if (container.account.profile == null) return
         marked += tr.id
-        container.scope.launch { runCatching { container.a365.markWatched(tr.id) }.onFailure { marked -= tr.id } }
+        container.scope.launch {
+            runCatching { container.a365.markWatched(tr.id) }
+                .onSuccess { session.anime.id.toLongOrNull()?.let { container.lists.reload(it) } }
+                .onFailure { marked -= tr.id }
+        }
     }
 
     /** The stream broke mid-episode (links expire or the connection dropped): fetch fresh links and continue. */

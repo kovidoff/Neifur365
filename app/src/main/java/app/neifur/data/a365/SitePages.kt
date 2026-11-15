@@ -50,16 +50,21 @@ internal object SitePages {
         }
     }
 
+    /**
+     * Rows of a list page. The "all" page (`/users/<id>/list`) holds every list, one card per status
+     * (`data-status`), so one request brings in everything.
+     */
     fun list(html: String): List<ListEntry> {
         val doc = Jsoup.parse(html)
         return doc.select("tr.m-animelist-item").mapNotNull { el ->
+            val status = el.parents().firstOrNull { it.hasAttr("data-status") }?.attr("data-status")?.toIntOrNull()?.let { ListStatus.of(it) }
             val id = el.attr("data-id").toLongOrNull() ?: return@mapNotNull null
             val title = el.selectFirst("a[href]")?.text()?.trim().orEmpty()
             val eps = el.selectFirst("td[data-name=episodes]")?.text()?.trim().orEmpty().split("/").map { it.trim() }
             val watched = eps.getOrNull(0)?.toIntOrNull() ?: 0
             val total = eps.getOrNull(1)?.toIntOrNull()
             val score = el.selectFirst("td[data-name=score]")?.text()?.trim()?.toIntOrNull()?.takeIf { it > 0 }
-            ListEntry(id, title, watched, total, score)
+            ListEntry(id, title, watched, total, score, status)
         }
     }
 

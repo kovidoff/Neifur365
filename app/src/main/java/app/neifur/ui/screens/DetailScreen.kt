@@ -183,6 +183,25 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
     init {
         load()
         viewModelScope.launch { c.account.state.drop(1).collect { if (it is AccountState.SignedIn) loadRecord() else record = null } }
+        // The bookmark follows the shared lists: a change made anywhere (here, the list tab, the player) shows here.
+        viewModelScope.launch {
+            c.lists.state.collect { s ->
+                val sid = seriesId?.toLongOrNull() ?: return@collect
+                if (!s.loaded) return@collect
+                val t = s.titles[sid]
+                val r = ListRecord(t?.status, t?.entry?.watched ?: 0, t?.entry?.score)
+                if (r != record) {
+                    record = r
+                    (play as? PlayState.Ready)?.let { p ->
+                        play = p.copy(watchedOnSite = r.watched)
+                        // The counter moved: start from the right episode, and a title back at zero with no studio
+                        // of its own is new again.
+                        retarget()
+                        if (p.studios != null) applyStudios(keepChoice = true)
+                    }
+                }
+            }
+        }
         // Back from the player: the next episode becomes the target.
         viewModelScope.launch { c.prefs.history.drop(1).collect { retarget() } }
     }
@@ -336,7 +355,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
     private suspend fun loadRecord() {
         val sid = seriesId?.toLongOrNull() ?: return
         if (!signedIn) return
-        record = runCatching { c.a365.listRecord(sid) }.getOrNull()
+        record = c.lists.record(sid)
         (play as? PlayState.Ready)?.let { r ->
             play = r.copy(watchedOnSite = record?.watched ?: 0)
             retarget()
@@ -344,15 +363,15 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         }
     }
 
-    /** Puts the title in one of the viewer's Anime 365 lists, or takes it out ([status] null). */
-    fun setStatus(status: ListStatus?) {
+    /** Changes the title's place in the viewer's Anime 365 lists ([status] null takes it out). */
+    fun setList(status: ListStatus?, watched: Int = record?.watched ?: 0, score: Int? = record?.score) {
         val sid = seriesId?.toLongOrNull() ?: return
-        val before = record
-        record = ListRecord(status, before?.watched ?: 0, before?.score)
+        val wasIn = record?.status != null
         viewModelScope.launch {
-            runCatching { c.a365.setListRecord(sid, status, before?.watched ?: 0, before?.score) }
-                .onSuccess { notice = if (status == null) "Убрано из списка" else "В списке «${status.title}»" }
-                .onFailure { record = before; notice = it.userMessage() }
+            c.lists.set(sid, status, watched, score, series).onSuccess {
+                if (status == null) notice = "Убрано из списков"
+                else if (!wasIn) notice = "Добавлено в «${status.title}»"
+            }.onFailure { notice = it.userMessage() }
         }
     }
 
@@ -479,7 +498,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                             // Signed in, the bookmark is the title's place in the Anime 365 lists; otherwise a local favourite.
                             if (signedIn) {
                                 val inList = vm.record?.status != null
-                                SquareAction(if (inList) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Список", tint = if (inList) accent else Nf.Text) { listSheet = true }
+                                SquareAction(if (inList) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Список", tint = if (inList) statusColor(vm.record?.status) else Nf.Text) { listSheet = true }
                             } else {
                                 SquareAction(if (favorite) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Избранное", tint = if (favorite) accent else Nf.Text, onClick = vm::toggleFavorite)
                             }
@@ -580,37 +599,13 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                 onStart = { s, i -> sheet = null; startFor = null; vm.start(ctx, s, i) },
             )
         }
-        if (listSheet) ListSheet(vm.record?.status, accent, onDismiss = { listSheet = false }) { vm.setStatus(it); listSheet = false }
+        if (listSheet) ListEditor(
+            title = stub?.title.orEmpty(), record = vm.record, total = vm.series?.numberOfEpisodes?.takeIf { it > 0 },
+            aired = (play as? PlayState.Ready)?.episodes?.size, isMovie = isMovie,
+            onDismiss = { listSheet = false },
+            onChange = { st, w, sc -> vm.setList(st, w, sc) },
+        )
         if (vm.askSignIn) SignInSheet(onDismiss = { vm.askSignIn = false }, onDone = { vm.askSignIn = false })
-    }
-}
-
-/** The viewer's Anime 365 list for this title: pick a list, or take it out. */
-@Composable
-private fun ListSheet(current: ListStatus?, accent: Color, onDismiss: () -> Unit, onPick: (ListStatus?) -> Unit) {
-    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Nf.Surface, contentColor = Nf.Text) {
-        Text("Мой список", style = Type.Section, color = Nf.Text, modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp))
-        Text("Синхронизируется с Anime 365", style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(horizontal = 24.dp))
-        Column(Modifier.padding(top = 8.dp, bottom = 28.dp)) {
-            ListStatus.entries.forEach { st ->
-                val on = st == current
-                Row(
-                    Modifier.fillMaxWidth().clickable { onPick(st) }.padding(horizontal = 24.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(st.title, style = Type.Title, color = if (on) accent else Nf.Text, modifier = Modifier.weight(1f))
-                    if (on) Icon(Icons.Rounded.Check, null, tint = accent, modifier = Modifier.size(20.dp))
-                }
-            }
-            if (current != null) Row(
-                Modifier.fillMaxWidth().clickable { onPick(null) }.padding(horizontal = 24.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.DeleteOutline, null, tint = Nf.Red, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(10.dp))
-                Text("Убрать из списка", style = Type.Title, color = Nf.Red)
-            }
-        }
     }
 }
 
@@ -895,7 +890,7 @@ private fun StudioCard(state: PlayState, startedHint: Boolean?, status: ListStat
             }
         }
         if (status != null) Text(
-            "В списке «${status.title}»", style = Type.Caption, color = accent,
+            "В списке «${status.title}»", style = Type.Caption, color = statusColor(status),
             modifier = Modifier.padding(start = 4.dp, top = 8.dp),
         )
     }

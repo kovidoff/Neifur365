@@ -133,11 +133,18 @@ class Prefs(private val context: Context) {
         p[KEY_HISTORY] = AppJson.encodeToString(historySer, next)
     }
 
-    suspend fun clearHistory() = context.store.edit { it.remove(KEY_HISTORY) }
+    /** Forgets everything watched on this phone, and the studios chosen for those titles: they open as new again. */
+    suspend fun clearHistory() = context.store.edit { p ->
+        val ids = p[KEY_HISTORY]?.let { runCatching { AppJson.decodeFromString(historySer, it) }.getOrNull() }.orEmpty().map { it.animeId }.toSet()
+        p.remove(KEY_HISTORY)
+        p[KEY_PICKS]?.let { picks -> p[KEY_PICKS] = picks.lines().filterNot { it.substringBefore('\t') in ids }.joinToString("\n") }
+    }
 
+    /** Forgets one title: its progress here and its chosen studio, so the title page treats it as new. */
     suspend fun removeFromHistory(animeId: String) = context.store.edit { p ->
         val cur = p[KEY_HISTORY]?.let { runCatching { AppJson.decodeFromString(historySer, it) }.getOrNull() } ?: emptyList()
         p[KEY_HISTORY] = AppJson.encodeToString(historySer, cur.filterNot { it.animeId == animeId })
+        p[KEY_PICKS]?.let { picks -> p[KEY_PICKS] = picks.lines().filterNot { it.startsWith("$animeId\t") }.joinToString("\n") }
     }
 
     suspend fun toggleFavorite(a: SavedAnime) = context.store.edit { p ->

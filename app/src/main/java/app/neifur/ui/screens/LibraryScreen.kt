@@ -1,9 +1,12 @@
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+
 package app.neifur.ui.screens
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -14,20 +17,24 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.Login
-import androidx.compose.material.icons.rounded.BookmarkBorder
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.WifiOff
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
-import app.neifur.container
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -35,186 +42,335 @@ import app.neifur.AnimeStub
 import app.neifur.Container
 import app.neifur.OpenAnime
 import app.neifur.core.userMessage
+import app.neifur.data.WatchEntry
 import app.neifur.data.a365.AccountState
-import app.neifur.data.a365.ListEntry
+import app.neifur.data.a365.ListProgress
+import app.neifur.data.a365.ListRecord
 import app.neifur.data.a365.ListStatus
-import app.neifur.data.a365.Series
+import app.neifur.data.a365.ListedTitle
 import app.neifur.nfViewModel
 import app.neifur.stub
 import app.neifur.ui.*
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-
-/** One title of a site list with its card data (the list page itself has only names and counters). */
-data class ListItem(val entry: ListEntry, val series: Series?) {
-    val stub: AnimeStub get() = series?.stub() ?: AnimeStub(entry.seriesId.toString(), entry.title, null)
-}
 
 class LibraryVm(private val c: Container) : ViewModel() {
     val account = c.account.state
+    val lists = c.lists.state
     val history = c.prefs.history
     val favorites = c.prefs.favorites
     var status by mutableStateOf(ListStatus.Watching)
-        private set
-    var items by mutableStateOf<Load<List<ListItem>>>(Load.Loading)
-        private set
-    private val cache = HashMap<ListStatus, List<ListItem>>()
-    private var job: Job? = null
+    var notice by mutableStateOf<String?>(null)
 
-    init {
-        viewModelScope.launch { c.account.state.collect { if (it is AccountState.SignedIn) { cache.clear(); load(status) } } }
+    fun refresh() = c.lists.refresh()
+    fun refreshIfStale() = c.lists.refreshIfStale()
+
+    fun bump(t: ListedTitle) = viewModelScope.launch {
+        c.lists.bump(t.entry.seriesId).onFailure { notice = it.userMessage() }
     }
 
-    fun select(s: ListStatus) { status = s; load(s) }
-
-    fun refresh() { cache.remove(status); load(status) }
-
-    private fun load(s: ListStatus) {
-        val user = c.account.profile ?: return
-        cache[s]?.let { items = Load.Ready(it); return }
-        items = Load.Loading
-        job?.cancel()
-        job = viewModelScope.launch {
-            items = runCatching {
-                val entries = c.a365.list(user.id, s)
-                val cards = runCatching { c.a365.cards(entries.map { it.seriesId }) }.getOrDefault(emptyList()).associateBy { it.id }
-                entries.map { ListItem(it, cards[it.seriesId]) }.also { cache[s] = it }
-            }.fold({ Load.Ready(it) }, { Load.Error(it.userMessage()) })
-        }
+    fun change(t: ListedTitle, s: ListStatus?, watched: Int, score: Int?) = viewModelScope.launch {
+        c.lists.set(t.entry.seriesId, s, watched, score).onFailure { notice = it.userMessage() }
     }
+
+    fun forget(animeId: String) = viewModelScope.launch { c.prefs.removeFromHistory(animeId) }
 }
 
+/**
+ * The viewer's lists from Anime 365, the way people keep them: what they watch (with how far along and what's
+ * new), what they plan, what they finished (with their score), what they paused or dropped. Changes made anywhere
+ * show here at once; a long press edits an entry in place.
+ */
 @Composable
 fun LibraryScreen(open: OpenAnime) {
     val vm = nfViewModel { LibraryVm(it) }
     val account by vm.account.collectAsStateWithLifecycle()
+    val lists by vm.lists.collectAsStateWithLifecycle()
     val history by vm.history.collectAsStateWithLifecycle(emptyList())
     val favorites by vm.favorites.collectAsStateWithLifecycle(emptyList())
     val recent = history.distinctBy { it.animeId }.take(12)
-    val prefs = LocalContext.current.container.prefs
-    val scope = rememberCoroutineScope()
+    var editing by remember { mutableStateOf<ListedTitle?>(null) }
     var signIn by remember { mutableStateOf(false) }
     val signedIn = account is AccountState.SignedIn
+    LaunchedEffect(signedIn) { if (signedIn) vm.refreshIfStale() }
+    LaunchedEffect(vm.notice) { if (vm.notice != null) { kotlinx.coroutines.delay(3500); vm.notice = null } }
 
-    LazyVerticalGrid(
-        GridCells.Fixed(3), modifier = Modifier.fillMaxSize().statusBarsPadding(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 120.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        item(span = { GridItemSpan(3) }) {
-            Text("Моё", style = Type.Display, color = Nf.Text, modifier = Modifier.padding(top = 14.dp))
-        }
+    val items = remember(lists, vm.status) {
+        val l = lists.of(vm.status)
+        // Watching: titles with new episodes first. Others keep the site's order.
+        if (vm.status == ListStatus.Watching) l.sortedByDescending { it.behind > 0 } else l
+    }
+    val wide = vm.status != ListStatus.Planned && vm.status != ListStatus.Completed
 
-        if (recent.isNotEmpty()) item(span = { GridItemSpan(3) }) {
-            Column {
-                Text("Продолжить просмотр", style = Type.Section, color = Nf.Text, modifier = Modifier.padding(top = 6.dp, bottom = 12.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(end = 4.dp)) {
-                    items(recent, key = { it.animeId }) { e ->
-                        val stub = AnimeStub(e.animeId, e.title, e.poster)
-                        Row(
-                            Modifier.width(260.dp).clip(RoundedCornerShape(20.dp)).background(Nf.Surface)
-                                .pressable(0.98f) { open(stub, "library-h") }.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            PosterImage(e.poster, Modifier.sharedPoster("poster/library-h/${e.animeId}", RoundedCornerShape(12.dp)).width(50.dp).aspectRatio(0.7f).clip(RoundedCornerShape(12.dp)))
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(e.title, style = Type.Label, color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                Spacer(Modifier.height(3.dp))
-                                Text(if (e.finished) "Серия ${e.episode} просмотрена" else "Серия ${e.episode} · ${remaining(e)}", style = Type.Caption, color = Nf.TextMute)
-                                Spacer(Modifier.height(8.dp))
-                                Box(Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(Nf.Line)) {
-                                    Box(Modifier.fillMaxWidth(e.progress).fillMaxHeight().clip(CircleShape).background(Nf.Violet))
-                                }
-                            }
-                            Icon(
-                                Icons.Rounded.Close, "Убрать из истории", tint = Nf.TextMute,
-                                modifier = Modifier.padding(start = 4.dp).size(32.dp).clip(CircleShape)
-                                    .pressable(0.85f) { scope.launch { prefs.removeFromHistory(e.animeId) } }.padding(8.dp),
-                            )
+    Box(Modifier.fillMaxSize()) {
+        PullToRefreshBox(
+            isRefreshing = signedIn && lists.loading && lists.loaded, onRefresh = { if (signedIn) vm.refresh() },
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            LazyVerticalGrid(
+                GridCells.Fixed(3), modifier = Modifier.fillMaxSize().statusBarsPadding(),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 120.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                item(span = { GridItemSpan(3) }, key = "head") { Header(account) }
+
+                if (recent.isNotEmpty()) item(span = { GridItemSpan(3) }, key = "continue") {
+                    ContinueStrip(recent, open, onForget = { vm.forget(it) })
+                }
+
+                if (signedIn) {
+                    item(span = { GridItemSpan(3) }, key = "tabs") {
+                        StatusTabs(vm.status, { lists.count(it) }, lists.loaded) { vm.status = it }
+                    }
+                    when {
+                        !lists.loaded && lists.error != null -> item(span = { GridItemSpan(3) }) {
+                            EmptyState("Не получилось загрузить списки", lists.error, Icons.Rounded.WifiOff, action = "Повторить", onAction = vm::refresh)
+                        }
+                        !lists.loaded -> items(6, span = { GridItemSpan(if (wide) 3 else 1) }) {
+                            if (wide) Box(Modifier.fillMaxWidth().height(104.dp).clip(RoundedCornerShape(20.dp)).shimmer())
+                            else PosterCardSkeleton(width = null)
+                        }
+                        items.isEmpty() -> item(span = { GridItemSpan(3) }) { EmptyList(vm.status) }
+                        wide -> items(items, key = { "w${it.entry.seriesId}" }, span = { GridItemSpan(3) }, contentType = { "wide" }) { t ->
+                            WideRow(t, Modifier.animateItem(), onOpen = { open(stubOf(t), "lists") }, onEdit = { editing = t }, onBump = { vm.bump(t) })
+                        }
+                        else -> items(items, key = { "g${it.entry.seriesId}" }, contentType = { "card" }) { t ->
+                            GridCard(t, Modifier.animateItem(), onOpen = { open(stubOf(t), "lists") }, onEdit = { editing = t })
+                        }
+                    }
+                } else {
+                    if (account == AccountState.SignedOut) item(span = { GridItemSpan(3) }, key = "signin") { SignInCard { signIn = true } }
+                    if (favorites.isNotEmpty()) {
+                        item(span = { GridItemSpan(3) }) { Text("Избранное на этом телефоне", style = Type.Section, color = Nf.Text, modifier = Modifier.padding(top = 10.dp)) }
+                        items(favorites, key = { "f-${it.id}" }) { f ->
+                            val stub = AnimeStub(f.id, f.title, f.poster, f.kind, f.year, f.score)
+                            PosterCard(stub, "library-f", { open(stub, "library-f") }, Modifier.animateItem(), width = null)
                         }
                     }
                 }
             }
         }
 
-        if (signedIn) {
-            item(span = { GridItemSpan(3) }) { StatusTabs(vm.status, vm::select) }
-            when (val l = vm.items) {
-                Load.Loading -> items(9) { PosterCardSkeleton(width = null) }
-                is Load.Error -> item(span = { GridItemSpan(3) }) {
-                    EmptyState("Не получилось загрузить список", l.message, Icons.Rounded.WifiOff, action = "Повторить", onAction = vm::refresh)
-                }
-                is Load.Ready -> if (l.value.isEmpty()) item(span = { GridItemSpan(3) }) {
-                    EmptyState("Здесь пусто", "Добавляйте тайтлы в «${vm.status.title}» кнопкой закладки на их странице", Icons.Rounded.BookmarkBorder, Modifier.padding(top = 10.dp))
-                } else items(l.value, key = { "l-${it.entry.seriesId}" }, contentType = { "card" }) { item ->
-                    Column(Modifier.animateItem()) {
-                        PosterCard(item.stub, "library-l", { open(item.stub, "library-l") }, width = null)
-                        val e = item.entry
-                        // Ongoing titles have no total on the site ("3 / ?"): show the count alone.
-                        val total = e.total ?: item.series?.numberOfEpisodes?.takeIf { it > 0 && item.series.airing.not() }
-                        if (total != null && total > 0) {
-                            Spacer(Modifier.height(5.dp))
-                            Box(Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(Nf.Line)) {
-                                Box(Modifier.fillMaxWidth((e.watched / total.toFloat()).coerceIn(0f, 1f)).fillMaxHeight().clip(CircleShape).background(Nf.Violet))
-                            }
-                            Text("${e.watched} из $total", style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 3.dp))
-                        } else if (e.watched > 0) {
-                            Text("Просмотрено: ${e.watched}", style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 4.dp))
-                        }
-                    }
-                }
-            }
-        } else {
-            if (account == AccountState.SignedOut) item(span = { GridItemSpan(3) }) {
-                Row(
-                    Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Nf.Violet.copy(alpha = 0.1f))
-                        .border(1.dp, Nf.Violet.copy(alpha = 0.25f), RoundedCornerShape(22.dp)).pressable(0.98f) { signIn = true }.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(Modifier.size(42.dp).clip(CircleShape).background(Nf.Violet.copy(alpha = 0.18f)), contentAlignment = Alignment.Center) {
-                        Icon(Icons.AutoMirrored.Rounded.Login, null, tint = Nf.Violet, modifier = Modifier.size(21.dp))
-                    }
-                    Spacer(Modifier.width(14.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("Войдите в Anime 365", style = Type.Title, color = Nf.Text)
-                        Text("Здесь появятся ваши списки с сайта, а серии начнут отмечаться сами", style = Type.Caption, color = Nf.TextDim)
-                    }
-                }
-            }
-            if (favorites.isEmpty() && recent.isEmpty()) item(span = { GridItemSpan(3) }) {
-                EmptyState(
-                    "Здесь будет ваша полка", "Начатые тайтлы и избранное появятся на этом экране",
-                    Icons.Rounded.BookmarkBorder, Modifier.padding(top = 40.dp),
-                )
-            }
-            if (favorites.isNotEmpty()) {
-                item(span = { GridItemSpan(3) }) { Text("Избранное", style = Type.Section, color = Nf.Text, modifier = Modifier.padding(top = 14.dp)) }
-                items(favorites, key = { "f-${it.id}" }) { f ->
-                    val stub = AnimeStub(f.id, f.title, f.poster, f.kind, f.year, f.score)
-                    PosterCard(stub, "library-f", { open(stub, "library-f") }, Modifier.animateItem(), width = null)
-                }
-            }
+        androidx.compose.animation.AnimatedVisibility(
+            vm.notice != null, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 96.dp),
+        ) {
+            Text(
+                vm.notice.orEmpty(), style = Type.Label, color = Nf.Text,
+                modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(Nf.SurfaceHi).border(1.dp, Nf.Line, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            )
         }
+    }
+
+    editing?.let { t ->
+        // Read the live entry: the editor's own changes land in the shared lists and come back here.
+        val live = lists.titles[t.entry.seriesId] ?: t
+        ListEditor(
+            title = live.series?.title ?: live.entry.title.substringBefore(" / "),
+            record = if (lists.titles.containsKey(t.entry.seriesId)) ListRecord(live.status, live.entry.watched, live.entry.score) else ListRecord(null, 0, null),
+            total = live.total, aired = live.aired, isMovie = live.series?.isMovie == true,
+            onDismiss = { editing = null },
+            onChange = { s, w, sc -> vm.change(live, s, w, sc) },
+        )
     }
     if (signIn) SignInSheet(onDismiss = { signIn = false }, onDone = { signIn = false })
 }
 
+private fun stubOf(t: ListedTitle): AnimeStub = t.series?.stub() ?: AnimeStub(t.entry.seriesId.toString(), t.entry.title, null)
+
 @Composable
-private fun StatusTabs(current: ListStatus, onPick: (ListStatus) -> Unit) {
+private fun Header(account: AccountState) {
+    Row(Modifier.padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Списки", style = Type.Display, color = Nf.Text, modifier = Modifier.weight(1f))
+        (account as? AccountState.SignedIn)?.profile?.let { p ->
+            Row(
+                Modifier.clip(CircleShape).background(Nf.Surface).padding(start = 4.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PosterImage(p.avatarUrl, Modifier.size(28.dp).clip(CircleShape))
+                Spacer(Modifier.width(8.dp))
+                Text(p.name, style = Type.Label, color = Nf.TextDim, maxLines = 1, modifier = Modifier.widthIn(max = 140.dp), overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+/** Status pills with counts; the open one takes its list's colour. */
+@Composable
+private fun StatusTabs(current: ListStatus, count: (ListStatus) -> Int, loaded: Boolean, onPick: (ListStatus) -> Unit) {
     LazyRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 8.dp),
-        modifier = Modifier.padding(top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 6.dp),
+        modifier = Modifier.padding(top = 6.dp),
     ) {
-        items(ListStatus.entries) { s ->
+        items(ListOrder) { s ->
             val on = s == current
-            val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.2f) else Nf.Surface, label = "st")
-            Text(
-                s.title, style = Type.Label, color = if (on) Nf.Violet else Nf.TextDim,
-                modifier = Modifier.clip(CircleShape).background(bg)
-                    .border(1.dp, if (on) Nf.Violet.copy(alpha = 0.45f) else Nf.Line, CircleShape)
-                    .clickable { onPick(s) }.padding(horizontal = 14.dp, vertical = 9.dp),
+            val c = statusColor(s)
+            val bg by animateColorAsState(if (on) c.copy(alpha = 0.18f) else Nf.Surface, label = "tb")
+            Row(
+                Modifier.clip(CircleShape).background(bg).border(1.dp, if (on) c.copy(alpha = 0.55f) else Nf.Line, CircleShape)
+                    .pressable(0.95f) { onPick(s) }.padding(start = 12.dp, end = 14.dp, top = 9.dp, bottom = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(statusIcon(s), null, tint = if (on) c else Nf.TextMute, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(7.dp))
+                Text(s.title, style = Type.Label, color = if (on) Nf.Text else Nf.TextDim)
+                if (loaded) Text("  ${count(s)}", style = Type.Label, color = if (on) c else Nf.TextMute)
+            }
+        }
+    }
+}
+
+/**
+ * A title in progress: poster, how far along, a bar in its list's colour, a "new episodes" mark, and for titles
+ * being watched a +1 button that moves the counter on Anime 365.
+ */
+@Composable
+private fun WideRow(t: ListedTitle, modifier: Modifier, onOpen: () -> Unit, onEdit: () -> Unit, onBump: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    val c = statusColor(t.status)
+    Row(
+        modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Nf.Surface)
+            .combinedClickable(onClick = onOpen, onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onEdit() })
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box {
+            PosterImage(t.series?.posterUrlSmall ?: t.series?.posterUrl, Modifier.width(62.dp).aspectRatio(0.7f).clip(RoundedCornerShape(12.dp)))
+            if (t.status == ListStatus.Watching && t.behind > 0) Text(
+                "+${t.behind}", style = Type.Caption.copy(fontSize = 11.sp), color = Nf.Ink,
+                modifier = Modifier.align(Alignment.TopStart).padding(4.dp).clip(RoundedCornerShape(7.dp)).background(Nf.Mint).padding(horizontal = 5.dp, vertical = 1.dp),
             )
         }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(t.series?.title ?: t.entry.title.substringBefore(" / "), style = Type.Title.copy(fontSize = 15.sp), color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (t.status == ListStatus.Watching && t.behind > 0) Text(
+                if (t.behind == 1) "Новая серия" else "Новых серий: ${t.behind}",
+                style = Type.Caption, color = Nf.Mint, modifier = Modifier.padding(top = 3.dp),
+            )
+            Text(ListProgress.line(t), style = Type.Caption, color = Nf.TextMute, maxLines = 1, modifier = Modifier.padding(top = 3.dp))
+            ListProgress.fraction(t)?.let { f ->
+                Box(Modifier.padding(top = 9.dp).fillMaxWidth().height(4.dp).clip(CircleShape).background(Nf.Line)) {
+                    Box(Modifier.fillMaxWidth(f).fillMaxHeight().clip(CircleShape).background(c))
+                }
+            }
+        }
+        if (t.status == ListStatus.Watching && t.series?.isMovie != true) {
+            val canBump = t.total?.let { t.entry.watched < it } ?: true
+            Spacer(Modifier.width(10.dp))
+            Box(
+                Modifier.size(44.dp).clip(CircleShape).background(if (canBump) c.copy(alpha = 0.16f) else Nf.SurfaceHi)
+                    .pressable(0.88f, enabled = canBump) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onBump() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.Add, "Отметить серию", tint = if (canBump) c else Nf.TextMute, modifier = Modifier.size(16.dp))
+                    Text("1", style = Type.Title.copy(fontSize = 14.sp), color = if (canBump) c else Nf.TextMute)
+                }
+            }
+        }
+    }
+}
+
+/** Planned and finished titles: a poster grid. Finished ones carry the viewer's own score. */
+@Composable
+private fun GridCard(t: ListedTitle, modifier: Modifier, onOpen: () -> Unit, onEdit: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    Column(modifier.combinedClickable(onClick = onOpen, onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onEdit() })) {
+        Box {
+            PosterImage(t.series?.posterUrl ?: t.series?.posterUrlSmall, Modifier.fillMaxWidth().aspectRatio(0.7f).clip(PosterShape))
+            val mine = t.entry.score
+            if (t.status == ListStatus.Completed && mine != null) Row(
+                Modifier.align(Alignment.TopStart).padding(7.dp).clip(RoundedCornerShape(9.dp)).background(Color(0xD9090910))
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.Star, null, tint = Nf.Amber, modifier = Modifier.size(11.dp))
+                Spacer(Modifier.width(3.dp))
+                Text("$mine", style = Type.Caption, color = Nf.Amber)
+            } else ScoreBadge(t.series?.score, Modifier.align(Alignment.TopStart).padding(7.dp))
+            if (t.airing) Text(
+                "Онгоинг", style = Type.Caption.copy(fontSize = 10.sp), color = Nf.Ink,
+                modifier = Modifier.align(Alignment.BottomStart).padding(7.dp).clip(RoundedCornerShape(7.dp)).background(Nf.Mint).padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(t.series?.title ?: t.entry.title.substringBefore(" / "), style = Type.Label, color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        val line = ListProgress.line(t)
+        if (line.isNotBlank()) Text(line, style = Type.Caption, color = Nf.TextMute, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
+    }
+}
+
+@Composable
+private fun EmptyList(s: ListStatus) {
+    val (title, text) = when (s) {
+        ListStatus.Watching -> "Пока ничего не смотрите" to "Начните серию — тайтл сам попадёт сюда, когда вы её досмотрите"
+        ListStatus.Planned -> "Список планов пуст" to "Добавляйте тайтлы кнопкой закладки на их странице"
+        ListStatus.Completed -> "Пока ничего не досмотрено" to "Здесь будут досмотренные тайтлы и ваши оценки"
+        ListStatus.OnHold -> "Ничего не отложено" to "Отложите тайтл, если хотите вернуться к нему позже"
+        ListStatus.Dropped -> "Ничего не брошено" to "Сюда попадут тайтлы, которые не зашли"
+    }
+    Column(Modifier.fillMaxWidth().padding(top = 36.dp, start = 24.dp, end = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(60.dp).clip(CircleShape).background(statusColor(s).copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+            Icon(statusIcon(s), null, tint = statusColor(s), modifier = Modifier.size(28.dp))
+        }
+        Text(title, style = Type.Title, color = Nf.Text, modifier = Modifier.padding(top = 16.dp))
+        Text(text, style = Type.Body, color = Nf.TextDim, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.padding(top = 6.dp))
+    }
+}
+
+/** Episodes started on this phone, newest first. The cross forgets a title entirely (progress and studio). */
+@Composable
+private fun ContinueStrip(recent: List<WatchEntry>, open: OpenAnime, onForget: (String) -> Unit) {
+    Column(Modifier.padding(top = 4.dp)) {
+        Text("Продолжить просмотр", style = Type.Section, color = Nf.Text, modifier = Modifier.padding(top = 6.dp, bottom = 12.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(end = 4.dp)) {
+            items(recent, key = { it.animeId }) { e ->
+                val stub = AnimeStub(e.animeId, e.title, e.poster)
+                Row(
+                    Modifier.animateItem().width(260.dp).clip(RoundedCornerShape(20.dp)).background(Nf.Surface)
+                        .pressable(0.98f) { open(stub, "library-h") }.padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    PosterImage(e.poster, Modifier.sharedPoster("poster/library-h/${e.animeId}", RoundedCornerShape(12.dp)).width(50.dp).aspectRatio(0.7f).clip(RoundedCornerShape(12.dp)))
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(e.title, style = Type.Label, color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(3.dp))
+                        Text(if (e.finished) "Серия ${e.episode} просмотрена" else "Серия ${e.episode} · ${remaining(e)}", style = Type.Caption, color = Nf.TextMute)
+                        Spacer(Modifier.height(8.dp))
+                        Box(Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(Nf.Line)) {
+                            Box(Modifier.fillMaxWidth(e.progress).fillMaxHeight().clip(CircleShape).background(Nf.Violet))
+                        }
+                    }
+                    Icon(
+                        Icons.Rounded.Close, "Забыть тайтл", tint = Nf.TextMute,
+                        modifier = Modifier.padding(start = 4.dp).size(32.dp).clip(CircleShape).pressable(0.85f) { onForget(e.animeId) }.padding(8.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SignInCard(onClick: () -> Unit) {
+    Column(
+        Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(24.dp))
+            .background(androidx.compose.ui.graphics.Brush.linearGradient(listOf(Nf.Violet.copy(alpha = 0.16f), Nf.Pink.copy(alpha = 0.07f), Nf.Surface)))
+            .border(1.dp, Nf.Violet.copy(alpha = 0.22f), RoundedCornerShape(24.dp)).padding(18.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ListOrder.forEach { s ->
+                Box(Modifier.size(34.dp).clip(CircleShape).background(statusColor(s).copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
+                    Icon(statusIcon(s), null, tint = statusColor(s), modifier = Modifier.size(18.dp))
+                }
+            }
+        }
+        Text("Ваши списки Anime 365", style = Type.Title, color = Nf.Text, modifier = Modifier.padding(top = 14.dp))
+        Text(
+            "Смотрю, запланировано, просмотрено — с прогрессом по сериям и оценками. Войдите, и они появятся здесь.",
+            style = Type.Caption, color = Nf.TextDim, modifier = Modifier.padding(top = 4.dp, bottom = 14.dp),
+        )
+        PrimaryButton("Войти в Anime 365", onClick = onClick)
     }
 }

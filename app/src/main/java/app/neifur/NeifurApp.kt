@@ -12,6 +12,7 @@ import app.neifur.core.buildHttpClient
 import app.neifur.data.Prefs
 import app.neifur.data.SavedAnime
 import app.neifur.data.a365.Account
+import app.neifur.data.a365.Lists
 import app.neifur.data.a365.Anime365
 import app.neifur.data.a365.Episode
 import app.neifur.data.a365.Series
@@ -51,6 +52,7 @@ class Container(app: Application) {
     val shikimori = ShikimoriApi(http)
     val a365 = Anime365(app, http, prefs)
     val account = Account(a365, scope)
+    val lists = Lists(a365, account, scope)
 
     val stubs = HashMap<String, AnimeStub>()
     fun remember(stub: AnimeStub) { stubs[stub.id] = stub }
