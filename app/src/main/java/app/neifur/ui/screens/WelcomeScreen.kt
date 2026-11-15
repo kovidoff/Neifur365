@@ -120,7 +120,10 @@ fun WelcomeScreen() {
 
     Box(Modifier.fillMaxSize().background(Nf.Ink)) {
         Aurora(progress)
-        Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
+        // The keyboard simply covers the bottom block (dots, "Позже"): nothing jumps or disappears. Only the
+        // sign-in form moves, by the part of the keyboard that reaches above that block.
+        var belowPager by remember { mutableIntStateOf(0) }
+        Column(Modifier.fillMaxSize().systemBarsPadding()) {
             Row(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                 Wordmark(Modifier.graphicsLayer { alpha = progress.coerceIn(0f, 1f) })
                 Spacer(Modifier.weight(1f))
@@ -138,15 +141,11 @@ fun WelcomeScreen() {
                     when (page) {
                         0 -> IntroPage(vm.airing)
                         1 -> KindPage(vm, visible = pager.settledPage == 1 || pager.targetPage == 1)
-                        else -> AccountPage(signIn, visible = pager.settledPage == 2 || pager.targetPage == 2)
+                        else -> AccountPage(signIn, visible = pager.settledPage == 2 || pager.targetPage == 2, belowPx = belowPager)
                     }
                 }
             }
-            // While typing in the sign-in form the keyboard takes this space: the dots and "Позже" step aside
-            // instead of riding up on top of it and covering the fields.
-            val typing = WindowInsets.isImeVisible
-            AnimatedVisibility(!typing, enter = expandVertically(tween(220)) + fadeIn(tween(220)), exit = shrinkVertically(tween(180)) + fadeOut(tween(120))) {
-            Column(Modifier.padding(horizontal = 24.dp).padding(top = 10.dp, bottom = 14.dp)) {
+            Column(Modifier.onSizeChanged { belowPager = it.height }.padding(horizontal = 24.dp).padding(top = 10.dp, bottom = 14.dp)) {
                 Dots(pager, Modifier.align(Alignment.CenterHorizontally).padding(bottom = 18.dp))
                 val last = pager.currentPage == PAGES - 1
                 val signedIn = signIn.profile != null
@@ -163,7 +162,6 @@ fun WelcomeScreen() {
                         if (l) vm.finish() else scope.launch { pager.animateScrollToPage(pager.currentPage + 1) }
                     }
                 }
-            }
             }
         }
     }
@@ -411,13 +409,19 @@ private fun MarqueeRow(names: List<String>, dpPerSecond: Float, reverse: Boolean
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun AccountPage(vm: SignInVm, visible: Boolean) {
+private fun AccountPage(vm: SignInVm, visible: Boolean, belowPx: Int) {
     // Scrolls when the keyboard is up; otherwise sits at the bottom like the other pages.
     val scroll = rememberScrollState()
     val typing = WindowInsets.isImeVisible
-    // Keyboard up: bring the fields and the sign-in button into view above it.
-    LaunchedEffect(typing) { if (typing) { kotlinx.coroutines.delay(120); scroll.animateScrollTo(scroll.maxValue) } }
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    // Keyboard up: the form ends right at its top edge, with the fields and the button in view.
+    // The room shrinks frame by frame as the keyboard slides in; follow it so the form rides up with the keyboard.
+    // Only the keyboard changes maxValue, so the viewer can still scroll by hand while typing.
+    LaunchedEffect(typing) {
+        if (typing) snapshotFlow { scroll.maxValue }.collect { scroll.scrollTo(it) }
+    }
+    // The keyboard's height above the bottom block, applied while laying out (no recomposition per frame).
+    val keyboard = WindowInsets.ime.exclude(WindowInsets.navigationBars).exclude(WindowInsets(bottom = belowPx))
+    BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(keyboard)) {
         Column(
             Modifier.fillMaxWidth().verticalScroll(scroll).heightIn(min = maxHeight).padding(horizontal = 24.dp),
             verticalArrangement = Arrangement.Bottom,
