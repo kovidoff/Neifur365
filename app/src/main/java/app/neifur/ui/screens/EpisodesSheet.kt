@@ -102,9 +102,15 @@ fun EpisodesSheet(
     state: PlayState, history: List<WatchEntry>, isMovie: Boolean, accent: Color, startPage: SheetPage,
     onDismiss: () -> Unit, onPlay: (Int) -> Unit, onPick: (Studio) -> Unit, onRetry: () -> Unit,
     onRange: (List<Episode>) -> Unit,
+    /** Opened by the first play of a title: the picker starts this episode in the studio chosen. */
+    startFor: Int? = null, preferred: TranslationKind = TranslationKind.VoiceRu,
+    onStart: (Studio, Int) -> Unit = { _, _ -> },
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var page by remember { mutableStateOf(startPage) }
+    // Which episode the picker is choosing for, when the title has no studio yet.
+    var choosingFor by remember { mutableStateOf(startFor) }
+    val openedOnPicker = startPage == SheetPage.Translations
     ModalBottomSheet(
         onDismissRequest = onDismiss, sheetState = sheetState, containerColor = Nf.Surface, contentColor = Nf.Text,
         dragHandle = { Box(Modifier.padding(top = 10.dp, bottom = 6.dp).size(40.dp, 4.dp).clip(CircleShape).background(Nf.Line)) },
@@ -119,11 +125,21 @@ fun EpisodesSheet(
                 },
             ) { p ->
                 when (p) {
-                    SheetPage.Episodes -> EpisodesPage(state, history, isMovie, accent, onPlay, onRetry, onRange) { page = SheetPage.Translations }
+                    SheetPage.Episodes -> EpisodesPage(
+                        state, history, isMovie, accent,
+                        onPlay = { i ->
+                            if ((state as? PlayState.Ready)?.started == false) { choosingFor = i; page = SheetPage.Translations } else onPlay(i)
+                        },
+                        onRetry = onRetry, onRange = onRange,
+                    ) { choosingFor = null; page = SheetPage.Translations }
                     SheetPage.Translations -> TranslationsPage(
-                        state as? PlayState.Ready, accent,
-                        onBack = { page = SheetPage.Episodes },
-                        onPick = { onPick(it); page = SheetPage.Episodes },
+                        state as? PlayState.Ready, accent, choosingFor, preferred,
+                        showBack = !(openedOnPicker && choosingFor == startFor),
+                        onBack = { choosingFor = null; page = SheetPage.Episodes },
+                        onPick = { s ->
+                            val i = choosingFor
+                            if (i != null) onStart(s, i) else { onPick(s); page = SheetPage.Episodes }
+                        },
                     )
                 }
             }
@@ -174,7 +190,8 @@ private fun Episodes(
     val studio = state.studio
 
     Column(Modifier.fillMaxSize()) {
-        StudioSummary(state, accent, Modifier.padding(horizontal = 20.dp), onTranslations)
+        if (state.started) StudioSummary(state, accent, Modifier.padding(horizontal = 20.dp), onTranslations)
+        else ChooseHint(accent, Modifier.padding(horizontal = 20.dp), onTranslations)
         if (ranges.size > 1) LazyRow(
             contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.padding(top = 14.dp),
@@ -201,6 +218,24 @@ private fun Episodes(
                     missingNote = if (missing) "Нет у ${studio!!.author}" + (state.fallbackFor(ep)?.let { " · включится ${it.author}" } ?: "") else null,
                 ) { onPlay(i) }
             }
+        }
+    }
+}
+
+/** Shown above the episodes of a title with no studio yet: what happens when you tap one. */
+@Composable
+private fun ChooseHint(accent: Color, modifier: Modifier, onClick: () -> Unit) {
+    Row(
+        modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Nf.SurfaceHi).pressable(0.98f, onClick = onClick).padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(40.dp).clip(CircleShape).background(accent.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+            Icon(Icons.Rounded.SwapHoriz, null, tint = accent, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Перевод ещё не выбран", style = Type.Title, color = Nf.Text)
+            Text("Нажмите на серию — предложим, в чём её смотреть", style = Type.Caption, color = Nf.TextMute)
         }
     }
 }
@@ -315,28 +350,51 @@ private fun uploaded(s: String?): String? = runCatching {
 
 /**
  * The studio picker: kinds as Anime 365 names them, and in each the studios with the most episodes first.
- * Every row shows which episodes that studio has, so a gap (an episode it never uploaded) is visible up front.
+ * Every row shows which episodes that studio has. With [startFor] it is the first-play question "В чём смотреть?":
+ * studios that have that episode come first, the rest are shown but can't start it, and a tap starts playback.
  */
 @Composable
-private fun TranslationsPage(state: PlayState.Ready?, accent: Color, onBack: () -> Unit, onPick: (Studio) -> Unit) {
+private fun TranslationsPage(
+    state: PlayState.Ready?, accent: Color, startFor: Int?, preferred: TranslationKind, showBack: Boolean,
+    onBack: () -> Unit, onPick: (Studio) -> Unit,
+) {
     val groups = state?.studios.orEmpty()
     val kinds = groups.keys.toList()
-    var kind by remember { mutableStateOf(state?.studio?.kind?.takeIf { it in kinds } ?: kinds.firstOrNull()) }
+    val ep = startFor?.let { state?.episodes?.getOrNull(it) }
+    var kind by remember(kinds) {
+        mutableStateOf(state?.studio?.kind?.takeIf { it in kinds } ?: preferred.takeIf { it in kinds } ?: kinds.firstOrNull())
+    }
     val scope = state?.scope.orEmpty()
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.padding(start = 12.dp, end = 22.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(40.dp).clip(CircleShape).pressable(0.85f, onClick = onBack), contentAlignment = Alignment.Center) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "К сериям", tint = Nf.Text, modifier = Modifier.size(22.dp))
+        Row(Modifier.padding(start = if (showBack) 12.dp else 22.dp, end = 22.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (showBack) {
+                Box(Modifier.size(40.dp).clip(CircleShape).pressable(0.85f, onClick = onBack), contentAlignment = Alignment.Center) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "К сериям", tint = Nf.Text, modifier = Modifier.size(22.dp))
+                }
+                Spacer(Modifier.width(6.dp))
             }
-            Spacer(Modifier.width(6.dp))
             Column {
-                Text("Перевод", style = Type.Display, color = Nf.Text)
+                Text(if (ep != null) "В чём смотреть?" else "Перевод", style = Type.Display, color = Nf.Text)
                 Text(
-                    if (state != null && state.episodes.size > scope.size) "Серии посчитаны для ${Studios.ranges(scope)} · выбор запомнится для тайтла"
-                    else "Выбор запомнится для этого тайтла",
+                    when {
+                        ep != null && (state?.episodes?.size ?: 0) > 1 -> "${ep.label} · выбор запомнится для следующих серий"
+                        ep != null -> "Выбор запомнится для этого тайтла"
+                        state != null && state.episodes.size > scope.size -> "Серии посчитаны для ${Studios.ranges(scope)} · выбор запомнится для тайтла"
+                        else -> "Выбор запомнится для этого тайтла"
+                    },
                     style = Type.Caption, color = Nf.TextMute,
                 )
             }
+        }
+        if (state?.studios == null) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                repeat(4) { Box(Modifier.fillMaxWidth().height(64.dp).clip(RoundedCornerShape(16.dp)).shimmer()) }
+            }
+            return@Column
+        }
+        if (kinds.isEmpty()) {
+            EmptyState("Переводов пока нет", state.trError ?: "На Anime 365 для этого тайтла ещё ничего не загрузили")
+            return@Column
         }
         LazyRow(
             contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -352,7 +410,7 @@ private fun TranslationsPage(state: PlayState.Ready?, accent: Color, onBack: () 
                 ) {
                     Icon(kindIcon(k), null, tint = if (on) accent else Nf.TextMute, modifier = Modifier.size(15.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("${k.short} · ${groups[k]?.size ?: 0}", style = Type.Label, color = if (on) accent else Nf.TextDim)
+                    Text("${k.title} · ${groups[k]?.size ?: 0}", style = Type.Label, color = if (on) accent else Nf.TextDim)
                 }
             }
         }
@@ -360,28 +418,39 @@ private fun TranslationsPage(state: PlayState.Ready?, accent: Color, onBack: () 
             "Серия как в оригинале: японский звук, без озвучки и субтитров",
             style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(horizontal = 22.dp, vertical = 4.dp),
         )
+        val list = groups[kind].orEmpty().let { l -> if (ep != null) l.sortedByDescending { it.has(ep.id) } else l }
         LazyColumn(contentPadding = PaddingValues(top = 6.dp, bottom = 28.dp)) {
-            items(groups[kind].orEmpty(), key = { it.key }) { s ->
-                val on = s.key == state?.studio?.key
+            items(list, key = { it.key }) { s ->
+                val on = s.key == state.studio?.key
+                val lacks = ep != null && !s.has(ep.id)
                 Column(
                     Modifier.padding(horizontal = 12.dp, vertical = 2.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp))
                         .background(if (on) accent.copy(alpha = 0.10f) else Color.Transparent)
-                        .clickable { onPick(s) }.padding(horizontal = 12.dp, vertical = 12.dp),
+                        .clickable(enabled = !lacks) { onPick(s) }.padding(horizontal = 12.dp, vertical = 12.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(s.author, style = Type.Title, color = if (on) accent else Nf.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (s.people.isNotEmpty()) Text(
-                                s.people.joinToString(", "), style = Type.Caption, color = Nf.TextMute, maxLines = 1,
-                                overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp),
-                            )
+                            Text(s.author, style = Type.Title, color = if (on) accent else if (lacks) Nf.TextMute else Nf.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            when {
+                                lacks -> Text("Нет ${ep!!.label.lowercase()}", style = Type.Caption, color = Nf.Amber.copy(alpha = 0.8f), modifier = Modifier.padding(top = 2.dp))
+                                s.people.isNotEmpty() -> Text(
+                                    s.people.joinToString(", "), style = Type.Caption, color = Nf.TextMute, maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp),
+                                )
+                            }
                         }
                         Spacer(Modifier.width(10.dp))
-                        if (s.qualityLabel.isNotBlank()) Tag(s.qualityLabel, if (s.bestHeight >= 1080) Nf.Mint else Nf.TextDim)
-                        if (on) Icon(Icons.Rounded.Check, null, tint = accent, modifier = Modifier.padding(start = 10.dp).size(20.dp))
+                        if (s.qualityLabel.isNotBlank()) Tag(s.qualityLabel, if (s.bestHeight >= 1080 && !lacks) Nf.Mint else Nf.TextDim)
+                        when {
+                            on -> Icon(Icons.Rounded.Check, null, tint = accent, modifier = Modifier.padding(start = 10.dp).size(20.dp))
+                            ep != null && !lacks -> Box(
+                                Modifier.padding(start = 10.dp).size(30.dp).clip(CircleShape).background(accent.copy(alpha = 0.16f)),
+                                contentAlignment = Alignment.Center,
+                            ) { Icon(Icons.Rounded.PlayArrow, "Смотреть", tint = accent, modifier = Modifier.size(18.dp)) }
+                        }
                     }
                     if (scope.size > 1) {
-                        CoverageBar(s, scope, if (on) accent else accent.copy(alpha = 0.6f), Modifier.padding(top = 10.dp), height = 5.dp)
+                        CoverageBar(s, scope, if (lacks) Nf.TextMute else if (on) accent else accent.copy(alpha = 0.6f), Modifier.padding(top = 10.dp), height = 5.dp)
                         Text(Studios.coverageText(s, scope), style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 5.dp))
                     }
                 }

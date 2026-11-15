@@ -28,7 +28,7 @@ data class Studio(
 object Studios {
     /** Groups a title's translations into studios. Inactive uploads don't count. */
     fun build(translations: List<Translation>): List<Studio> =
-        translations.filter { it.isActive == 1 }.groupBy { it.pickKey }.map { (key, list) ->
+        translations.filter { it.shown }.groupBy { it.pickKey }.map { (key, list) ->
             val first = list.maxBy { it.priority }
             Studio(
                 key = key, kind = first.kind, author = first.author,
@@ -59,7 +59,7 @@ object Studios {
         val ahead = episodes.drop(from.coerceAtLeast(0)).ifEmpty { episodes }
         favourites.sortedByDescending { it.startsWith(preferred.name + "|") }
             .firstNotNullOfOrNull { f -> studios.firstOrNull { it.key == f && it.coverage(ahead) > 0 } }?.let { return it }
-        val order = listOf(preferred) + TranslationKind.entries.filter { it != preferred }
+        val order = listOf(preferred) + TranslationKind.shown.filter { it != preferred }
         for (k in order) {
             val best = studios.filter { it.kind == k }
                 .maxWithOrNull(compareBy<Studio> { it.coverage(ahead) }.thenBy { it.priority })

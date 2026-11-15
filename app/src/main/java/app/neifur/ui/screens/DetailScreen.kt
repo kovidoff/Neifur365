@@ -116,6 +116,13 @@ sealed interface PlayState {
         val studio: Studio?,
         val scope: List<Episode> = episodes,
         val trError: String? = null,
+        /**
+         * The viewer has a studio for this title (picked, or watched it before). Until then nothing is chosen for
+         * them: the first play asks what to watch in.
+         */
+        val started: Boolean = false,
+        /** Number of studios per kind, for the "what's here" line of a title not started yet. */
+        val kinds: Map<TranslationKind, Int> = emptyMap(),
     ) : PlayState {
         val all: List<Studio> get() = studios?.values?.flatten().orEmpty()
 
@@ -279,9 +286,16 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         val studios = Studios.build(synchronized(translations) { translations.toList() })
         val kind = runCatching { TranslationKind.valueOf(c.prefs.preferredKind.first()) }.getOrDefault(TranslationKind.VoiceRu)
         val keep = r.studio?.key?.takeIf { keepChoice }
-        val chosen = studios.firstOrNull { it.key == keep }
+        val started = pickKey != null || r.watchedOnSite > 0 ||
+            c.prefs.history.first().any { it.animeId == seriesId }
+        // A title the viewer hasn't started gets no studio yet: they choose one when they press play.
+        val chosen = if (!started) null else studios.firstOrNull { it.key == keep }
             ?: Studios.choose(studios, pickKey, kind, c.prefs.favouriteAuthors(), scope, scope.indexOfFirst { it.id == r.episodes.getOrNull(r.target)?.id })
-        play = r.copy(studios = Studios.grouped(studios, scope), studio = chosen, scope = scope, trError = null)
+        val grouped = Studios.grouped(studios, scope)
+        play = r.copy(
+            studios = grouped, studio = chosen, scope = scope, trError = null, started = started,
+            kinds = grouped.mapValues { it.value.size },
+        )
     }
 
     private fun rangeOf(eps: List<Episode>, index: Int): List<Episode> {
@@ -292,7 +306,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
     fun select(s: Studio) {
         pickKey = s.key
         val r = play as? PlayState.Ready ?: return
-        play = r.copy(studio = s)
+        play = r.copy(studio = s, started = true)
         viewModelScope.launch { c.prefs.setPick(seriesId ?: return@launch, s.key, s.author) }
     }
 
@@ -303,6 +317,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         (play as? PlayState.Ready)?.let { r ->
             play = r.copy(watchedOnSite = record?.watched ?: 0)
             retarget()
+            if (r.studios != null && !r.started && (record?.watched ?: 0) > 0) applyStudios(keepChoice = true)
         }
     }
 
@@ -321,6 +336,15 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
     fun toggleFavorite() {
         val s = series?.stub() ?: stub ?: return
         viewModelScope.launch { c.prefs.toggleFavorite(s.saved()) }
+    }
+
+    /** The kind a new title's picker opens on: the viewer's setting. */
+    val preferredKind = c.prefs.preferredKind
+
+    /** First play of a title: the studio chosen in the picker becomes the title's, and episode [index] starts. */
+    fun start(context: Context, s: Studio, index: Int) {
+        select(s)
+        play(context, index)
     }
 
     fun play(context: Context, index: Int) {
@@ -401,6 +425,9 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
     val history = remember(allHistory, vm.seriesId) { allHistory.filter { it.animeId == vm.seriesId } }
     val accent = rememberPosterAccent(stub?.poster)
     var sheet by remember { mutableStateOf<SheetPage?>(null) }
+    /** Episode the "В чём смотреть?" picker starts, when a title not started yet is played. */
+    var startFor by remember { mutableStateOf<Int?>(null) }
+    val preferred by vm.preferredKind.collectAsStateWithLifecycle("VoiceRu")
     var listSheet by remember { mutableStateOf(false) }
     val play = vm.play
     val listState = rememberLazyListState()
@@ -418,7 +445,9 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                 item(key = "actions") {
                     Column(Modifier.reveal(2).padding(horizontal = 20.dp).padding(top = 18.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            WatchButton(play, history, anime, isMovie, accent, signedIn, Modifier.weight(1f), { vm.askSignIn = true }) { idx -> vm.play(ctx, idx) }
+                            WatchButton(play, history, anime, isMovie, accent, signedIn, Modifier.weight(1f), { vm.askSignIn = true }) { idx ->
+                                if ((play as? PlayState.Ready)?.started == false) { startFor = idx; sheet = SheetPage.Translations } else vm.play(ctx, idx)
+                            }
                             if (!isMovie) {
                                 Spacer(Modifier.width(10.dp))
                                 SquareAction(Icons.AutoMirrored.Rounded.FormatListBulleted, "Серии") { sheet = SheetPage.Episodes }
@@ -432,7 +461,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                                 SquareAction(if (favorite) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Избранное", tint = if (favorite) accent else Nf.Text, onClick = vm::toggleFavorite)
                             }
                         }
-                        StudioCard(play, vm.record?.status, accent) { sheet = SheetPage.Translations }
+                        StudioCard(play, vm.record?.status, accent) { startFor = null; sheet = SheetPage.Translations }
                     }
                 }
 
@@ -521,8 +550,11 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
         sheet?.let { page ->
             EpisodesSheet(
                 state = play, history = history, isMovie = isMovie, accent = accent, startPage = page,
-                onDismiss = { sheet = null }, onPlay = { idx -> vm.play(ctx, idx) },
+                onDismiss = { sheet = null; startFor = null }, onPlay = { idx -> vm.play(ctx, idx) },
                 onPick = vm::select, onRetry = vm::load, onRange = vm::ensureRange,
+                startFor = startFor,
+                preferred = runCatching { TranslationKind.valueOf(preferred) }.getOrDefault(TranslationKind.VoiceRu),
+                onStart = { s, i -> sheet = null; startFor = null; vm.start(ctx, s, i) },
             )
         }
         if (listSheet) ListSheet(vm.record?.status, accent, onDismiss = { listSheet = false }) { vm.setStatus(it); listSheet = false }
@@ -742,6 +774,7 @@ private fun WatchButton(
         state is PlayState.Error -> "Не удалось загрузить"
         target == null -> if (anime?.status == "anons") "Ещё не вышло" else "Серий пока нет"
         !signedIn -> "Войти и смотреть"
+        ready?.started == false -> if (isMovie || eps.size == 1) "Смотреть" else "Начать просмотр"
         isMovie || eps.size == 1 -> if (resuming) "Продолжить" else "Смотреть"
         resuming -> "Продолжить · серия ${target.number}"
         else -> "Смотреть · серия ${target.number}"
@@ -771,6 +804,34 @@ private fun WatchButton(
 }
 
 /**
+ * For a title not started yet: what Anime 365 has for it, by kind ("Озвучка · 12  Субтитры · 3  RAW").
+ * Nothing is chosen here; tapping opens the picker to look around.
+ */
+@Composable
+private fun Available(r: PlayState.Ready, accent: Color, onClick: () -> Unit) {
+    if (r.kinds.isEmpty()) {
+        Text(r.trError ?: "Переводов пока нет", style = Type.Label, color = Nf.TextMute, modifier = Modifier.padding(start = 4.dp))
+        return
+    }
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(vertical = 6.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            r.kinds.entries.take(4).forEach { (k, n) ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(kindIcon(k), null, tint = accent, modifier = Modifier.size(15.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text(if (k == TranslationKind.Raw) k.short else "${k.short} · $n", style = Type.Label, color = Nf.TextDim, maxLines = 1)
+                }
+            }
+            if (r.kinds.size > 4) Text("ещё ${r.kinds.size - 4}", style = Type.Label, color = Nf.TextMute)
+        }
+        Icon(Icons.Rounded.ChevronRight, null, tint = Nf.TextMute, modifier = Modifier.size(18.dp))
+    }
+}
+
+/**
  * The translation the title plays in, right under the buttons: studio, kind, quality, which episodes it has, and
  * a plain warning when the next episode isn't among them (with what plays instead). Tapping opens the picker.
  */
@@ -780,6 +841,7 @@ private fun StudioCard(state: PlayState, status: ListStatus?, accent: Color, onC
     Column(Modifier.padding(top = 14.dp)) {
         when {
             state is PlayState.Loading -> Box(Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(20.dp)).shimmer())
+            r != null && r.episodes.isNotEmpty() && r.studios != null && !r.started -> Available(r, accent, onClick)
             r != null && r.episodes.isNotEmpty() -> {
                 StudioSummary(r, accent, onClick = onClick)
                 val target = r.episodes.getOrNull(r.target)

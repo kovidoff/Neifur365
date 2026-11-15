@@ -29,7 +29,9 @@ class StudiosTest {
         assertTrue(TranslationKind.Raw in kinds)
         assertTrue(TranslationKind.VoiceUk in kinds)
         assertTrue(TranslationKind.SubJa in kinds)
-        assertTrue(TranslationKind.VoiceOther in kinds)
+        // The site's "other languages" dubs exist in the data but the site doesn't list them, and neither do we.
+        assertTrue(TranslationKind.Hidden in kinds)
+        assertTrue(studios.none { it.kind == TranslationKind.Hidden })
     }
 
     @Test fun oneStudioPerAuthorAndKind() {

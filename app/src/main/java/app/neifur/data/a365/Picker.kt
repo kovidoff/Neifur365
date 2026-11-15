@@ -18,14 +18,14 @@ object Picker {
     fun choose(
         all: List<Translation>, pick: String?, preferred: TranslationKind, favourites: List<String>, quality: Int,
     ): Translation? {
-        val active = all.filter { it.isActive == 1 }
+        val active = all.filter { it.shown }
         if (active.isEmpty()) return null
         val byKey = active.groupBy { it.pickKey }
         pick?.let { k -> byKey[k]?.let { return best(it, quality) } }
         // A studio the viewer chose on other titles, in the preferred kind first.
         favourites.sortedByDescending { it.startsWith(preferred.name + "|") }
             .firstNotNullOfOrNull { byKey[it] }?.let { return best(it, quality) }
-        val order = listOf(preferred) + TranslationKind.entries.filter { it != preferred }
+        val order = listOf(preferred) + TranslationKind.shown.filter { it != preferred }
         for (k in order) {
             val ofKind = active.filter { it.kind == k }
             if (ofKind.isEmpty()) continue
@@ -38,7 +38,7 @@ object Picker {
 
     /** The list a viewer picks from: one row per studio, grouped by kind, most popular first. */
     fun options(all: List<Translation>, quality: Int): Map<TranslationKind, List<Translation>> =
-        all.filter { it.isActive == 1 }.groupBy { it.pickKey }.values
+        all.filter { it.shown }.groupBy { it.pickKey }.values
             .mapNotNull { best(it, quality) }
             .groupBy { it.kind }
             .mapValues { (_, v) -> v.sortedByDescending { it.priority } }

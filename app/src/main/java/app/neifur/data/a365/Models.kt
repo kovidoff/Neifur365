@@ -84,6 +84,9 @@ data class Translation(
 ) {
     val kind: TranslationKind get() = TranslationKind.of(type, typeKind, typeLang)
 
+    /** Translations the site itself lists (it hides its "other languages" dubs). */
+    val shown: Boolean get() = isActive == 1 && kind != TranslationKind.Hidden
+
     /** Studio name without release notes: "Freedub Studio [ТВ] (BD)" → "Freedub Studio". */
     val author: String
         get() = authorsSummary.replace(Regex("""\s*[\[(][^\])]*[\])]"""), "")
@@ -101,21 +104,25 @@ data class Translation(
 }
 
 /**
- * The kinds of translation exactly as Anime 365 lists them (its `type` field), in the site's order.
- * [title] heads a group, [short] fits a chip, [inline] goes after a studio name ("AniLibria · озвучка").
+ * The kinds of translation Anime 365 shows, named as the site names them, ordered for a Russian-speaking viewer.
+ * [Hidden] holds what the site itself doesn't list (its "voiceOther": French, Hindi, Spanish… dubs).
+ * [short] fits a chip, [inline] goes after a studio name ("AniLibria · озвучка").
  */
 enum class TranslationKind(val title: String, val short: String, val inline: String, val isSubs: Boolean = false) {
     VoiceRu("Озвучка", "Озвучка", "озвучка"),
-    SubRu("Русские субтитры", "Субтитры", "субтитры", isSubs = true),
-    Raw("RAW — без перевода", "RAW", "RAW, без перевода"),
+    SubRu("Русские субтитры", "Субтитры", "русские субтитры", isSubs = true),
+    Raw("RAW", "RAW", "RAW, без перевода"),
     VoiceEn("Английская озвучка", "EN озвучка", "англ. озвучка"),
     SubEn("Английские субтитры", "EN субтитры", "англ. субтитры", isSubs = true),
     VoiceUk("Украинская озвучка", "UA озвучка", "укр. озвучка"),
+    SubUk("Украинские субтитры", "UA субтитры", "укр. субтитры", isSubs = true),
     SubJa("Японские субтитры", "JP субтитры", "япон. субтитры", isSubs = true),
-    VoiceOther("Озвучка на других языках", "Другие языки", "озвучка, др. язык"),
-    SubOther("Субтитры на других языках", "Др. субтитры", "субтитры, др. язык", isSubs = true);
+    Hidden("", "", "");
 
     companion object {
+        /** The kinds a viewer can pick from, in display order. */
+        val shown: List<TranslationKind> = entries.filter { it != Hidden }
+
         fun of(type: String, kind: String, lang: String): TranslationKind = when (type) {
             "voiceRu" -> VoiceRu
             "subRu" -> SubRu
@@ -123,14 +130,15 @@ enum class TranslationKind(val title: String, val short: String, val inline: Str
             "voiceEn" -> VoiceEn
             "subEn" -> SubEn
             "voiceUk", "voiceUa" -> VoiceUk
+            "subUk", "subUa" -> SubUk
             "subJa" -> SubJa
-            else -> when {
+            "" -> when {
                 kind == "raw" -> Raw
                 kind == "voice" && lang == "ru" -> VoiceRu
                 kind == "sub" && lang == "ru" -> SubRu
-                kind == "sub" -> SubOther
-                else -> VoiceOther
+                else -> Hidden
             }
+            else -> Hidden
         }
     }
 }
