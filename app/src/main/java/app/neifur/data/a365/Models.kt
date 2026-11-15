@@ -96,9 +96,12 @@ data class Translation(
     /** Identifies "the same translation" across episodes, so a pick made once follows the viewer. */
     val pickKey: String get() = "${kind.name}|${author.lowercase()}"
 
+    /** What can actually be watched: Anime 365 streams up to [MAX_STREAM_HEIGHT], whatever the source file was. */
+    val streamHeight: Int get() = minOf(height, MAX_STREAM_HEIGHT)
+
     val qualityLabel: String
         get() = buildString {
-            if (height > 0) append(height).append('p')
+            if (height > 0) append(streamHeight).append('p')
             when (qualityType) { "bd" -> append(if (isEmpty()) "BD" else " · BD"); "dvd" -> append(if (isEmpty()) "DVD" else " · DVD") }
         }
 }
@@ -142,6 +145,15 @@ enum class TranslationKind(val title: String, val short: String, val inline: Str
         }
     }
 }
+
+/**
+ * The highest picture Anime 365 streams. Its catalog lists the source file's height (2160 for 4K releases), but
+ * the player is only ever given 1080p, 720p and 360p, so labels never promise more than this.
+ */
+const val MAX_STREAM_HEIGHT = 1080
+
+/** The "Наилучшее" quality setting: the highest stream the site gives, with no cap. */
+const val BEST_QUALITY = 9999
 
 @Serializable
 data class EmbedStream(val height: Int = 0, val urls: List<String> = emptyList())

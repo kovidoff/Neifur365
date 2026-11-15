@@ -168,7 +168,7 @@ class SettingsVm(private val c: Container) : ViewModel() {
 fun SettingsScreen(onBack: (() -> Unit)? = null) {
     val vm = nfViewModel { SettingsVm(it) }
     val ctx = LocalContext.current
-    val quality by vm.quality.collectAsStateWithLifecycle(1080)
+    val quality by vm.quality.collectAsStateWithLifecycle(app.neifur.data.a365.BEST_QUALITY)
     val kind by vm.preferredKind.collectAsStateWithLifecycle("VoiceRu")
     val history by vm.history.collectAsStateWithLifecycle(emptyList())
     val subScale by vm.subScale.collectAsStateWithLifecycle(1.0)
@@ -221,8 +221,14 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
 
         item(key = "player") { SectionLabel("Плеер")
         Card {
-            SettingTitle("Качество видео", "Если такого нет у перевода, включится ближайшее ниже")
-            Segmented(listOf(1080 to "1080p", 720 to "720p", 480 to "480p"), quality) { vm.setQuality(it) }
+            SettingTitle(
+                "Качество видео",
+                if (quality == app.neifur.data.a365.BEST_QUALITY) "Самое высокое, что отдаёт Anime 365 — сейчас это 1080p"
+                else "Если такого нет у перевода, включится ближайшее ниже",
+            )
+            Segmented(
+                listOf(app.neifur.data.a365.BEST_QUALITY to "Наилучшее", 1080 to "1080p", 720 to "720p", 480 to "480p"), quality,
+            ) { vm.setQuality(it) }
             Divider()
             SettingTitle("Размер субтитров", null)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

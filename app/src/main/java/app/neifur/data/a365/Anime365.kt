@@ -312,7 +312,9 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
     }
 
     // --- playback --------------------------------------------------------------------------------------
-    suspend fun embed(translationId: Long): Embed = api("/translations/embed/$translationId", Embed.serializer())
+    suspend fun embed(translationId: Long): Embed = api("/translations/embed/$translationId", Embed.serializer()).also { e ->
+        if (dumpDir != null) android.util.Log.d("A365", "embed $translationId: " + e.stream.joinToString { "${it.height}p×${it.urls.size}" })
+    }
 
     /** Subtitle files are served to the signed-in session only, so they're fetched here rather than by the player. */
     suspend fun subtitles(url: String): String = mirrored { base -> text(Request.Builder().url(SitePages.resolve(base, url)).build()) }

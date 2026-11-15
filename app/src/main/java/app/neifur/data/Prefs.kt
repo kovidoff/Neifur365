@@ -73,8 +73,8 @@ class Prefs(private val context: Context) {
     suspend fun setOnboarded() = context.store.edit { it[KEY_ONBOARDED] = "1" }
 
     // --- playback ------------------------------------------------------------------------------------
-    /** Preferred picture height: the player takes the best stream at or below it. */
-    val quality: Flow<Int> = context.store.data.map { it[KEY_QUALITY] ?: 1080 }.distinctUntilChanged()
+    /** Preferred picture height: the player takes the best stream at or below it. Default: the best there is. */
+    val quality: Flow<Int> = context.store.data.map { it[KEY_QUALITY] ?: app.neifur.data.a365.BEST_QUALITY }.distinctUntilChanged()
     suspend fun setQuality(q: Int) = context.store.edit { it[KEY_QUALITY] = q }
 
     /** What a new title starts with: Russian voice-over by default, or subtitles for those who prefer them. */

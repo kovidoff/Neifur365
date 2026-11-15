@@ -22,7 +22,7 @@ data class Studio(
     fun coverage(episodes: List<Episode>): Int = episodes.count { has(it.id) }
 
     val qualityLabel: String
-        get() = listOfNotNull(bestHeight.takeIf { it > 0 }?.let { if (it >= 2160) "4K" else "${it}p" }, "BD".takeIf { hasBd }).joinToString(" · ")
+        get() = listOfNotNull(bestHeight.takeIf { it > 0 }?.let { "${minOf(it, MAX_STREAM_HEIGHT)}p" }, "BD".takeIf { hasBd }).joinToString(" · ")
 }
 
 object Studios {
