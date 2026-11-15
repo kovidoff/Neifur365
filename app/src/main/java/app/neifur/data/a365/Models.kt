@@ -93,6 +93,15 @@ data class Translation(
             .trim().trimStart('-', '–', '—', '·', ' ').trim()
             .ifBlank { authorsSummary.trim() }.ifBlank { "Без названия" }
 
+    /**
+     * The rest of the site's own label, after the studio: the cast in brackets and tags such as [Дубляж] or (BD).
+     * "Sanae (Gryogor & Shinrai Hikaro & yHdra)" → "Gryogor & Shinrai Hikaro & yHdra". The summary is what the
+     * authors and the site chose to show; the separate authors list flattens it (and turns "(BD)" into a name).
+     */
+    val details: String
+        get() = Regex("""[\[(]([^\])]*)[\])]""").findAll(authorsSummary)
+            .map { it.groupValues[1].trim() }.filter { it.isNotEmpty() }.distinct().joinToString(" · ")
+
     /** Identifies "the same translation" across episodes, so a pick made once follows the viewer. */
     val pickKey: String get() = "${kind.name}|${author.lowercase()}"
 

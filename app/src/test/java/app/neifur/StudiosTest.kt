@@ -56,10 +56,18 @@ class StudiosTest {
         assertEquals(TranslationKind.Raw, Studios.choose(studios, null, TranslationKind.Raw, emptyList(), episodes, 0)!!.kind)
     }
 
+    @Test fun detailsComeFromTheSiteSummary() {
+        fun t(summary: String) = Translation(1, summary)
+        assertEquals("Sanae", t("Sanae (Gryogor & Shinrai Hikaro & yHdra)").author)
+        assertEquals("Gryogor & Shinrai Hikaro & yHdra", t("Sanae (Gryogor & Shinrai Hikaro & yHdra)").details)
+        assertEquals("Дубляж · BD", t("Freedub Studio [Дубляж] (BD)").details)
+        assertEquals("", t("OnWave").details)
+    }
+
     @Test fun coverageInWords() {
         val eps = (1..12).map { Episode(id = it.toLong(), episodeFull = "$it серия", episodeInt = it.toDouble()) }
         fun studioWith(vararg have: Int) = Studio(
-            "VoiceRu|x", TranslationKind.VoiceRu, "X", emptyList(),
+            "VoiceRu|x", TranslationKind.VoiceRu, "X", "",
             have.associate { it.toLong() to listOf(Translation(it.toLong(), "X", episodeId = it.toLong())) }, 1080, false, 0,
         )
         assertEquals("все 12 серий", Studios.coverageText(studioWith(*(1..12).toList().toIntArray()), eps))

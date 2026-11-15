@@ -264,7 +264,7 @@ private fun TranslationRow(t: Translation, stream: StreamUi, isFav: Boolean, fav
                     Text(t.author, style = Type.Title.copy(fontSize = 15.sp), color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                     if (on) Badge("Сейчас", kindTint(t.kind))
                 }
-                val people = t.authorsList.joinToString(", ").takeIf { it.isNotBlank() && it != t.author }
+                val people = t.details.takeIf { it.isNotBlank() }
                 Text(
                     listOfNotNull(t.qualityLabel.takeIf { it.isNotBlank() }, people).joinToString(" · "),
                     style = Type.Caption, color = Color(0x80FFFFFF), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp),

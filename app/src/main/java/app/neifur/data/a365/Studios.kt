@@ -8,8 +8,8 @@ data class Studio(
     val key: String,
     val kind: TranslationKind,
     val author: String,
-    /** Voice actors / translators, when the site lists them. */
-    val people: List<String>,
+    /** The rest of the site's label: cast and tags ("Gryogor & yHdra", "Дубляж · BD"), empty when there's none. */
+    val details: String,
     /** The studio's uploads per episode id (several when it has TV and BD versions). */
     val byEpisode: Map<Long, List<Translation>>,
     val bestHeight: Int,
@@ -32,7 +32,8 @@ object Studios {
             val first = list.maxBy { it.priority }
             Studio(
                 key = key, kind = first.kind, author = first.author,
-                people = list.flatMap { it.authorsList }.map { it.trim() }.filter { it.isNotEmpty() && it != first.author }.distinct().take(6),
+                // Uploads of one studio can word it a little differently; the most common wording wins.
+                details = list.map { it.details }.filter { it.isNotEmpty() }.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key.orEmpty(),
                 byEpisode = list.groupBy { it.episodeId },
                 bestHeight = list.maxOf { it.height }, hasBd = list.any { it.qualityType == "bd" },
                 priority = list.maxOf { it.priority },

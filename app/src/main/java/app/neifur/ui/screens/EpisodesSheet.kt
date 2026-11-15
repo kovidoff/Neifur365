@@ -482,8 +482,8 @@ private fun StudioRow(
                 Text(s.author, style = Type.Title, color = if (on) accent else if (lacks) Nf.TextMute else Nf.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 when {
                     lacks -> Text("Нет ${ep!!.label.lowercase()}", style = Type.Caption, color = Nf.Amber.copy(alpha = 0.8f), modifier = Modifier.padding(top = 2.dp))
-                    s.people.isNotEmpty() -> Text(
-                        s.people.joinToString(", "), style = Type.Caption, color = Nf.TextMute, maxLines = 1,
+                    s.details.isNotEmpty() -> Text(
+                        s.details, style = Type.Caption, color = Nf.TextMute, maxLines = 1,
                         overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp),
                     )
                 }

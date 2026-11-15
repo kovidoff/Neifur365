@@ -292,7 +292,7 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
      * (the site answers at most 1000 rows per request, so each batch is paged), three batches at a time.
      */
     suspend fun translations(episodeIds: List<Long>): List<Translation> = coroutineScope {
-        val fields = "id,episodeId,type,typeKind,typeLang,authorsSummary,authorsList,height,priority,isActive,qualityType"
+        val fields = "id,episodeId,type,typeKind,typeLang,authorsSummary,height,priority,isActive,qualityType"
         episodeIds.distinct().chunked(20).map { chunk ->
             async {
                 translationGate.withPermit {
