@@ -187,20 +187,40 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         viewModelScope.launch { c.prefs.history.drop(1).collect { retarget() } }
     }
 
+    /**
+     * Whether this title is under way, known from the phone alone (a saved studio, or history) before anything
+     * loads, so the page reserves the right block from the first frame. Null until checked.
+     */
+    var startedHint by mutableStateOf<Boolean?>(null)
+        private set
+
+    /** Shikimori's details (duration, age rating, next episode) are still on their way. */
+    var extrasPending by mutableStateOf(true)
+        private set
+
+    private suspend fun localStarted(id: String): Boolean =
+        c.prefs.pick(id) != null || c.prefs.history.first().any { it.animeId == id }
+
     fun load() {
         error = null
         viewModelScope.launch {
+            seriesId?.let { startedHint = localStarted(it) }
             runCatching {
                 val sid = seriesId?.toLongOrNull()
                     ?: c.a365.byMyAnimeList(requestedId.removePrefix("mal:").toLong())?.id
                     ?: throw ApiError("Этого тайтла нет на Anime 365")
                 seriesId = sid.toString()
+                if (startedHint == null) startedHint = localStarted(sid.toString())
                 c.a365.series(sid)
             }.onSuccess { s ->
                 series = s
                 if (anime == null) anime = s.asAnime()
+                if (s.myAnimeListId <= 0) extrasPending = false
                 if (s.myAnimeListId > 0) {
-                    launch { runCatching { c.shikimori.detail(s.myAnimeListId.toString()) }.onSuccess { anime = it.copy(russian = s.title) } }
+                    launch {
+                        runCatching { c.shikimori.detail(s.myAnimeListId.toString()) }.onSuccess { anime = it.copy(russian = s.title) }
+                        extrasPending = false
+                    }
                     launch { cast = runCatching { c.shikimori.cast(s.myAnimeListId.toString()) }.getOrNull() }
                 }
                 pickKey = c.prefs.pick(s.id.toString())
@@ -212,7 +232,10 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
 
     private suspend fun setupEpisodes(s: Series) {
         val eps = s.playable
-        play = PlayState.Ready(eps, targetIndex(eps), record?.watched ?: 0, if (eps.isEmpty()) emptyMap() else null, null)
+        play = PlayState.Ready(
+            eps, targetIndex(eps), record?.watched ?: 0, if (eps.isEmpty()) emptyMap() else null, null,
+            started = startedHint == true || (record?.watched ?: 0) > 0,
+        )
         if (eps.isNotEmpty()) loadTranslations()
     }
 
@@ -440,7 +463,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
             LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 56.dp), modifier = Modifier.fillMaxSize()) {
                 item(key = "hero") { Hero(stub, anime, origin, accent, listState) }
 
-                item(key = "meta") { MetaChips(anime, Modifier.reveal(1)) }
+                item(key = "meta") { MetaChips(anime, vm.extrasPending, Modifier.reveal(1)) }
 
                 item(key = "actions") {
                     Column(Modifier.reveal(2).padding(horizontal = 20.dp).padding(top = 18.dp)) {
@@ -461,7 +484,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                                 SquareAction(if (favorite) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Избранное", tint = if (favorite) accent else Nf.Text, onClick = vm::toggleFavorite)
                             }
                         }
-                        StudioCard(play, vm.record?.status, accent) { startFor = null; sheet = SheetPage.Translations }
+                        StudioCard(play, vm.startedHint, vm.record?.status, accent) { startFor = null; sheet = SheetPage.Translations }
                     }
                 }
 
@@ -682,7 +705,7 @@ private fun Hero(stub: AnimeStub?, anime: Anime?, origin: String, accent: Color,
 }
 
 @Composable
-private fun MetaChips(anime: Anime?, modifier: Modifier) {
+private fun MetaChips(anime: Anime?, pending: Boolean, modifier: Modifier) {
     // Same height as the chip row, so the buttons below don't jump when the data arrives.
     if (anime == null) { Spacer(modifier.height(52.dp)); return }
     val chips = buildList {
@@ -694,7 +717,7 @@ private fun MetaChips(anime: Anime?, modifier: Modifier) {
         durationLabel(anime)?.let { add(Triple(Icons.Rounded.Timer, it, null)) }
         ageLabel(anime.rating)?.let { add(Triple(null, it, null)) }
     }
-    if (chips.isEmpty()) { Spacer(modifier.height(18.dp)); return }
+    if (chips.isEmpty()) { Spacer(modifier.height(if (pending) 52.dp else 18.dp)); return }
     LazyRow(
         modifier.padding(top = 18.dp), contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -836,11 +859,19 @@ private fun Available(r: PlayState.Ready, accent: Color, onClick: () -> Unit) {
  * a plain warning when the next episode isn't among them (with what plays instead). Tapping opens the picker.
  */
 @Composable
-private fun StudioCard(state: PlayState, status: ListStatus?, accent: Color, onClick: () -> Unit) {
+private fun StudioCard(state: PlayState, startedHint: Boolean?, status: ListStatus?, accent: Color, onClick: () -> Unit) {
     val r = state as? PlayState.Ready
+    // While loading, the placeholder has the shape of what will come: the studio card for a title under way,
+    // the slim "what's here" line for a new one. Not known yet (a moment at most): an empty gap of that line's size.
+    val started = r?.started ?: (startedHint == true)
+    val loading = state is PlayState.Loading || (r != null && r.studios == null && r.episodes.isNotEmpty())
     Column(Modifier.padding(top = 14.dp)) {
         when {
-            state is PlayState.Loading -> Box(Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(20.dp)).shimmer())
+            loading && started -> Box(Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(20.dp)).shimmer())
+            loading && startedHint != null -> Row(
+                Modifier.padding(vertical = 8.dp, horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) { listOf(96.dp, 110.dp, 50.dp).forEach { w -> Box(Modifier.width(w).height(14.dp).clip(CircleShape).shimmer()) } }
+            loading -> Spacer(Modifier.height(30.dp))
             r != null && r.episodes.isNotEmpty() && r.studios != null && !r.started -> Available(r, accent, onClick)
             r != null && r.episodes.isNotEmpty() -> {
                 StudioSummary(r, accent, onClick = onClick)
