@@ -19,7 +19,25 @@ class Account(private val api: Anime365, private val scope: CoroutineScope) {
 
     val profile: Profile? get() = (state.value as? AccountState.SignedIn)?.profile
 
-    init { refresh() }
+    /** The site ended the session on its own: screens say so instead of a plain "sign in". Cleared on sign-in. */
+    private val _expired = MutableStateFlow(false)
+    val expired: StateFlow<Boolean> = _expired
+    @Volatile private var checking = false
+
+    init {
+        refresh()
+        // A request found the session gone: confirm once (a single page can lie) and show the app as signed out.
+        api.onSessionLost = {
+            if (!checking && state.value is AccountState.SignedIn) {
+                checking = true
+                scope.launch {
+                    val p = runCatching { api.profile() }
+                    if (p.isSuccess && p.getOrNull() == null) { _expired.value = true; _state.value = AccountState.SignedOut }
+                    checking = false
+                }
+            }
+        }
+    }
 
     /** Re-checks the saved session; a network failure keeps the last known state instead of signing out. */
     fun refresh() = scope.launch {
@@ -29,13 +47,13 @@ class Account(private val api: Anime365, private val scope: CoroutineScope) {
     }
 
     suspend fun login(email: String, password: String): Profile =
-        api.login(email, password).also { _state.value = AccountState.SignedIn(it) }
+        api.login(email, password).also { _expired.value = false; _state.value = AccountState.SignedIn(it) }
 
     /** After signing in through the site page: take its cookies and confirm who we are. */
     suspend fun adoptBrowserSession(cookieHeader: String): Profile? {
         api.cookies.import(cookieHeader)
         val p = runCatching { api.profile() }.getOrNull()
-        if (p != null) _state.value = AccountState.SignedIn(p)
+        if (p != null) { _expired.value = false; _state.value = AccountState.SignedIn(p) }
         return p
     }
 
@@ -43,6 +61,7 @@ class Account(private val api: Anime365, private val scope: CoroutineScope) {
     fun logout() {
         api.logout()
         runCatching { android.webkit.CookieManager.getInstance().apply { removeAllCookies(null); flush() } }
+        _expired.value = false
         _state.value = AccountState.SignedOut
     }
 }

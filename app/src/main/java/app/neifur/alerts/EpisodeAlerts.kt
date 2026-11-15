@@ -91,7 +91,6 @@ object EpisodeAlerts {
             NotificationManagerCompat.from(ctx).areNotificationsEnabled()
 
     private fun ensureChannel(ctx: Context) {
-        if (Build.VERSION.SDK_INT < 26) return
         val nm = ctx.getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL) != null) return
         nm.createNotificationChannel(
@@ -193,7 +192,7 @@ object EpisodeAlerts {
                 .setGroup(GROUP)
                 .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
                 .build()
-            runCatching { nm.notify(id.toInt(), n) }
+            post(ctx, nm, id.toInt(), n)
         }
         // Several titles at once fold into one group under a summary.
         val active = (ctx.getSystemService(NotificationManager::class.java).activeNotifications
@@ -206,8 +205,14 @@ object EpisodeAlerts {
                 .setStyle(NotificationCompat.InboxStyle().also { s -> alerts.forEach { s.addLine("${it.series.title} — ${headline(it.numbers).lowercase()}") } })
                 .setGroup(GROUP).setGroupSummary(true).setAutoCancel(true)
                 .build()
-            runCatching { nm.notify(SUMMARY_ID, summary) }
+            post(ctx, nm, SUMMARY_ID, summary)
         }
+    }
+
+    /** Posts only while Android allows it (the viewer can revoke the permission at any time). */
+    @android.annotation.SuppressLint("MissingPermission") // checked right here, through permitted()
+    private fun post(ctx: Context, nm: NotificationManagerCompat, id: Int, n: android.app.Notification) {
+        if (permitted(ctx)) runCatching { nm.notify(id, n) }
     }
 
     private fun openTitle(ctx: Context, seriesId: Long): PendingIntent {

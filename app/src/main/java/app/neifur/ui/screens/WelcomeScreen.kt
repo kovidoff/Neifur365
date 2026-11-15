@@ -23,7 +23,9 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
@@ -105,6 +107,7 @@ private const val PAGES = 3
  * the original — saved as the default), and signing in, which watching needs. The catalog works without an
  * account, so the last step can be put off.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun WelcomeScreen() {
     val vm = nfViewModel { WelcomeVm(it) }
@@ -139,6 +142,10 @@ fun WelcomeScreen() {
                     }
                 }
             }
+            // While typing in the sign-in form the keyboard takes this space: the dots and "Позже" step aside
+            // instead of riding up on top of it and covering the fields.
+            val typing = WindowInsets.isImeVisible
+            AnimatedVisibility(!typing, enter = expandVertically(tween(220)) + fadeIn(tween(220)), exit = shrinkVertically(tween(180)) + fadeOut(tween(120))) {
             Column(Modifier.padding(horizontal = 24.dp).padding(top = 10.dp, bottom = 14.dp)) {
                 Dots(pager, Modifier.align(Alignment.CenterHorizontally).padding(bottom = 18.dp))
                 val last = pager.currentPage == PAGES - 1
@@ -156,6 +163,7 @@ fun WelcomeScreen() {
                         if (l) vm.finish() else scope.launch { pager.animateScrollToPage(pager.currentPage + 1) }
                     }
                 }
+            }
             }
         }
     }
@@ -401,12 +409,17 @@ private fun MarqueeRow(names: List<String>, dpPerSecond: Float, reverse: Boolean
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun AccountPage(vm: SignInVm, visible: Boolean) {
     // Scrolls when the keyboard is up; otherwise sits at the bottom like the other pages.
+    val scroll = rememberScrollState()
+    val typing = WindowInsets.isImeVisible
+    // Keyboard up: bring the fields and the sign-in button into view above it.
+    LaunchedEffect(typing) { if (typing) { kotlinx.coroutines.delay(120); scroll.animateScrollTo(scroll.maxValue) } }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         Column(
-            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min = maxHeight).padding(horizontal = 24.dp),
+            Modifier.fillMaxWidth().verticalScroll(scroll).heightIn(min = maxHeight).padding(horizontal = 24.dp),
             verticalArrangement = Arrangement.Bottom,
         ) {
             Box(

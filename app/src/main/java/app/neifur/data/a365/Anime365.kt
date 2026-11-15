@@ -214,7 +214,7 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
             val code = err["code"]?.jsonPrimitive?.intOrNull ?: 0
             val msg = runCatching { err["message"]!!.jsonPrimitive.content }.getOrNull().orEmpty()
             when {
-                code == 403 && msg.contains("login", true) -> throw SignInRequired()
+                code == 403 && msg.contains("login", true) -> throw sessionLost()
                 code == 404 -> throw ApiError("Не найдено на Anime 365")
                 else -> throw ApiError(msg.ifBlank { "Ошибка Anime 365 ($code)" })
             }
@@ -334,22 +334,30 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
 
     fun logout() = cookies.clear()
 
+    /** Called when the site turns out to have ended a session the app still holds (password changed, expired). */
+    @Volatile var onSessionLost: (() -> Unit)? = null
+
+    private fun sessionLost(): SignInRequired {
+        if (cookies.header().isNotEmpty()) onSessionLost?.invoke()
+        return SignInRequired()
+    }
+
     /** Every list of the viewer at once, each row with its status. */
     suspend fun allLists(userId: Long): List<ListEntry> {
         val html = page("/users/$userId/list?dynpage=1")
-        if (SitePages.isSignedOut(html)) throw SignInRequired()
+        if (SitePages.isSignedOut(html)) throw sessionLost()
         return SitePages.list(html)
     }
 
     suspend fun list(userId: Long, status: ListStatus): List<ListEntry> {
         val html = page("/users/$userId/list/${status.path}?dynpage=1")
-        if (SitePages.isSignedOut(html)) throw SignInRequired()
+        if (SitePages.isSignedOut(html)) throw sessionLost()
         return SitePages.list(html)
     }
 
     suspend fun listRecord(seriesId: Long): ListRecord {
         val html = page("/animelist/edit/$seriesId?mode=mini")
-        if (SitePages.isSignedOut(html)) throw SignInRequired()
+        if (SitePages.isSignedOut(html)) throw sessionLost()
         return SitePages.listRecord(html)
     }
 

@@ -28,7 +28,10 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
+import app.neifur.AnimeStub
 import app.neifur.PlaySession
+import app.neifur.data.a365.Episode
+import kotlinx.serialization.json.jsonObject
 import app.neifur.container
 import app.neifur.core.ApiError
 import app.neifur.core.userMessage
@@ -80,7 +83,8 @@ class PlayerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(SystemBarStyle.dark(AColor.TRANSPARENT), SystemBarStyle.dark(AColor.TRANSPARENT))
         super.onCreate(savedInstanceState)
-        val s = container.session
+        // Android may have closed the app while the player was in the background: pick the session back up.
+        val s = container.session ?: savedInstanceState?.let { restoreSession() }?.also { container.session = it }
         if (s == null) { finish(); return }
         session = s
         index = s.index
@@ -375,11 +379,43 @@ class PlayerActivity : ComponentActivity() {
         super.finish()
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (::session.isInitialized) saveSession()
+    }
+
+    /** The session (title, episodes, where we are, chosen studio), kept in a file: the episode list can be long. */
+    private fun saveSession() = runCatching {
+        val o = kotlinx.serialization.json.buildJsonObject {
+            put("id", kotlinx.serialization.json.JsonPrimitive(session.anime.id))
+            put("title", kotlinx.serialization.json.JsonPrimitive(session.anime.title))
+            put("poster", kotlinx.serialization.json.JsonPrimitive(session.anime.poster))
+            put("index", kotlinx.serialization.json.JsonPrimitive(index))
+            put("pick", kotlinx.serialization.json.JsonPrimitive(pick))
+            put("pickName", kotlinx.serialization.json.JsonPrimitive(pickName))
+            put("episodes", app.neifur.core.AppJson.encodeToJsonElement(kotlinx.serialization.builtins.ListSerializer(Episode.serializer()), session.episodes))
+        }
+        java.io.File(cacheDir, SESSION_FILE).writeText(o.toString())
+    }
+
+    private fun restoreSession(): PlaySession? = runCatching {
+        val o = app.neifur.core.AppJson.parseToJsonElement(java.io.File(cacheDir, SESSION_FILE).readText()).jsonObject
+        fun str(k: String) = (o[k] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+        val eps = app.neifur.core.AppJson.decodeFromJsonElement(kotlinx.serialization.builtins.ListSerializer(Episode.serializer()), o["episodes"]!!)
+        PlaySession(
+            AnimeStub(str("id")!!, str("title").orEmpty(), str("poster")), eps,
+            (o["index"] as kotlinx.serialization.json.JsonPrimitive).content.toInt(), str("pick"), str("pickName"),
+        )
+    }.getOrNull()
+
     override fun onDestroy() {
         runCatching { unregisterReceiver(pipReceiver) }
         if (::player.isInitialized) player.release()
         super.onDestroy()
     }
 
-    private companion object { const val PIP_ACTION = "app.neifur.PIP_CONTROL" }
+    private companion object {
+        const val PIP_ACTION = "app.neifur.PIP_CONTROL"
+        const val SESSION_FILE = "player_session.json"
+    }
 }

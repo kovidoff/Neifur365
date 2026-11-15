@@ -58,6 +58,7 @@ import kotlinx.coroutines.launch
 
 class LibraryVm(private val c: Container) : ViewModel() {
     val account = c.account.state
+    val expired = c.account.expired
     val lists = c.lists.state
     val history = c.prefs.history
     val favorites = c.prefs.favorites
@@ -89,6 +90,7 @@ class LibraryVm(private val c: Container) : ViewModel() {
 fun LibraryScreen(open: OpenAnime) {
     val vm = nfViewModel { LibraryVm(it) }
     val account by vm.account.collectAsStateWithLifecycle()
+    val expired by vm.expired.collectAsStateWithLifecycle()
     val lists by vm.lists.collectAsStateWithLifecycle()
     val history by vm.history.collectAsStateWithLifecycle(emptyList())
     val favorites by vm.favorites.collectAsStateWithLifecycle(emptyList())
@@ -149,7 +151,7 @@ fun LibraryScreen(open: OpenAnime) {
                         }
                     }
                 } else {
-                    if (account == AccountState.SignedOut) item(span = { GridItemSpan(3) }, key = "signin") { SignInCard { signIn = true } }
+                    if (account == AccountState.SignedOut) item(span = { GridItemSpan(3) }, key = "signin") { SignInCard(expired) { signIn = true } }
                     if (favorites.isNotEmpty()) {
                         item(span = { GridItemSpan(3) }) { Text("Избранное на этом телефоне", style = Type.Section, color = Nf.Text, modifier = Modifier.padding(top = 10.dp)) }
                         items(favorites, key = { "f-${it.id}" }) { f ->
@@ -367,7 +369,7 @@ private fun ContinueStrip(recent: List<WatchEntry>, listed: Map<Long, ListedTitl
 }
 
 @Composable
-private fun SignInCard(onClick: () -> Unit) {
+private fun SignInCard(expired: Boolean, onClick: () -> Unit) {
     Column(
         Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(24.dp))
             .background(androidx.compose.ui.graphics.Brush.linearGradient(listOf(Nf.Violet.copy(alpha = 0.16f), Nf.Pink.copy(alpha = 0.07f), Nf.Surface)))
@@ -380,11 +382,12 @@ private fun SignInCard(onClick: () -> Unit) {
                 }
             }
         }
-        Text("Ваши списки Anime 365", style = Type.Title, color = Nf.Text, modifier = Modifier.padding(top = 14.dp))
+        Text(if (expired) "Вход на Anime 365 закончился" else "Ваши списки Anime 365", style = Type.Title, color = Nf.Text, modifier = Modifier.padding(top = 14.dp))
         Text(
-            "Смотрю, запланировано, просмотрено — с прогрессом по сериям и оценками. Войдите, и они появятся здесь.",
+            if (expired) "Сайт завершил сессию — например, после смены пароля или выхода на другом устройстве. Войдите снова, списки вернутся."
+            else "Смотрю, запланировано, просмотрено — с прогрессом по сериям и оценками. Войдите, и они появятся здесь.",
             style = Type.Caption, color = Nf.TextDim, modifier = Modifier.padding(top = 4.dp, bottom = 14.dp),
         )
-        PrimaryButton("Войти в Anime 365", onClick = onClick)
+        PrimaryButton(if (expired) "Войти снова" else "Войти в Anime 365", onClick = onClick)
     }
 }
