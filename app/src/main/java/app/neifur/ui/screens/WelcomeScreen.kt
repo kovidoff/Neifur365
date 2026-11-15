@@ -6,6 +6,14 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
@@ -35,6 +43,7 @@ import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.TaskAlt
 import androidx.compose.material.icons.rounded.Translate
@@ -55,7 +64,6 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.zIndex
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -127,7 +135,7 @@ fun WelcomeScreen() {
                     when (page) {
                         0 -> IntroPage(vm.airing)
                         1 -> KindPage(vm, visible = pager.settledPage == 1 || pager.targetPage == 1)
-                        else -> AccountPage(signIn)
+                        else -> AccountPage(signIn, visible = pager.settledPage == 2 || pager.targetPage == 2)
                     }
                 }
             }
@@ -155,11 +163,11 @@ fun WelcomeScreen() {
 
 // --- pages -----------------------------------------------------------------------------------------
 
-/** A fan of what's airing right now: it deals itself around every few seconds. */
+/** What's airing now, dealt from a deck, and what Neifur 365 is. */
 @Composable
 private fun IntroPage(airing: List<Series>) {
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { PosterFan(airing) }
+        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { PosterDeck(airing) }
         Column(Modifier.fillMaxWidth().padding(horizontal = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Rise(0) { Wordmark(big = true) }
             Rise(1) {
@@ -180,61 +188,98 @@ private fun IntroPage(airing: List<Series>) {
     }
 }
 
+/**
+ * A deck of what's airing now. Every few seconds the top card is dealt away to the left (it turns and fades as it
+ * goes) while the cards behind rise one place and a new one fades in at the back. The drawing order never changes
+ * mid-move, so no card ever jumps over another.
+ */
 @Composable
-private fun PosterFan(items: List<Series>) {
-    var center by remember { mutableIntStateOf(0) }
+private fun PosterDeck(items: List<Series>) {
+    var head by remember { mutableIntStateOf(0) }
+    val t = remember { Animatable(0f) }
     LaunchedEffect(items.size) {
         if (items.size < 2) return@LaunchedEffect
-        while (true) { delay(3200); center = (center + 1) % items.size }
+        while (true) {
+            delay(2800)
+            t.animateTo(1f, tween(950, easing = CubicBezierEasing(0.33f, 0f, 0.2f, 1f)))
+            head = (head + 1) % items.size
+            t.snapTo(0f)
+        }
     }
-    val t = rememberInfiniteTransition(label = "float")
-    val wave by t.animateFloat(0f, (2 * Math.PI).toFloat(), infiniteRepeatable(tween(6000, easing = LinearEasing), RepeatMode.Restart), label = "w")
+    val float = rememberInfiniteTransition(label = "float")
+    val wave = float.animateFloat(0f, (2 * Math.PI).toFloat(), infiniteRepeatable(tween(7000, easing = LinearEasing)), label = "w")
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        val cardW = (maxHeight * 0.62f * 0.7f).coerceAtMost(maxWidth * 0.5f)
+        val cardW = (maxHeight * 0.66f * 0.7f).coerceAtMost(maxWidth * 0.56f)
         val cardH = cardW / 0.7f
+        // One soft light behind the deck, painted rather than cast: it stays put while the pages slide.
+        Box(
+            Modifier.size(cardW * 2.1f, cardH * 1.5f).drawBehind {
+                drawOval(Brush.radialGradient(listOf(Nf.Violet.copy(alpha = 0.34f), Nf.Pink.copy(alpha = 0.10f), Color.Transparent)))
+            }
+        )
         if (items.isEmpty()) {
-            Box(Modifier.size(cardW, cardH).clip(RoundedCornerShape(24.dp)).shimmer())
+            Box(Modifier.size(cardW, cardH).clip(RoundedCornerShape(26.dp)).shimmer())
             return@BoxWithConstraints
         }
-        // Five visible slots, -2..2 around the centre card. Each card springs to its slot when the deal advances.
-        for (slot in -2..2) {
-            val i = ((center + slot) % items.size + items.size) % items.size
-            key(items[i].id) {
-                val s by animateFloatAsState(slot.toFloat(), spring(dampingRatio = 0.78f, stiffness = 140f), label = "slot")
-                val a = items[i]
-                Box(
-                    Modifier.zIndex(10f - s.absoluteValue).size(cardW, cardH)
-                        .graphicsLayer {
-                            translationX = s * cardW.toPx() * 0.52f
-                            translationY = (s.absoluteValue * 22.dp.toPx()) + sin(wave + slot) * 6.dp.toPx()
-                            rotationZ = s * 7f
-                            val k = 1f - s.absoluteValue * 0.12f
-                            scaleX = k; scaleY = k
-                            alpha = (1f - (s.absoluteValue - 1.2f).coerceAtLeast(0f) * 1.2f).coerceIn(0f, 1f)
-                        }
-                        .shadow(if (slot == 0) 30.dp else 10.dp, RoundedCornerShape(24.dp), ambientColor = Nf.Violet, spotColor = Nf.Violet)
-                        .clip(RoundedCornerShape(24.dp)),
-                ) {
-                    PosterImage(a.posterUrl, Modifier.fillMaxSize())
-                    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.55f to Color.Transparent, 1f to Color(0xCC08080C))))
-                    Box(Modifier.fillMaxSize().background(Nf.Ink.copy(alpha = (s.absoluteValue * 0.35f).coerceIn(0f, 0.6f))))
-                    Column(Modifier.align(Alignment.BottomStart).padding(12.dp)) {
-                        Text(
-                            "СЕЙЧАС ВЫХОДИТ", style = Type.Overline.copy(fontSize = 9.sp), color = Nf.Mint,
-                            modifier = Modifier.graphicsLayer { alpha = (1f - s.absoluteValue).coerceIn(0f, 1f) },
-                        )
-                        Text(a.title, style = Type.Label, color = Nf.Text, maxLines = 2, modifier = Modifier.padding(top = 3.dp))
-                    }
-                    formatScore(a.score)?.let {
-                        Text(
-                            "★ $it", style = Type.Caption, color = Nf.Text,
-                            modifier = Modifier.align(Alignment.TopEnd).padding(9.dp).clip(RoundedCornerShape(9.dp))
-                                .background(Color(0xB8090910)).padding(horizontal = 7.dp, vertical = 3.dp),
-                        )
-                    }
-                }
+        val n = items.size
+        // Back to front: slots 3..0. The card on slot 3 is invisible and fades in as it moves up to slot 2.
+        for (k in minOf(3, n - 1) downTo 0) {
+            val a = items[(head + k) % n]
+            key(a.id) {
+                DeckCard(a, k, t, wave, Modifier.size(cardW, cardH))
             }
         }
+    }
+}
+
+@Composable
+private fun DeckCard(a: Series, k: Int, t: Animatable<Float, *>, wave: State<Float>, modifier: Modifier) {
+    val shape = RoundedCornerShape(26.dp)
+    Box(
+        modifier
+            .graphicsLayer {
+                val pos = k - t.value          // 0 = top card; below 0 it is leaving
+                val bob = kotlin.math.sin(wave.value) * 5.dp.toPx()
+                if (pos < 0f) {
+                    translationX = pos * size.width * 1.25f
+                    translationY = -pos * 26.dp.toPx() + bob
+                    rotationZ = pos * 18f
+                    alpha = (1f + pos * 1.3f).coerceIn(0f, 1f)
+                } else {
+                    val sc = 1f - 0.075f * pos
+                    scaleX = sc; scaleY = sc
+                    translationX = pos * 18.dp.toPx()
+                    translationY = -pos * 24.dp.toPx() + bob * (1f - pos * 0.3f)
+                    rotationZ = pos * 4f
+                    alpha = (3f - pos).coerceIn(0f, 1f)
+                }
+                shape.let { this.shape = it; clip = true }
+            }
+            .background(Nf.Surface),
+    ) {
+        PosterImage(a.posterUrl, Modifier.fillMaxSize())
+        // Cards further back sit in shade; the top one is clear.
+        Box(Modifier.fillMaxSize().drawBehind {
+            val pos = (k - t.value).coerceAtLeast(0f)
+            drawRect(Nf.Ink.copy(alpha = (pos * 0.28f).coerceAtMost(0.6f)))
+        })
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.55f to Color.Transparent, 1f to Color(0xD908080C))))
+        Column(
+            Modifier.align(Alignment.BottomStart).padding(14.dp).graphicsLayer {
+                alpha = (1f - kotlin.math.abs(k - t.value) * 1.6f).coerceIn(0f, 1f)
+            }
+        ) {
+            Text("СЕЙЧАС ВЫХОДИТ", style = Type.Overline.copy(fontSize = 9.5.sp), color = Nf.Mint)
+            Text(a.title, style = Type.Title.copy(fontSize = 15.sp), color = Nf.Text, maxLines = 2, modifier = Modifier.padding(top = 3.dp))
+        }
+        formatScore(a.score)?.let {
+            Text(
+                "★ $it", style = Type.Caption, color = Nf.Text,
+                modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).clip(RoundedCornerShape(9.dp))
+                    .background(Color(0xB8090910)).padding(horizontal = 7.dp, vertical = 3.dp),
+            )
+        }
+        Box(Modifier.fillMaxSize().border(1.dp, Color(0x1FFFFFFF), shape))
     }
 }
 
@@ -293,55 +338,87 @@ private fun KindCard(o: KindOption, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** Studio names drifting by in rows: Anime 365's whole point is the choice of voices and translations. */
+/**
+ * Studio names drifting by: Anime 365 is about the choice of voices and translations. Rows run level at their own
+ * speeds, moved by whole pixels so the letters stay crisp, and loop seamlessly. The block melts into the background
+ * on every edge through an alpha mask, whatever colour is behind it.
+ */
 @Composable
 private fun StudioMarquee(modifier: Modifier) {
     val rows = listOf(
-        listOf("AniLibria", "AniDUB", "Dream Cast", "StudioBand", "AniStar", "SHIZA Project", "Animaunt"),
-        listOf("Субтитры", "Kazoku Project", "AniRise", "JAM CLUB", "AnimeVost", "Crunchyroll", "Оригинал"),
-        listOf("Озвучка", "Freedub", "AniMedia", "OnWave", "SovetRomantica", "AniJoy", "1080p"),
+        Triple(listOf("AniLibria", "AniDUB", "Dream Cast", "StudioBand", "AniStar", "SHIZA Project", "Animaunt"), 26f, false),
+        Triple(listOf("Субтитры", "Kazoku Project", "AniRise", "JAM CLUB", "AnimeVost", "Crunchyroll", "Оригинал"), 19f, true),
+        Triple(listOf("Озвучка", "Freedub", "AniMedia", "OnWave", "SovetRomantica", "AniJoy", "1080p"), 23f, false),
+        Triple(listOf("AniMaunt", "Anilibria.TV", "Zendos", "BD", "Субтитры RU", "TV-версия", "Persona99"), 17f, true),
     )
-    val t = rememberInfiniteTransition(label = "mq")
-    val p by t.animateFloat(0f, 1f, infiniteRepeatable(tween(30_000, easing = LinearEasing), RepeatMode.Restart), label = "p")
-    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
-        val w = maxWidth
-        Column(Modifier.fillMaxWidth().graphicsLayer { rotationZ = -6f }, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            rows.forEachIndexed { r, names ->
-                val dir = if (r % 2 == 0) -1f else 1f
-                Row(
-                    Modifier.wrapContentWidth(Alignment.Start, unbounded = true)
-                        .graphicsLayer { translationX = dir * p * w.toPx() + (if (dir > 0) -w.toPx() else 0f) },
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    (names + names + names).forEachIndexed { k, n ->
-                        val accent = listOf(Nf.Violet, Nf.Pink, Nf.Mint)[(k + r) % 3]
-                        Text(
-                            n, style = Type.Title.copy(fontSize = 15.sp), color = Nf.Text.copy(alpha = 0.8f), maxLines = 1, softWrap = false,
-                            modifier = Modifier.clip(CircleShape).background(accent.copy(alpha = 0.12f))
-                                .border(1.dp, accent.copy(alpha = 0.25f), CircleShape).padding(horizontal = 16.dp, vertical = 9.dp),
-                        )
-                    }
-                }
-            }
-        }
-        // The rows fade into the background towards the top and towards the text.
-        Box(Modifier.matchParentSize().background(Brush.verticalGradient(0f to Color.Transparent, 0.75f to Color.Transparent, 1f to Nf.Ink)))
+    Column(
+        modifier
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+            .drawWithContent {
+                drawContent()
+                drawRect(Brush.verticalGradient(0f to Color.Transparent, 0.22f to Color.Black, 0.72f to Color.Black, 1f to Color.Transparent), blendMode = BlendMode.DstIn)
+                drawRect(Brush.horizontalGradient(0f to Color.Transparent, 0.12f to Color.Black, 0.88f to Color.Black, 1f to Color.Transparent), blendMode = BlendMode.DstIn)
+            },
+        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+    ) {
+        rows.forEachIndexed { r, (names, speed, reverse) -> MarqueeRow(names, speed, reverse, r) }
     }
 }
 
 @Composable
-private fun AccountPage(vm: SignInVm) {
+private fun MarqueeRow(names: List<String>, dpPerSecond: Float, reverse: Boolean, row: Int) {
+    var width by remember { mutableIntStateOf(0) }
+    val offset = remember { mutableFloatStateOf(0f) }
+    val gap = with(LocalDensity.current) { 10.dp.toPx() }
+    val speed = with(LocalDensity.current) { dpPerSecond.dp.toPx() }
+    // Two copies of the names side by side: one period is half the row plus one gap.
+    val period = (width + gap) / 2f
+    LaunchedEffect(period) {
+        if (period <= 0f) return@LaunchedEffect
+        var last = withFrameNanos { it }
+        while (true) withFrameNanos { now ->
+            offset.floatValue = (offset.floatValue + (now - last) / 1e9f * speed) % period
+            last = now
+        }
+    }
+    Row(
+        Modifier.fillMaxWidth().wrapContentWidth(Alignment.Start, unbounded = true)
+            .onSizeChanged { width = it.width }
+            .graphicsLayer {
+                val x = if (reverse) offset.floatValue - period else -offset.floatValue
+                translationX = kotlin.math.round(x)
+            },
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        (names + names).forEachIndexed { i, n ->
+            val accent = listOf(Nf.Violet, Nf.Pink, Nf.Mint)[(i + row) % 3]
+            Text(
+                n, style = Type.Title.copy(fontSize = 16.sp), color = Nf.Text.copy(alpha = 0.88f), maxLines = 1, softWrap = false,
+                modifier = Modifier.clip(CircleShape).background(accent.copy(alpha = 0.13f))
+                    .border(1.dp, accent.copy(alpha = 0.28f), CircleShape).padding(horizontal = 18.dp, vertical = 10.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AccountPage(vm: SignInVm, visible: Boolean) {
     // Scrolls when the keyboard is up; otherwise sits at the bottom like the other pages.
     BoxWithConstraints(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min = maxHeight).padding(horizontal = 24.dp),
             verticalArrangement = Arrangement.Bottom,
         ) {
+            Box(
+                Modifier.padding(start = 4.dp, bottom = 16.dp).size(54.dp).clip(RoundedCornerShape(18.dp))
+                    .background(Brush.linearGradient(listOf(Nf.Violet, Nf.Pink))),
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Rounded.Person, null, tint = Nf.Ink, modifier = Modifier.size(28.dp)) }
             Text("Аккаунт Anime 365", style = Type.Hero, color = Nf.Text, modifier = Modifier.padding(horizontal = 4.dp))
             Column(Modifier.padding(top = 14.dp, bottom = 20.dp, start = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Perk(Icons.Rounded.HighQuality, Nf.Violet, "Видео до 1080p — после входа")
-                Perk(Icons.Rounded.Sync, Nf.Pink, "Списки «Смотрю» и «Запланировано» общие с сайтом")
-                Perk(Icons.Rounded.TaskAlt, Nf.Mint, "Досмотренные серии отмечаются сами")
+                Appear(0, visible) { Perk(Icons.Rounded.HighQuality, Nf.Violet, "Видео до 1080p — после входа") }
+                Appear(1, visible) { Perk(Icons.Rounded.Sync, Nf.Pink, "Списки «Смотрю» и «Запланировано» общие с сайтом") }
+                Appear(2, visible) { Perk(Icons.Rounded.TaskAlt, Nf.Mint, "Досмотренные серии отмечаются сами") }
             }
             SignInForm(vm)
             Row(Modifier.padding(top = 16.dp, start = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
