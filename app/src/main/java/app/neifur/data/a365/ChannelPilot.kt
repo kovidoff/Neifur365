@@ -1,0 +1,144 @@
+package app.neifur.data.a365
+
+import app.neifur.core.userMessage
+import app.neifur.data.Prefs
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+data class ChannelState(
+    val setup: ChannelSetup? = null,
+    val speeds: Map<Int, ChannelSpeed> = emptyMap(),
+    /** Channels being measured right now. */
+    val measuring: Set<Int> = emptySet(),
+    val switching: Int? = null,
+    /** The last thing worth telling: what was switched, or why it couldn't be. */
+    val note: String? = null,
+    /** The current channel was chosen by the app, not by hand. */
+    val pickedByApp: Boolean = false,
+) {
+    val testing: Boolean get() = measuring.isNotEmpty()
+    val fastest: VideoChannel? get() = setup?.channels?.filter { speeds[it.id]?.works == true }?.maxByOrNull { speeds.getValue(it.id).bytesPerSec }
+}
+
+/**
+ * Looks after the account's Anime 365 video channel. In auto mode (the default) the app checks, once in a while
+ * and whenever video won't start, that the channel gets through from this network, and moves the account to the
+ * fastest one that does. Checks are cheap: only the current channel is sampled unless it fails; the full test
+ * measures all of them and is run when asked (Settings) or when switching is needed.
+ */
+class ChannelPilot(private val api: Anime365, private val prefs: Prefs, private val account: Account, private val scope: CoroutineScope) {
+    private val _state = MutableStateFlow(ChannelState())
+    val state: StateFlow<ChannelState> = _state
+    private val lock = Mutex()
+
+    init {
+        scope.launch {
+            account.state.collect { s ->
+                when (s) {
+                    is AccountState.SignedIn -> { _state.value = ChannelState(); checkInBackground() }
+                    AccountState.SignedOut -> _state.value = ChannelState()
+                    AccountState.Unknown -> {}
+                }
+            }
+        }
+    }
+
+    suspend fun load(): ChannelSetup? {
+        val s = runCatching { api.channels() }.getOrNull()
+        if (s != null) _state.update { it.copy(setup = s) }
+        return s
+    }
+
+    /** At most every few hours: is the channel still getting through? Fix it quietly if not. */
+    private fun checkInBackground() = scope.launch {
+        if (!prefs.channelAuto.first()) { load(); return@launch }
+        val now = System.currentTimeMillis()
+        if (now - prefs.channelCheckedAt() < BACKGROUND_EVERY) { load(); return@launch }
+        ensureWorking()
+        prefs.setChannelCheckedAt(now)
+    }
+
+    /**
+     * Makes sure video can come through: samples the current channel and, if it doesn't get through, measures
+     * the rest and switches to the fastest. Returns (old, new) when it switched.
+     */
+    suspend fun ensureWorking(): Pair<VideoChannel?, VideoChannel>? = lock.withLock {
+        val setup = load() ?: return@withLock null
+        val current = setup.currentChannel
+        if (current != null) {
+            val sp = sample(current, quick = true)
+            if (sp.works) return@withLock null
+        }
+        val others = setup.channels.filter { it.id != setup.current }
+        coroutineScope { others.map { ch -> async { sample(ch, quick = true) } }.awaitAll() }
+        val best = _state.value.fastest ?: return@withLock null
+        if (best.id == setup.current) return@withLock null
+        switchTo(best, byApp = true, why = current?.let { "«${it.label}» не работает в вашей сети" })
+        current to best
+    }
+
+    /** Measures every channel at once (Settings). In auto mode, then moves to the fastest if it's clearly better. */
+    fun testAll() = scope.launch {
+        lock.withLock {
+            val setup = _state.value.setup ?: load() ?: return@withLock
+            _state.update { it.copy(speeds = emptyMap(), note = null) }
+            coroutineScope { setup.channels.map { ch -> async { sample(ch, quick = false) } }.awaitAll() }
+            val st = _state.value
+            val best = st.fastest
+            val current = setup.currentChannel
+            val curSpeed = current?.let { st.speeds[it.id] }
+            when {
+                best == null -> _state.update { it.copy(note = "Ни один канал сейчас не отвечает. Проверьте интернет") }
+                best.id == setup.current -> _state.update { it.copy(note = "Используется самый быстрый канал") }
+                prefs.channelAuto.first() && (curSpeed?.works != true || st.speeds[best.id]!!.bytesPerSec > curSpeed.bytesPerSec * 1.5) ->
+                    switchTo(best, byApp = true, why = null)
+                else -> _state.update { it.copy(note = null) }
+            }
+            prefs.setChannelCheckedAt(System.currentTimeMillis())
+        }
+    }
+
+    /** A channel chosen by hand: the app stops choosing for the viewer. */
+    fun pick(ch: VideoChannel) = scope.launch {
+        if (_state.value.switching != null || ch.id == _state.value.setup?.current) return@launch
+        prefs.setChannelAuto(false)
+        switchTo(ch, byApp = false, why = null)
+    }
+
+    fun setAuto(on: Boolean) = scope.launch {
+        prefs.setChannelAuto(on)
+        if (on) testAll()
+    }
+
+    private suspend fun switchTo(ch: VideoChannel, byApp: Boolean, why: String?) {
+        _state.update { it.copy(switching = ch.id) }
+        runCatching { api.setChannel(ch.id) }
+            .onSuccess {
+                _state.update { s ->
+                    s.copy(
+                        setup = s.setup?.copy(current = ch.id), switching = null, pickedByApp = byApp,
+                        note = listOfNotNull(why, if (byApp) "Включён самый быстрый — «${ch.label}»" else "Видео идёт через «${ch.label}»").joinToString(". "),
+                    )
+                }
+            }
+            .onFailure { e -> _state.update { it.copy(switching = null, note = e.userMessage()) } }
+    }
+
+    private suspend fun sample(ch: VideoChannel, quick: Boolean): ChannelSpeed {
+        _state.update { it.copy(measuring = it.measuring + ch.id) }
+        val sp = if (quick) api.measure(ch, seconds = 3, maxBytes = 2_000_000) else api.measure(ch)
+        _state.update { it.copy(measuring = it.measuring - ch.id, speeds = it.speeds + (ch.id to sp)) }
+        return sp
+    }
+
+    private companion object { const val BACKGROUND_EVERY = 6 * 60 * 60 * 1000L }
+}

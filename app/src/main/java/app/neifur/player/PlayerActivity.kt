@@ -241,7 +241,7 @@ class PlayerActivity : ComponentActivity() {
             if (player.loaded || error != null || channelChecked) return@launch
             channelChecked = true
             notice = "Видео не грузится — проверяем каналы Anime 365…"
-            val fix = runCatching { container.a365.fixChannel() }.getOrNull()
+            val fix = runCatching { container.channels.ensureWorking() }.getOrNull()
             if (player.loaded) return@launch
             if (fix != null) {
                 val (old, new) = fix

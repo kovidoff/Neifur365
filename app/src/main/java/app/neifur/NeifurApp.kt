@@ -13,6 +13,7 @@ import app.neifur.data.Prefs
 import app.neifur.data.SavedAnime
 import app.neifur.data.a365.Account
 import app.neifur.data.a365.Lists
+import app.neifur.data.a365.ChannelPilot
 import app.neifur.data.a365.Anime365
 import app.neifur.data.a365.Episode
 import app.neifur.data.a365.Series
@@ -55,6 +56,7 @@ class Container(app: Application) {
     val a365 = Anime365(app, http, prefs)
     val account = Account(a365, scope)
     val lists = Lists(a365, account, scope)
+    val channels = ChannelPilot(a365, prefs, account, scope)
 
     val stubs = HashMap<String, AnimeStub>()
     fun remember(stub: AnimeStub) { stubs[stub.id] = stub }

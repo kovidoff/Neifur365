@@ -381,50 +381,48 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
     }
 
     private val channelHttp by lazy {
-        http.newBuilder().readTimeout(4, TimeUnit.SECONDS).callTimeout(8, TimeUnit.SECONDS).build()
+        http.newBuilder().connectTimeout(6, TimeUnit.SECONDS).readTimeout(4, TimeUnit.SECONDS).callTimeout(14, TimeUnit.SECONDS).build()
     }
 
     /**
-     * Downloads a few seconds of the channel's test file and returns the speed. A channel the network blocks
-     * answers, sends ~20 KB and goes silent, so it comes out at a few KB/s rather than failing outright.
+     * Downloads [seconds] of the channel's test file (after the first byte, so a slow handshake doesn't count
+     * against it) and returns the speed. A channel the network blocks answers, sends ~20 KB and goes silent, so it
+     * comes out at a few KB/s rather than failing outright.
      */
-    suspend fun measure(channel: VideoChannel): ChannelSpeed = withContext(Dispatchers.IO) {
+    suspend fun measure(channel: VideoChannel, seconds: Int = 5, maxBytes: Long = 8_000_000): ChannelSpeed = withContext(Dispatchers.IO) {
         suspend fun one(url: String): Double {
             val t0 = System.nanoTime()
+            var first = 0L
             var got = 0L
-            runCatching {
-                channelHttp.newCall(Request.Builder().url(url).header("Range", "bytes=0-7999999").build()).await().use { r ->
+            var code = 0
+            val bust = url + (if ('?' in url) "&" else "?") + "_=" + System.nanoTime().toString(36)
+            val err = runCatching {
+                channelHttp.newCall(Request.Builder().url(bust).header("Range", "bytes=0-${maxBytes - 1}").build()).await().use { r ->
+                    code = r.code
                     if (!r.isSuccessful) return@use
                     val src = r.body?.source() ?: return@use
                     val buf = okio.Buffer()
-                    while (System.nanoTime() - t0 < 5_000_000_000L && got < 8_000_000) {
+                    while (got < maxBytes) {
                         val n = src.read(buf, 64 * 1024)
                         if (n < 0) break
+                        if (first == 0L) first = System.nanoTime()
                         got += n; buf.clear()
+                        if (System.nanoTime() - first > seconds * 1_000_000_000L) break
                     }
                 }
-            }
-            val sec = (System.nanoTime() - t0) / 1e9
-            return if (sec > 0) got / sec else 0.0
+            }.exceptionOrNull()
+            val end = System.nanoTime()
+            val sec = if (first > 0) (end - first) / 1e9 else (end - t0) / 1e9
+            val speed = if (sec > 0.05) got / sec else if (got > 0) got / 0.05 else 0.0
+            if (dumpDir != null) android.util.Log.d(
+                "A365", "channel ${channel.id} ${java.net.URI(url).host}: $code, ${got / 1024} KB, ttfb ${if (first > 0) (first - t0) / 1_000_000 else -1} ms, " +
+                    "${(speed / 1024).toInt()} KB/s" + (err?.let { " ($it)" } ?: ""),
+            )
+            return speed
         }
         val main = one(channel.testUrl)
         val best = if (main < ChannelSpeed.WORKS && channel.fallbackUrl != null) maxOf(main, one(channel.fallbackUrl)) else main
         ChannelSpeed(best)
     }
 
-    /**
-     * When video won't load: if the account's channel doesn't get through from here, measures the others and
-     * switches to the fastest that does. Returns (old, new) when it switched, null when the channel was fine or
-     * nothing better works.
-     */
-    suspend fun fixChannel(): Pair<VideoChannel?, VideoChannel>? = coroutineScope {
-        val setup = channels()
-        val current = setup.currentChannel
-        if (current != null && measure(current).works) return@coroutineScope null
-        val others = setup.channels.filter { it.id != setup.current }
-        val speeds = others.map { ch -> async { ch to measure(ch) } }.awaitAll()
-        val best = speeds.filter { it.second.works }.maxByOrNull { it.second.bytesPerSec }?.first ?: return@coroutineScope null
-        setChannel(best.id)
-        current to best
-    }
 }

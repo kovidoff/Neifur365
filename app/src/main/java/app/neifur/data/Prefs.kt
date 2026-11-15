@@ -40,6 +40,8 @@ class Prefs(private val context: Context) {
     private val KEY_MIRROR = stringPreferencesKey("mirror")
     private val KEY_CUSTOM_MIRRORS = stringPreferencesKey("custom_mirrors")
     private val KEY_MIRROR_AUTO = stringPreferencesKey("mirror_auto")
+    private val KEY_CHANNEL_AUTO = stringPreferencesKey("channel_auto")
+    private val KEY_CHANNEL_CHECKED = stringPreferencesKey("channel_checked")
     private val KEY_HISTORY = stringPreferencesKey("history")
     private val KEY_FAVORITES = stringPreferencesKey("favorites")
     private val KEY_QUALITY = intPreferencesKey("quality")
@@ -72,6 +74,14 @@ class Prefs(private val context: Context) {
     /** Auto: the app picks the fastest working address itself. Manual: stick to the one the viewer chose while it works. */
     val mirrorAuto: Flow<Boolean> = context.store.data.map { it[KEY_MIRROR_AUTO] != "0" }.distinctUntilChanged()
     suspend fun setMirrorAuto(auto: Boolean) = context.store.edit { it[KEY_MIRROR_AUTO] = if (auto) "1" else "0" }
+
+    /** The app looks after the account's video channel itself (on by default). */
+    val channelAuto: Flow<Boolean> = context.store.data.map { it[KEY_CHANNEL_AUTO] != "0" }.distinctUntilChanged()
+    suspend fun setChannelAuto(auto: Boolean) = context.store.edit { it[KEY_CHANNEL_AUTO] = if (auto) "1" else "0" }
+
+    /** When the channel was last checked in the background (ms). */
+    suspend fun channelCheckedAt(): Long = context.store.data.first()[KEY_CHANNEL_CHECKED]?.toLongOrNull() ?: 0L
+    suspend fun setChannelCheckedAt(ms: Long) = context.store.edit { it[KEY_CHANNEL_CHECKED] = ms.toString() }
 
     // --- onboarding ----------------------------------------------------------------------------------
     /** Whether the welcome flow is done: "1" done, "0" in progress (or shown again from Settings). */

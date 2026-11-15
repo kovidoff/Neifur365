@@ -18,7 +18,11 @@ data class VideoChannel(val id: Int, val name: String, val desc: String, val tes
     val label: String get() = desc.trim('(', ')', ' ').removePrefix("CDN ").replaceFirstChar { it.uppercase() }.ifBlank { name }
 }
 
-data class ChannelSetup(val channels: List<VideoChannel>, val current: Int?) {
+/**
+ * The account's channels as the site sees this phone. The site keeps two choices: one for visits from Russia
+ * without a VPN and one for everything else, and [fromRussia] says which of them [current] is.
+ */
+data class ChannelSetup(val channels: List<VideoChannel>, val current: Int?, val fromRussia: Boolean? = null) {
     val currentChannel: VideoChannel? get() = channels.firstOrNull { it.id == current }
 }
 
@@ -56,6 +60,6 @@ object ChannelPage {
             )
         }
         if (channels.isEmpty()) return null
-        return ChannelSetup(channels, root["currentChannel"]?.jsonPrimitive?.intOrNull)
+        return ChannelSetup(channels, root["currentChannel"]?.jsonPrimitive?.intOrNull, root["isRu"]?.jsonPrimitive?.booleanOrNull)
     }
 }

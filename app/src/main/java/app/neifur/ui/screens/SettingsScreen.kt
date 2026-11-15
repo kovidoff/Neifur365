@@ -73,12 +73,10 @@ import app.neifur.data.a365.AccountState
 import app.neifur.data.a365.MirrorHealth
 import app.neifur.data.a365.MirrorOrigin
 import app.neifur.data.a365.MirrorStatus
-import app.neifur.data.a365.ChannelSetup
-import app.neifur.data.a365.ChannelSpeed
 import app.neifur.data.a365.VideoChannel
+import app.neifur.data.a365.ChannelSpeed
 import app.neifur.core.userMessage
 import androidx.compose.material.icons.rounded.Speed
-import kotlinx.coroutines.joinAll
 import app.neifur.nfViewModel
 import app.neifur.ui.*
 import coil3.SingletonImageLoader
@@ -112,50 +110,13 @@ class SettingsVm(private val c: Container) : ViewModel() {
         viewModelScope.launch { base = runCatching { c.a365.baseUrl() }.getOrNull() }
     }
 
-    // --- video channel (where the account's video links come from) ---
-    var channels by mutableStateOf<ChannelSetup?>(null)
-        private set
-    var speeds by mutableStateOf<Map<Int, ChannelSpeed>>(emptyMap())
-        private set
-    var testing by mutableStateOf(false)
-        private set
-    var switching by mutableStateOf<Int?>(null)
-        private set
-    var channelNote by mutableStateOf<String?>(null)
-        private set
-
-    fun loadChannels() = viewModelScope.launch {
-        channels = runCatching { c.a365.channels() }.getOrNull()
-    }
-
-    /** Measures every channel at once; each result shows as soon as it's in. */
-    fun testChannels() {
-        val setup = channels ?: return
-        testing = true; speeds = emptyMap(); channelNote = null
-        viewModelScope.launch {
-            setup.channels.map { ch ->
-                launch { val sp = c.a365.measure(ch); speeds = speeds + (ch.id to sp) }
-            }.joinAll()
-            testing = false
-            val best = setup.channels.filter { speeds[it.id]?.works == true }.maxByOrNull { speeds[it.id]!!.bytesPerSec }
-            channelNote = when {
-                best == null -> "Ни один канал сейчас не отвечает. Проверьте интернет"
-                best.id == setup.current -> "Ваш канал — самый быстрый"
-                else -> null
-            }
-        }
-    }
-
-    fun pickChannel(ch: VideoChannel) {
-        if (switching != null || ch.id == channels?.current) return
-        switching = ch.id
-        viewModelScope.launch {
-            runCatching { c.a365.setChannel(ch.id) }
-                .onSuccess { channels = channels?.copy(current = ch.id); channelNote = "Видео теперь идёт через «${ch.label}»" }
-                .onFailure { channelNote = it.userMessage() }
-            switching = null
-        }
-    }
+    // --- video channel (where the account's video links come from): shared with the player and startup ---
+    val channel = c.channels.state
+    val channelAuto = c.prefs.channelAuto
+    fun loadChannels() = viewModelScope.launch { if (c.channels.state.value.setup == null) c.channels.load() }
+    fun testChannels() = c.channels.testAll()
+    fun pickChannel(ch: VideoChannel) = c.channels.pick(ch)
+    fun setChannelAuto(on: Boolean) = c.channels.setAuto(on)
 
     fun removeStudio(key: String) = viewModelScope.launch { c.prefs.removeFavouriteStudio(key) }
     fun clearPicks() = viewModelScope.launch { c.prefs.clearPicks() }
@@ -305,7 +266,7 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
             SectionLabel("Сайт Anime 365"); MirrorsCard(vm)
             val acc by vm.account.collectAsStateWithLifecycle()
             if (acc is AccountState.SignedIn) {
-                LaunchedEffect(Unit) { if (vm.channels == null) vm.loadChannels() }
+                LaunchedEffect(Unit) { vm.loadChannels() }
                 Spacer(Modifier.height(12.dp)); ChannelCard(vm)
             }
         }
@@ -510,55 +471,102 @@ private fun MirrorsCard(vm: SettingsVm) {
 
 /**
  * The account's video channel. Anime 365 serves video through several networks; from some places one of them
- * doesn't get through at all, and then nothing plays. Here they can be measured from this phone and switched.
+ * doesn't get through at all, and then nothing plays. Like the addresses above: the app can keep the fastest
+ * working one by itself, or the viewer picks one.
  */
 @Composable
 private fun ChannelCard(vm: SettingsVm) {
-    val setup = vm.channels
+    val st by vm.channel.collectAsStateWithLifecycle()
+    val auto by vm.channelAuto.collectAsStateWithLifecycle(true)
+    val setup = st.setup
+    val allMeasured = setup != null && st.speeds.size == setup.channels.size
+    val working = setup?.channels?.count { st.speeds[it.id]?.works == true } ?: 0
     Card {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Канал видео", style = Type.Title, color = Nf.Text)
                 Text(
-                    "Через какую сеть Anime 365 отдаёт видео. Если серии не грузятся, смените канал",
-                    style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 2.dp),
+                    when {
+                        setup == null -> "Узнаю каналы…"
+                        st.testing -> "Проверяю скорость…"
+                        allMeasured && working == 0 -> "Сейчас ни один не отвечает"
+                        allMeasured -> "Работают $working из ${setup.channels.size}"
+                        else -> "Через какую сеть Anime 365 отдаёт видео"
+                    },
+                    style = Type.Caption, color = if (allMeasured && working == 0) Nf.Red else Nf.TextMute,
+                    modifier = Modifier.padding(top = 2.dp),
                 )
             }
+            Spacer(Modifier.width(8.dp))
+            Box(
+                Modifier.size(40.dp).clip(CircleShape).background(Nf.Ink).pressable(0.88f, enabled = setup != null && !st.testing) { vm.testChannels() },
+                contentAlignment = Alignment.Center,
+            ) {
+                if (st.testing) CircularProgressIndicator(Modifier.size(18.dp), color = Nf.TextDim, strokeWidth = 2.dp)
+                else Icon(Icons.Rounded.Speed, "Проверить скорость каналов", tint = Nf.TextDim, modifier = Modifier.size(20.dp))
+            }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(14.dp))
+        Segmented(listOf(true to "Автовыбор", false to "Вручную"), auto) { vm.setChannelAuto(it) }
+        Text(
+            if (auto) "Приложение само проверяет канал и включает самый быстрый, если текущий не работает в вашей сети"
+            else "Используется выбранный канал. Если видео не запустится, плеер всё равно подберёт рабочий",
+            style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 8.dp, bottom = 10.dp),
+        )
         Column(Modifier.animateContentSize()) {
-            if (setup == null) Box(Modifier.fillMaxWidth().height(180.dp).clip(RoundedCornerShape(14.dp)).shimmer())
+            if (setup == null) Box(Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(14.dp)).shimmer())
             else setup.channels.forEach { ch ->
-                ChannelRow(ch, ch.id == setup.current, vm.speeds[ch.id], vm.testing && vm.speeds[ch.id] == null, vm.switching == ch.id) { vm.pickChannel(ch) }
+                ChannelRow(
+                    ch, active = ch.id == setup.current, auto = auto, byApp = st.pickedByApp, speed = st.speeds[ch.id],
+                    measuring = ch.id in st.measuring, switching = st.switching == ch.id,
+                    fastest = allMeasured && working > 1 && st.fastest?.id == ch.id,
+                ) { vm.pickChannel(ch) }
             }
         }
-        if (setup != null) {
-            Spacer(Modifier.height(12.dp))
-            PillButton(if (vm.testing) "Проверяю…" else "Проверить скорость", Icons.Rounded.Speed) { if (!vm.testing) vm.testChannels() }
-            // After a test that found something faster: one tap to use it.
-            val best = setup.channels.filter { vm.speeds[it.id]?.works == true }.maxByOrNull { vm.speeds[it.id]!!.bytesPerSec }
-            AnimatedVisibility(!vm.testing && best != null && best.id != setup.current, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-                if (best != null) Row(
-                    Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Nf.Mint.copy(alpha = 0.12f))
-                        .border(1.dp, Nf.Mint.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
-                        .pressable(0.98f) { vm.pickChannel(best) }.padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Rounded.Check, null, tint = Nf.Mint, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(10.dp))
-                    Text("Включить самый быстрый — «${best.label}»", style = Type.Label, color = Nf.Mint, modifier = Modifier.weight(1f))
-                }
+        AnimatedVisibility(st.note != null, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+            Text(st.note.orEmpty(), style = Type.Caption, color = Nf.TextDim, modifier = Modifier.padding(top = 10.dp, start = 2.dp))
+        }
+        // Manual mode after a test that found something faster: one tap to use it.
+        val best: VideoChannel? = st.fastest
+        AnimatedVisibility(
+            !auto && !st.testing && best != null && setup != null && best.id != setup.current,
+            enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut(),
+        ) {
+            val b: VideoChannel = best ?: return@AnimatedVisibility
+            Row(
+                Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Nf.Mint.copy(alpha = 0.12f))
+                    .border(1.dp, Nf.Mint.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                    .pressable(0.98f) { vm.pickChannel(b) }.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.Check, null, tint = Nf.Mint, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(10.dp))
+                Text("Включить самый быстрый — «${b.label}»", style = Type.Label, color = Nf.Mint, modifier = Modifier.weight(1f))
             }
-            vm.channelNote?.let { Text(it, style = Type.Caption, color = Nf.TextDim, modifier = Modifier.padding(top = 10.dp, start = 2.dp)) }
+        }
+        setup?.fromRussia?.let { ru ->
+            Text(
+                if (ru) "Anime 365 хранит отдельный канал для входа из России без VPN — здесь он. На сайте через VPN может стоять другой"
+                else "Вы заходите не из России (или через VPN): здесь канал для этого случая. Для входа из России без VPN на сайте хранится отдельный",
+                style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 12.dp, start = 2.dp),
+            )
         }
     }
 }
 
 @Composable
-private fun ChannelRow(ch: VideoChannel, active: Boolean, speed: ChannelSpeed?, measuring: Boolean, switching: Boolean, onPick: () -> Unit) {
+private fun ChannelRow(
+    ch: VideoChannel, active: Boolean, auto: Boolean, byApp: Boolean, speed: ChannelSpeed?, measuring: Boolean, switching: Boolean,
+    fastest: Boolean, onPick: () -> Unit,
+) {
     val bg by animateColorAsState(if (active) Nf.Violet.copy(alpha = 0.12f) else Color.Transparent, label = "ch")
     val dot by animateColorAsState(
-        when { speed == null -> Nf.Line; speed.works -> Nf.Mint; else -> Nf.Red }, label = "chd",
+        when {
+            speed == null -> Nf.Line
+            speed.works -> Nf.Mint
+            else -> Nf.Red
+        },
+        label = "chd",
     )
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(bg).clickable(onClick = onPick)
@@ -568,12 +576,21 @@ private fun ChannelRow(ch: VideoChannel, active: Boolean, speed: ChannelSpeed?, 
         Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(ch.label, style = Type.Title.copy(fontSize = 15.sp), color = Nf.Text, maxLines = 1)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(ch.label, style = Type.Title.copy(fontSize = 15.sp), color = if (speed?.works == false) Nf.TextMute else Nf.Text, maxLines = 1)
+                if (fastest) Badge("быстрее всех", Nf.Mint)
+            }
             Text(
-                ch.name + if (active) " · используется" else "",
-                style = Type.Caption, color = if (active) Nf.Violet else Nf.TextMute,
+                when {
+                    active && auto -> "${ch.name} · выбран автоматически"
+                    active && byApp -> "${ch.name} · выбран приложением"
+                    active -> "${ch.name} · выбран вами"
+                    else -> ch.name
+                },
+                style = Type.Caption, color = if (active) Nf.Violet else Nf.TextMute, maxLines = 1,
             )
         }
+        Spacer(Modifier.width(8.dp))
         when {
             switching || measuring -> CircularProgressIndicator(Modifier.size(16.dp), color = Nf.TextDim, strokeWidth = 2.dp)
             speed != null -> Text(speed.label, style = Type.Label, color = if (speed.works) Nf.Mint else Nf.Red)
