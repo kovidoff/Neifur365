@@ -34,6 +34,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.MovieFilter
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.Subtitles
@@ -82,17 +83,18 @@ data class StreamUi(
     /** Subtitles came as a separate file (they can be turned off and restyled), not burned into the picture. */
     val externalSubs: Boolean = false,
 ) {
-    val isSubs: Boolean get() = current?.kind == TranslationKind.SubRu || current?.kind == TranslationKind.SubEn
+    val isSubs: Boolean get() = current?.kind?.isSubs == true
 }
 
-fun kindIcon(k: TranslationKind?): ImageVector = when (k) {
-    TranslationKind.SubRu, TranslationKind.SubEn -> Icons.Rounded.ClosedCaption
+fun kindIcon(k: TranslationKind?): ImageVector = when {
+    k == TranslationKind.Raw -> Icons.Rounded.MovieFilter
+    k?.isSubs == true -> Icons.Rounded.ClosedCaption
     else -> Icons.Rounded.Mic
 }
 
-fun kindTint(k: TranslationKind?): Color = when (k) {
-    TranslationKind.SubRu, TranslationKind.SubEn -> Nf.Violet
-    TranslationKind.Raw -> Nf.Mint
+fun kindTint(k: TranslationKind?): Color = when {
+    k == TranslationKind.Raw -> Nf.Mint
+    k?.isSubs == true -> Nf.Violet
     else -> Nf.Pink
 }
 

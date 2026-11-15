@@ -62,7 +62,8 @@ import app.neifur.data.a365.AccountState
 import app.neifur.data.a365.Episode
 import app.neifur.data.a365.ListRecord
 import app.neifur.data.a365.ListStatus
-import app.neifur.data.a365.Picker
+import app.neifur.data.a365.Studio
+import app.neifur.data.a365.Studios
 import app.neifur.data.a365.Series
 import app.neifur.data.a365.Translation
 import app.neifur.data.a365.TranslationKind
@@ -99,7 +100,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
-/** Episodes of the title and the translation that plays. [options] is null while the target episode loads. */
+/**
+ * Episodes of the title and the studio that plays them. [studios] (grouped by kind) is null while they load;
+ * [scope] is the episodes they were counted over: all of them, or the loaded ranges of a very long show.
+ */
 sealed interface PlayState {
     data object Loading : PlayState
     data class Error(val message: String) : PlayState
@@ -108,10 +112,19 @@ sealed interface PlayState {
         val target: Int,
         /** Episodes marked watched in the viewer's Anime 365 list. */
         val watchedOnSite: Int,
-        val options: Map<TranslationKind, List<Translation>>?,
-        val chosen: Translation?,
+        val studios: Map<TranslationKind, List<Studio>>?,
+        val studio: Studio?,
+        val scope: List<Episode> = episodes,
         val trError: String? = null,
-    ) : PlayState
+    ) : PlayState {
+        val all: List<Studio> get() = studios?.values?.flatten().orEmpty()
+
+        /** What plays an episode the chosen studio doesn't have: the closest other studio, same kind first. */
+        fun fallbackFor(ep: Episode): Studio? {
+            val have = all.filter { it.has(ep.id) }
+            return have.filter { it.kind == studio?.kind }.maxByOrNull { it.priority } ?: have.maxByOrNull { it.priority }
+        }
+    }
 }
 
 /** Title page data when Shikimori has nothing (or isn't reachable): built from Anime 365 alone. */
@@ -128,6 +141,9 @@ fun Series.asAnime() = Anime(
  * [requestedId] is an Anime 365 id, or "mal:<id>" for titles reached from Shikimori data (related seasons),
  * which is resolved to the Anime 365 one first.
  */
+private const val LONG_SHOW = 120
+private const val RANGE = 50
+
 class DetailVm(private val c: Container, private val requestedId: String) : ViewModel() {
     val stub: AnimeStub? = c.stubs[requestedId]
     var seriesId by mutableStateOf(requestedId.takeIf { !it.startsWith("mal:") })
@@ -148,7 +164,6 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
     var notice by mutableStateOf<String?>(null)
     var askSignIn by mutableStateOf(false)
 
-    private var translations: List<Translation> = emptyList()
     private var pickKey: String? = null
     private var trJob: Job? = null
 
@@ -215,36 +230,70 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
     private suspend fun retarget() {
         val r = play as? PlayState.Ready ?: return
         val t = targetIndex(r.episodes)
-        if (t != r.target) { play = r.copy(target = t); loadTranslations() }
+        if (t == r.target) return
+        play = r.copy(target = t)
+        // A long show may have moved into a range that isn't counted yet.
+        if (r.episodes.size > LONG_SHOW) ensureRange(rangeOf(r.episodes, t))
     }
 
-    /** Translations of the episode that plays next: they fill the picker and the line under the button. */
+    /** Studios of the whole title (or of the loaded ranges of a long one): they fill the picker and the card. */
     fun loadTranslations() {
         val r = play as? PlayState.Ready ?: return
-        val ep = r.episodes.getOrNull(r.target) ?: return
+        if (r.episodes.isEmpty()) return
         trJob?.cancel()
-        play = r.copy(options = null, trError = null)
+        play = r.copy(studios = null, trError = null)
         trJob = viewModelScope.launch {
-            runCatching { c.a365.episode(ep.id).translations.orEmpty() }
-                .onSuccess { list ->
-                    translations = list
-                    val q = c.prefs.quality.first()
-                    val kind = runCatching { TranslationKind.valueOf(c.prefs.preferredKind.first()) }.getOrDefault(TranslationKind.VoiceRu)
-                    val chosen = Picker.choose(list, pickKey, kind, c.prefs.favouriteAuthors(), q)
-                    play = (play as PlayState.Ready).copy(options = Picker.options(list, q), chosen = chosen)
-                }
+            runCatching {
+                // A long show (One Piece) is counted around the episode you're at; other ranges load on demand.
+                val wanted = if (r.episodes.size <= LONG_SHOW) r.episodes else rangeOf(r.episodes, r.target)
+                fetch(wanted)
+            }.onSuccess { applyStudios(keepChoice = false) }
                 .onFailure { e ->
                     if (e is kotlinx.coroutines.CancellationException) throw e
-                    play = (play as PlayState.Ready).copy(options = emptyMap(), trError = e.userMessage())
+                    play = (play as PlayState.Ready).copy(studios = emptyMap(), trError = e.userMessage())
                 }
         }
     }
 
-    fun select(t: Translation) {
-        pickKey = t.pickKey
+    /** Brings in the translations of another range of a long show (the sheet asks when you open that range). */
+    fun ensureRange(range: List<Episode>) {
+        if (range.all { it.id in loaded }) return
+        viewModelScope.launch {
+            runCatching { fetch(range) }.onSuccess { applyStudios(keepChoice = true) }
+        }
+    }
+
+    private val loaded = HashSet<Long>()
+    private val translations = ArrayList<Translation>()
+
+    private suspend fun fetch(eps: List<Episode>) {
+        val missing = eps.map { it.id }.filterNot { it in loaded }
+        if (missing.isEmpty()) return
+        val got = c.a365.translations(missing)
+        synchronized(translations) { translations += got; loaded += missing }
+    }
+
+    private suspend fun applyStudios(keepChoice: Boolean) {
         val r = play as? PlayState.Ready ?: return
-        play = r.copy(chosen = t)
-        viewModelScope.launch { c.prefs.setPick(seriesId ?: return@launch, t.pickKey, t.author) }
+        val scope = r.episodes.filter { it.id in loaded }
+        val studios = Studios.build(synchronized(translations) { translations.toList() })
+        val kind = runCatching { TranslationKind.valueOf(c.prefs.preferredKind.first()) }.getOrDefault(TranslationKind.VoiceRu)
+        val keep = r.studio?.key?.takeIf { keepChoice }
+        val chosen = studios.firstOrNull { it.key == keep }
+            ?: Studios.choose(studios, pickKey, kind, c.prefs.favouriteAuthors(), scope, scope.indexOfFirst { it.id == r.episodes.getOrNull(r.target)?.id })
+        play = r.copy(studios = Studios.grouped(studios, scope), studio = chosen, scope = scope, trError = null)
+    }
+
+    private fun rangeOf(eps: List<Episode>, index: Int): List<Episode> {
+        val start = (index.coerceAtLeast(0) / RANGE) * RANGE
+        return eps.subList(start, minOf(eps.size, start + RANGE))
+    }
+
+    fun select(s: Studio) {
+        pickKey = s.key
+        val r = play as? PlayState.Ready ?: return
+        play = r.copy(studio = s)
+        viewModelScope.launch { c.prefs.setPick(seriesId ?: return@launch, s.key, s.author) }
     }
 
     private suspend fun loadRecord() {
@@ -278,7 +327,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         val r = play as? PlayState.Ready ?: return
         if (!signedIn) { askSignIn = true; return }
         val s = series?.stub() ?: stub ?: return
-        c.session = PlaySession(s, r.episodes, index, pickKey ?: r.chosen?.pickKey)
+        c.session = PlaySession(s, r.episodes, index, pickKey ?: r.studio?.key, r.studio?.author)
         context.startActivity(Intent(context, PlayerActivity::class.java))
     }
 }
@@ -383,7 +432,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                                 SquareAction(if (favorite) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Избранное", tint = if (favorite) accent else Nf.Text, onClick = vm::toggleFavorite)
                             }
                         }
-                        TranslationLine(play, vm.record?.status, accent) { sheet = SheetPage.Translations }
+                        StudioCard(play, vm.record?.status, accent) { sheet = SheetPage.Translations }
                     }
                 }
 
@@ -473,7 +522,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
             EpisodesSheet(
                 state = play, history = history, isMovie = isMovie, accent = accent, startPage = page,
                 onDismiss = { sheet = null }, onPlay = { idx -> vm.play(ctx, idx) },
-                onPick = vm::select, onRetry = vm::load,
+                onPick = vm::select, onRetry = vm::load, onRange = vm::ensureRange,
             )
         }
         if (listSheet) ListSheet(vm.record?.status, accent, onDismiss = { listSheet = false }) { vm.setStatus(it); listSheet = false }
@@ -721,44 +770,42 @@ private fun WatchButton(
     }
 }
 
-/** One quiet line under the buttons: which translation plays. Tapping it opens the translation picker. */
+/**
+ * The translation the title plays in, right under the buttons: studio, kind, quality, which episodes it has, and
+ * a plain warning when the next episode isn't among them (with what plays instead). Tapping opens the picker.
+ */
 @Composable
-private fun TranslationLine(state: PlayState, status: ListStatus?, accent: Color, onClick: () -> Unit) {
+private fun StudioCard(state: PlayState, status: ListStatus?, accent: Color, onClick: () -> Unit) {
     val r = state as? PlayState.Ready
-    val t = r?.chosen
-    AnimatedContent(Triple(state::class, t?.id, r?.options == null), label = "tl", modifier = Modifier.padding(top = 12.dp)) { _ ->
-        Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(enabled = t != null || r?.trError != null, onClick = onClick)
-                .padding(vertical = 6.dp, horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            when {
-                state is PlayState.Loading || (r != null && r.options == null && r.episodes.isNotEmpty()) ->
-                    Box(Modifier.width(150.dp).height(10.dp).clip(CircleShape).shimmer())
-                t != null -> {
-                    Icon(kindIcon(t.kind), null, tint = accent, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        listOf(t.author, t.kind.short, t.qualityLabel).filter { it.isNotBlank() }.joinToString(" · "),
-                        style = Type.Label, color = Nf.TextDim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-                    )
-                    val n = r.options?.values?.sumOf { it.size } ?: 0
-                    if (n > 1) Text("ещё ${n - 1}", style = Type.Label, color = accent)
-                    Icon(Icons.Rounded.ChevronRight, null, tint = Nf.TextMute, modifier = Modifier.size(18.dp))
+    Column(Modifier.padding(top = 14.dp)) {
+        when {
+            state is PlayState.Loading -> Box(Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(20.dp)).shimmer())
+            r != null && r.episodes.isNotEmpty() -> {
+                StudioSummary(r, accent, onClick = onClick)
+                val target = r.episodes.getOrNull(r.target)
+                val studio = r.studio
+                if (target != null && studio != null && r.scope.any { it.id == target.id } && !studio.has(target.id)) {
+                    val instead = r.fallbackFor(target)
+                    Row(
+                        Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Nf.Amber.copy(alpha = 0.10f))
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Rounded.Info, null, tint = Nf.Amber, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "${target.label} у ${studio.author} нет" + (instead?.let { " — включится ${it.author}" } ?: ""),
+                            style = Type.Caption.copy(fontSize = 12.5.sp), color = Nf.TextDim,
+                        )
+                    }
                 }
-                r?.trError != null -> {
-                    Icon(Icons.Rounded.CloudOff, null, tint = Nf.Red, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(r.trError, style = Type.Label, color = Nf.TextDim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                }
-                else -> Spacer(Modifier.height(16.dp))
             }
         }
+        if (status != null) Text(
+            "В списке «${status.title}»", style = Type.Caption, color = accent,
+            modifier = Modifier.padding(start = 4.dp, top = 8.dp),
+        )
     }
-    if (status != null) Text(
-        "В списке «${status.title}»", style = Type.Caption, color = accent,
-        modifier = Modifier.padding(start = 4.dp, top = 2.dp),
-    )
 }
 
 // --- sections --------------------------------------------------------------------------------------

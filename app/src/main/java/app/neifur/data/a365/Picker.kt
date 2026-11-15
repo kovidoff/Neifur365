@@ -25,7 +25,7 @@ object Picker {
         // A studio the viewer chose on other titles, in the preferred kind first.
         favourites.sortedByDescending { it.startsWith(preferred.name + "|") }
             .firstNotNullOfOrNull { byKey[it] }?.let { return best(it, quality) }
-        val order = listOf(preferred, TranslationKind.VoiceRu, TranslationKind.SubRu, TranslationKind.VoiceEn, TranslationKind.SubEn, TranslationKind.Raw, TranslationKind.Other).distinct()
+        val order = listOf(preferred) + TranslationKind.entries.filter { it != preferred }
         for (k in order) {
             val ofKind = active.filter { it.kind == k }
             if (ofKind.isEmpty()) continue

@@ -82,7 +82,7 @@ data class Translation(
     val episodeId: Long = 0,
     val duration: Double = 0.0,
 ) {
-    val kind: TranslationKind get() = TranslationKind.of(typeKind, typeLang)
+    val kind: TranslationKind get() = TranslationKind.of(type, typeKind, typeLang)
 
     /** Studio name without release notes: "Freedub Studio [ТВ] (BD)" → "Freedub Studio". */
     val author: String
@@ -100,22 +100,37 @@ data class Translation(
         }
 }
 
-enum class TranslationKind(val title: String, val short: String) {
-    VoiceRu("Озвучка", "Озвучка"),
-    SubRu("Русские субтитры", "Субтитры"),
-    VoiceEn("Английская озвучка", "EN озвучка"),
-    SubEn("Английские субтитры", "EN субтитры"),
-    Raw("Оригинал", "Оригинал"),
-    Other("Другие языки", "Другое");
+/**
+ * The kinds of translation exactly as Anime 365 lists them (its `type` field), in the site's order.
+ * [title] heads a group, [short] fits a chip, [inline] goes after a studio name ("AniLibria · озвучка").
+ */
+enum class TranslationKind(val title: String, val short: String, val inline: String, val isSubs: Boolean = false) {
+    VoiceRu("Озвучка", "Озвучка", "озвучка"),
+    SubRu("Русские субтитры", "Субтитры", "субтитры", isSubs = true),
+    Raw("RAW — без перевода", "RAW", "RAW, без перевода"),
+    VoiceEn("Английская озвучка", "EN озвучка", "англ. озвучка"),
+    SubEn("Английские субтитры", "EN субтитры", "англ. субтитры", isSubs = true),
+    VoiceUk("Украинская озвучка", "UA озвучка", "укр. озвучка"),
+    SubJa("Японские субтитры", "JP субтитры", "япон. субтитры", isSubs = true),
+    VoiceOther("Озвучка на других языках", "Другие языки", "озвучка, др. язык"),
+    SubOther("Субтитры на других языках", "Др. субтитры", "субтитры, др. язык", isSubs = true);
 
     companion object {
-        fun of(kind: String, lang: String) = when {
-            kind == "voice" && lang == "ru" -> VoiceRu
-            kind == "sub" && lang == "ru" -> SubRu
-            kind == "voice" && lang == "en" -> VoiceEn
-            kind == "sub" && lang == "en" -> SubEn
-            kind == "raw" -> Raw
-            else -> Other
+        fun of(type: String, kind: String, lang: String): TranslationKind = when (type) {
+            "voiceRu" -> VoiceRu
+            "subRu" -> SubRu
+            "raw" -> Raw
+            "voiceEn" -> VoiceEn
+            "subEn" -> SubEn
+            "voiceUk", "voiceUa" -> VoiceUk
+            "subJa" -> SubJa
+            else -> when {
+                kind == "raw" -> Raw
+                kind == "voice" && lang == "ru" -> VoiceRu
+                kind == "sub" && lang == "ru" -> SubRu
+                kind == "sub" -> SubOther
+                else -> VoiceOther
+            }
         }
     }
 }

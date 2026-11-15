@@ -42,7 +42,7 @@ fun Series.stub() = AnimeStub(id.toString(), title, posterUrl ?: posterUrlSmall,
  * What the player was asked to play: the title's episodes, where to start, and which translation
  * ([pick], a studio key) the viewer chose. Each episode resolves its own translation of that studio.
  */
-data class PlaySession(val anime: AnimeStub, val episodes: List<Episode>, val index: Int, val pick: String?)
+data class PlaySession(val anime: AnimeStub, val episodes: List<Episode>, val index: Int, val pick: String?, val pickName: String? = null)
 
 class Container(app: Application) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)

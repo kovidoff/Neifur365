@@ -691,14 +691,7 @@ private fun TranslationChip(stream: StreamUi, subsOn: Boolean, onClick: () -> Un
     val kindText = when {
         t == null -> null
         stream.isSubs && !stream.externalSubs && !subsOn -> "вшитые субтитры"
-        else -> when (t.kind) {
-            app.neifur.data.a365.TranslationKind.VoiceRu -> "озвучка"
-            app.neifur.data.a365.TranslationKind.SubRu -> "субтитры"
-            app.neifur.data.a365.TranslationKind.VoiceEn -> "англ. озвучка"
-            app.neifur.data.a365.TranslationKind.SubEn -> "англ. субтитры"
-            app.neifur.data.a365.TranslationKind.Raw -> "оригинал"
-            app.neifur.data.a365.TranslationKind.Other -> "другой язык"
-        }
+        else -> t.kind.inline
     }
     Row(
         Modifier.height(42.dp).widthIn(max = 300.dp).clip(CircleShape).background(Color(0x26FFFFFF)).border(1.dp, tint.copy(alpha = 0.35f), CircleShape)

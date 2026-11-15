@@ -13,6 +13,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
@@ -282,6 +283,33 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
     }
 
     suspend fun episode(id: Long): Episode = api("/episodes/$id", Episode.serializer())
+
+    private val translationList = ListSerializer(Translation.serializer())
+    private val translationGate = kotlinx.coroutines.sync.Semaphore(3)
+
+    /**
+     * Every translation of these episodes, trimmed to what the studio picker needs. Asked in batches of episodes
+     * (the site answers at most 1000 rows per request, so each batch is paged), three batches at a time.
+     */
+    suspend fun translations(episodeIds: List<Long>): List<Translation> = coroutineScope {
+        val fields = "id,episodeId,type,typeKind,typeLang,authorsSummary,authorsList,height,priority,isActive,qualityType"
+        episodeIds.distinct().chunked(20).map { chunk ->
+            async {
+                translationGate.withPermit {
+                    val ids = chunk.joinToString("&") { "episodeId[]=$it" }
+                    val out = ArrayList<Translation>()
+                    var offset = 0
+                    while (true) {
+                        val page = api("/translations?limit=1000&offset=$offset&fields=$fields&$ids", translationList)
+                        out += page
+                        if (page.size < 1000) break
+                        offset += page.size
+                    }
+                    out
+                }
+            }
+        }.awaitAll().flatten()
+    }
 
     // --- playback --------------------------------------------------------------------------------------
     suspend fun embed(translationId: Long): Embed = api("/translations/embed/$translationId", Embed.serializer())

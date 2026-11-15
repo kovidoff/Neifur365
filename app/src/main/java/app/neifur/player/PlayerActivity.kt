@@ -60,6 +60,8 @@ class PlayerActivity : ComponentActivity() {
     private var watched by mutableStateOf<Set<Int>>(emptySet())
     /** The studio key the viewer wants; each episode resolves it to its own translation. */
     private var pick: String? = null
+    /** The picked studio as the site writes it, for messages ("ХЗ Лол", not "хз лол"). */
+    private var pickName: String? = null
     /** Translations already marked watched on Anime 365 in this session. */
     private val marked = HashSet<Long>()
     /** Where the picture is on screen: PiP animates from exactly this rectangle instead of the whole window. */
@@ -83,6 +85,7 @@ class PlayerActivity : ComponentActivity() {
         session = s
         index = s.index
         pick = s.pick
+        pickName = s.pickName
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WindowCompat.getInsetsController(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())
@@ -168,7 +171,8 @@ class PlayerActivity : ComponentActivity() {
                     stream = StreamUi(Picker.options(list, quality), chosen)
                     // The chosen studio skipped this episode: say which one plays instead.
                     if (pick != null && chosen.pickKey != pick) {
-                        notice = "${pick!!.substringAfter('|').replaceFirstChar { it.uppercase() }} нет для этой серии — включён ${chosen.author}"
+                        val name = pickName ?: pick!!.substringAfter('|').replaceFirstChar { it.uppercase() }
+                        notice = "У $name нет этой серии — включён ${chosen.author}"
                     }
                     chosen
                 }
@@ -201,6 +205,7 @@ class PlayerActivity : ComponentActivity() {
     /** Another studio from the panel: same episode, same moment, and it becomes the pick for the next episodes. */
     private fun switchTranslation(t: Translation) {
         pick = t.pickKey
+        pickName = t.author
         lifecycleScope.launch { container.prefs.setPick(session.anime.id, t.pickKey, t.author) }
         stream = stream.copy(current = t)
         loadEpisode(index, resumeAt = player.position.takeIf { player.loaded }, keep = true)
