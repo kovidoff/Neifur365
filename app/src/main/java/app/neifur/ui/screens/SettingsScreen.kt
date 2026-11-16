@@ -63,6 +63,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
@@ -744,7 +745,7 @@ private fun <T> Segmented(options: List<Pair<T, String>>, selected: T, onPick: (
     val seg = with(density) { ((w - (inner * 2).roundToPx()) / options.size).toDp() }
     val x by animateDpAsState(seg * index, spring(dampingRatio = 0.8f, stiffness = 500f), label = "segx")
     Box(Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(14.dp)).background(Nf.Ink).border(1.dp, Nf.Line, RoundedCornerShape(14.dp)).onSizeChanged { w = it.width }.padding(inner)) {
-        if (w > 0) Box(Modifier.offset(x = x).width(seg).fillMaxHeight().clip(RoundedCornerShape(11.dp)).background(Nf.Violet.copy(alpha = 0.24f)))
+        if (w > 0) Box(Modifier.offset { IntOffset(x.roundToPx(), 0) }.width(seg).fillMaxHeight().clip(RoundedCornerShape(11.dp)).background(Nf.Violet.copy(alpha = 0.24f)))
         Row(Modifier.fillMaxSize()) {
             options.forEachIndexed { i, (v, label) ->
                 val c by animateColorAsState(if (i == index) Nf.Text else Nf.TextDim, label = "segc")

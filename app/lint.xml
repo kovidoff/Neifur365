@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- local.properties is machine-specific and not in git; its Windows paths trip this check even when escaped. -->
+    <issue id="PropertyEscape">
+        <ignore path="**/local.properties" />
+    </issue>
+</lint>

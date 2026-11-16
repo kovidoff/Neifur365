@@ -53,6 +53,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.neifur.data.a365.Episode
@@ -173,7 +174,7 @@ private fun Tabs(tabs: List<PanelTab>, current: PanelTab, onTab: (PanelTab) -> U
             .onSizeChanged { w = it.width }.padding(inner)
     ) {
         if (w > 0) Box(
-            Modifier.offset(x = x).width(segment).fillMaxHeight().clip(RoundedCornerShape(14.dp))
+            Modifier.offset { IntOffset(x.roundToPx(), 0) }.width(segment).fillMaxHeight().clip(RoundedCornerShape(14.dp))
                 .background(Nf.Violet.copy(alpha = 0.26f)).border(1.dp, Nf.Violet.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
         )
         Row(Modifier.fillMaxSize()) {
