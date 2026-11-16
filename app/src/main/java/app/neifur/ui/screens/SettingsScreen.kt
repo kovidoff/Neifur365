@@ -32,6 +32,7 @@ import androidx.compose.material.icons.automirrored.rounded.Login
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.RestartAlt
@@ -370,6 +371,11 @@ private fun AccountCard(vm: SettingsVm, onLogout: () -> Unit) {
                                 Spacer(Modifier.width(6.dp))
                                 Text("Anime 365 · ID ${s.profile.id}", style = Type.Caption, color = Nf.TextDim, maxLines = 1)
                             }
+                            when (s.profile.subscribed) {
+                                true -> Text("Подписка активна", style = Type.Caption, color = Nf.Mint, modifier = Modifier.padding(top = 2.dp))
+                                false -> Text("Без подписки: видео не запустится", style = Type.Caption, color = Nf.Amber, modifier = Modifier.padding(top = 2.dp))
+                                null -> {}
+                            }
                         }
                     }
                     Text(
@@ -378,6 +384,7 @@ private fun AccountCard(vm: SettingsVm, onLogout: () -> Unit) {
                     )
                     Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         vm.base?.let { b -> PillButton("Профиль на сайте", Icons.AutoMirrored.Rounded.OpenInNew) { openUrl(ctx, "$b/users/profile") } }
+                        if (s.profile.subscribed == false) vm.base?.let { b -> PillButton("Оформить подписку", Icons.Rounded.Lock) { openUrl(ctx, "$b/support/index") } }
                         PillButton("Выйти", Icons.AutoMirrored.Rounded.Logout, tint = Nf.Red, onClick = onLogout)
                     }
                 }

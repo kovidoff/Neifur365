@@ -90,6 +90,16 @@ class Anime365Test {
         assertNull(SitePages.profile("<form>Вход по паролю</form>", "https://smotret-anime.app"))
     }
 
+    @Test fun subscriptionComesFromTheProfilePage() {
+        fun page(card: String) = """<div class="m-small-title">Testing789</div>
+            <div class="card"><div class="card-content"><h2 class="no-margin-top">Подписка</h2>$card</div></div>"""
+        val none = SitePages.profile(page("<p>Не оплачена.<br>ID аккаунта: 307957</p>"), "https://anime365.ru")!!
+        assertEquals(307957L, none.id)
+        assertEquals(false, none.subscribed)
+        assertEquals(true, SitePages.profile(page("<p>Оплачена до 01.03.2027.<br>ID аккаунта: 307957</p>"), "https://anime365.ru")!!.subscribed)
+        assertNull(SitePages.profile("<p>ID аккаунта: 307957</p>", "https://anime365.ru")!!.subscribed)
+    }
+
     @Test fun listPageParses() {
         val html = """
             <div class="card m-animelist-card"><table>

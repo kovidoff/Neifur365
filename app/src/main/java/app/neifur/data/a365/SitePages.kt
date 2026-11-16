@@ -23,7 +23,10 @@ internal object SitePages {
             ?: "Профиль"
         val avatar = (doc.selectFirst("content .card-image.hide-on-small-and-down img") ?: doc.selectFirst(".card-image img"))
             ?.absUrl("src")?.takeIf { it.isNotEmpty() }
-        return Profile(id, name, avatar)
+        // The "Подписка" card: "Не оплачена." without one, the paid period otherwise.
+        val subscribed = doc.select("h2").firstOrNull { it.text().trim() == "Подписка" }?.parent()?.text()
+            ?.let { !it.contains("Не оплачена", ignoreCase = true) }
+        return Profile(id, name, avatar, subscribed)
     }
 
     /** `/catalog/<slug>-<seriesId>/<slug>-<episodeId>` → the two ids. */

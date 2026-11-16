@@ -174,7 +174,8 @@ data class Embed(
 
 // --- site pages ----------------------------------------------------------------------------------------
 
-data class Profile(val id: Long, val name: String, val avatarUrl: String?)
+/** [subscribed]: whether the account has a paid Anime 365 subscription (null: not known, e.g. started offline). */
+data class Profile(val id: Long, val name: String, val avatarUrl: String?, val subscribed: Boolean? = null)
 
 enum class ListStatus(val id: Int, val path: String, val title: String) {
     Watching(1, "watching", "Смотрю"),

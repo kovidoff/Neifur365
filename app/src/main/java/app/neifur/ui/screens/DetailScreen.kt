@@ -519,6 +519,8 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                             }
                         }
                         StudioCard(play, vm.startedHint, vm.record?.status, accent) { startFor = null; sheet = SheetPage.Translations }
+                        // Known up front: the player would only say the same after a tap.
+                        if ((account as? AccountState.SignedIn)?.profile?.subscribed == false) NoSubscriptionHint()
                     }
                 }
 
@@ -1126,4 +1128,25 @@ private fun CollapsingBar(title: String, listState: LazyListState, onBack: () ->
             .background(Color(0x99090910)).border(1.dp, Color(0x14FFFFFF), CircleShape).pressable(0.88f, onClick = onBack),
         contentAlignment = Alignment.Center,
     ) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад", tint = Nf.Text, modifier = Modifier.size(22.dp)) }
+}
+
+
+/** Under the watch button, for an account without a subscription: video won't play until it's paid. */
+@Composable
+private fun NoSubscriptionHint() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    Row(
+        Modifier.padding(top = 12.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Nf.Amber.copy(alpha = 0.09f))
+            .border(1.dp, Nf.Amber.copy(alpha = 0.22f), RoundedCornerShape(16.dp))
+            .pressable(0.98f) { scope.launch { app.neifur.player.openSubscription(ctx) } }
+            .padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.Lock, null, tint = Nf.Amber, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(10.dp))
+        Text("Видео по подписке Anime 365 — у аккаунта её нет", style = Type.Caption, color = Nf.Amber, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(8.dp))
+        Text("Оформить", style = Type.Label, color = Nf.Amber)
+    }
 }

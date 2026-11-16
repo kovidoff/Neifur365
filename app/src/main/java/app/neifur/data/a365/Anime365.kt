@@ -33,6 +33,11 @@ import java.util.concurrent.TimeUnit
 /** Watching needs an account: the site only hands out video links to signed-in viewers. */
 class SignInRequired : ApiError("Войдите в аккаунт Anime 365, чтобы смотреть")
 
+/** The site plays video only with a paid subscription, and this account has none. */
+class SubscriptionRequired : ApiError(MESSAGE) {
+    companion object { const val MESSAGE = "Для просмотра нужна подписка Anime 365" }
+}
+
 class InvalidCredentials : ApiError("Неверный e-mail или пароль")
 
 enum class MirrorHealth { Ok, Slow, Blocked, Down }
@@ -215,6 +220,7 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
             val msg = runCatching { err["message"]!!.jsonPrimitive.content }.getOrNull().orEmpty()
             when {
                 code == 403 && msg.contains("login", true) -> throw sessionLost()
+                msg.contains("subscription", true) -> throw SubscriptionRequired()
                 code == 404 -> throw ApiError("Не найдено на Anime 365")
                 else -> throw ApiError(msg.ifBlank { "Ошибка Anime 365 ($code)" })
             }

@@ -92,6 +92,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
+import app.neifur.container
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.neifur.PlaySession
@@ -502,7 +504,8 @@ fun PlayerScreen(
         }
 
         // ---- failure ----
-        if (failure != null) Column(Modifier.align(Alignment.Center).padding(40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        if (failure == app.neifur.data.a365.SubscriptionRequired.MESSAGE) Paywall(Modifier.align(Alignment.Center), onBack)
+        else if (failure != null) Column(Modifier.align(Alignment.Center).padding(40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text("Не получилось запустить", style = Type.Display, color = Color.White)
             Spacer(Modifier.height(8.dp))
             Text(failure, style = Type.Body, color = Color(0xB3FFFFFF))
@@ -849,5 +852,51 @@ private fun SeekBar(player: MpvPlayer, scrub: Double?, modifier: Modifier, onScr
                 if (chapter != null) Text(chapter, style = Type.Caption, color = Color(0xFFC9B8FF), maxLines = 1)
             }
         }
+    }
+}
+
+
+/**
+ * The account has no subscription: say so plainly and lead to the site's subscription page. Nothing to retry
+ * here; once it's paid, the same episode simply plays.
+ */
+@Composable
+private fun Paywall(modifier: Modifier, onBack: () -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    Column(modifier.padding(40.dp).widthIn(max = 520.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier.size(56.dp).clip(RoundedCornerShape(18.dp)).background(Nf.Amber.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Rounded.Lock, null, tint = Nf.Amber, modifier = Modifier.size(28.dp)) }
+        Spacer(Modifier.height(16.dp))
+        Text("Нужна подписка Anime 365", style = Type.Display, color = Color.White, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Видео на Anime 365 доступно по подписке, а у этого аккаунта её нет. Оформите её на сайте и возвращайтесь: серия запустится как обычно.",
+            style = Type.Body, color = Color(0xB3FFFFFF), textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(22.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(
+                Modifier.clip(CircleShape).background(Nf.Amber).pressable {
+                    scope.launch { openSubscription(ctx) }
+                }.padding(horizontal = 22.dp, vertical = 12.dp),
+            ) { Text("Оформить на сайте", style = Type.Label, color = Color.Black) }
+            Box(Modifier.clip(CircleShape).background(Color(0x33FFFFFF)).pressable(onClick = onBack).padding(horizontal = 22.dp, vertical = 12.dp)) {
+                Text("Назад", style = Type.Label, color = Color.White)
+            }
+        }
+    }
+}
+
+/** The site's subscription page, on the mirror the app uses, in the browser. */
+suspend fun openSubscription(ctx: android.content.Context) {
+    val base = runCatching { ctx.container.a365.baseUrl() }.getOrDefault("https://anime365.ru")
+    runCatching {
+        ctx.startActivity(
+            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("$base/support/index"))
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 }
