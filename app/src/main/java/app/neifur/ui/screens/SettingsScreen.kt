@@ -383,7 +383,7 @@ private fun AccountCard(vm: SettingsVm, onLogout: () -> Unit) {
                         "Списки и отметки о просмотре синхронизируются с сайтом",
                         style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 14.dp),
                     )
-                    Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         vm.base?.let { b -> PillButton("Профиль на сайте", Icons.AutoMirrored.Rounded.OpenInNew) { openUrl(ctx, "$b/users/profile") } }
                         if (s.profile.subscribed == false) vm.base?.let { b -> PillButton("Оформить подписку", Icons.Rounded.Lock) { openUrl(ctx, "$b/support/index") } }
                         PillButton("Выйти", Icons.AutoMirrored.Rounded.Logout, tint = Nf.Red, onClick = onLogout)
@@ -788,6 +788,6 @@ private fun PillButton(text: String, icon: ImageVector?, tint: Color = Nf.Text, 
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) { Icon(icon, null, tint = tint, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(7.dp)) }
-        Text(text, style = Type.Label, color = tint)
+        Text(text, style = Type.Label, color = tint, maxLines = 1)
     }
 }
