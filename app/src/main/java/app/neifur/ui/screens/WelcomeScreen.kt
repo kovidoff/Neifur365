@@ -82,18 +82,29 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.absoluteValue
 import kotlin.math.sin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.geometry.CornerRadius
 
 class WelcomeVm(private val c: Container) : ViewModel() {
     /** What's airing now on Anime 365: the fan of cards on the first page. */
     var airing by mutableStateOf<List<Series>>(emptyList())
         private set
+    /** The catalog couldn't be reached: the waiting deck says so instead of looking busy forever. */
+    var offline by mutableStateOf(false)
+        private set
     val kind = c.prefs.preferredKind
 
     init {
-        viewModelScope.launch {
-            c.prefs.beginOnboarding()
-            runCatching { c.a365.catalog(airing = true, limit = 12) }.onSuccess { list -> airing = list.filter { it.posterUrl != null } }
-        }
+        viewModelScope.launch { c.prefs.beginOnboarding() }
+        load()
+        // No connection on the first try: deal the cards as soon as there is one.
+        viewModelScope.launch { c.online.collect { if (it && offline) load() } }
+    }
+
+    private fun load() = viewModelScope.launch {
+        runCatching { c.a365.catalog(airing = true, limit = 12) }
+            .onSuccess { list -> airing = list.filter { it.posterUrl != null }; offline = false }
+            .onFailure { offline = true }
     }
 
     fun setKind(k: String) = viewModelScope.launch { c.prefs.setPreferredKind(k) }
@@ -139,7 +150,7 @@ fun WelcomeScreen() {
                 val offset = ((pager.currentPage - page) + pager.currentPageOffsetFraction).absoluteValue.coerceIn(0f, 1f)
                 Box(Modifier.fillMaxSize().graphicsLayer { alpha = 1f - offset * 0.8f }) {
                     when (page) {
-                        0 -> IntroPage(vm.airing)
+                        0 -> IntroPage(vm.airing, vm.offline)
                         1 -> KindPage(vm, visible = pager.settledPage == 1 || pager.targetPage == 1)
                         else -> AccountPage(signIn, visible = pager.settledPage == 2 || pager.targetPage == 2, belowPx = belowPager)
                     }
@@ -171,9 +182,9 @@ fun WelcomeScreen() {
 
 /** What's airing now, dealt from a deck, and what Neifur 365 is. */
 @Composable
-private fun IntroPage(airing: List<Series>) {
+private fun IntroPage(airing: List<Series>, offline: Boolean) {
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { PosterDeck(airing) }
+        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { PosterDeck(airing, offline) }
         Column(Modifier.fillMaxWidth().padding(horizontal = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Rise(0) { Wordmark(big = true) }
             Rise(1) {
@@ -200,7 +211,7 @@ private fun IntroPage(airing: List<Series>) {
  * mid-move, so no card ever jumps over another.
  */
 @Composable
-private fun PosterDeck(items: List<Series>) {
+private fun PosterDeck(items: List<Series>, offline: Boolean) {
     var head by remember { mutableIntStateOf(0) }
     val t = remember { Animatable(0f) }
     LaunchedEffect(items.size) {
@@ -223,16 +234,60 @@ private fun PosterDeck(items: List<Series>) {
                 drawOval(Brush.radialGradient(listOf(Nf.Violet.copy(alpha = 0.34f), Nf.Pink.copy(alpha = 0.10f), Color.Transparent)))
             }
         )
-        if (items.isEmpty()) {
-            Box(Modifier.size(cardW, cardH).clip(RoundedCornerShape(26.dp)).shimmer())
-            return@BoxWithConstraints
+        // Until the covers arrive (a mirror is being picked on the very first start): the same fan, empty.
+        // The real deck fades in over it, so the page never jumps.
+        val ready = items.isNotEmpty()
+        val shown by animateFloatAsState(if (ready) 1f else 0f, tween(520), label = "deck")
+        if (shown < 1f) GhostDeck(offline, wave, Modifier.size(cardW, cardH), fade = { 1f - shown })
+        if (ready) Box(Modifier.graphicsLayer { alpha = shown; translationY = (1f - shown) * 18.dp.toPx() }, contentAlignment = Alignment.Center) {
+            val n = items.size
+            // Back to front: slots 3..0. The card on slot 3 is invisible and fades in as it moves up to slot 2.
+            for (k in minOf(3, n - 1) downTo 0) {
+                val a = items[(head + k) % n]
+                key(a.id) {
+                    DeckCard(a, k, t, wave, Modifier.size(cardW, cardH))
+                }
+            }
         }
-        val n = items.size
-        // Back to front: slots 3..0. The card on slot 3 is invisible and fades in as it moves up to slot 2.
-        for (k in minOf(3, n - 1) downTo 0) {
-            val a = items[(head + k) % n]
-            key(a.id) {
-                DeckCard(a, k, t, wave, Modifier.size(cardW, cardH))
+    }
+}
+
+/** Three blank cards in the deck's own places, breathing gently, and a word on what's going on. */
+@Composable
+private fun GhostDeck(offline: Boolean, wave: State<Float>, cardModifier: Modifier, fade: () -> Float) {
+    val shape = RoundedCornerShape(26.dp)
+    val breath = rememberInfiniteTransition(label = "ghost")
+    val glow = breath.animateFloat(0.35f, 1f, infiniteRepeatable(tween(1100, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "g")
+    Box(Modifier.graphicsLayer { alpha = fade() }, contentAlignment = Alignment.Center) {
+        for (k in 2 downTo 0) {
+            Box(
+                cardModifier
+                    .graphicsLayer {
+                        val bob = sin(wave.value) * 5.dp.toPx()
+                        val sc = 1f - 0.075f * k
+                        scaleX = sc; scaleY = sc
+                        translationX = k * 18.dp.toPx()
+                        translationY = -k * 24.dp.toPx() + bob * (1f - k * 0.3f)
+                        rotationZ = k * 4f
+                        this.shape = shape; clip = true
+                    }
+                    .background(Brush.verticalGradient(listOf(Nf.SurfaceHi, Nf.Surface)))
+                    .then(if (k == 0) Modifier.shimmer() else Modifier)
+                    .drawBehind { if (k > 0) drawRect(Nf.Ink.copy(alpha = 0.22f * k)) }
+                    .border(1.dp, Color(0x1FFFFFFF), shape),
+            ) {
+                if (k == 0) Column(Modifier.align(Alignment.BottomStart).padding(16.dp)) {
+                    val dot = if (offline) Nf.Amber else Nf.Mint
+                    Box(Modifier.size(8.dp).graphicsLayer { alpha = if (offline) 1f else glow.value }.clip(CircleShape).background(dot))
+                    Text(
+                        if (offline) "Нет связи" else "Загружаем каталог",
+                        style = Type.Title.copy(fontSize = 15.sp), color = Nf.Text, modifier = Modifier.padding(top = 10.dp),
+                    )
+                    Text(
+                        if (offline) "Anime 365 не отвечает. Обложки появятся, когда будет интернет" else "Подключаемся к Anime 365",
+                        style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
             }
         }
     }
@@ -302,7 +357,7 @@ private val kindOptions = listOf(
 private fun KindPage(vm: WelcomeVm, visible: Boolean) {
     val kind by vm.kind.collectAsStateWithLifecycle("VoiceRu")
     Column(Modifier.fillMaxSize()) {
-        StudioMarquee(Modifier.weight(1f).fillMaxWidth())
+        StudioMarquee(kind, Modifier.weight(1f).fillMaxWidth())
         Column(Modifier.padding(horizontal = 24.dp)) {
             Text("Как вы смотрите?", style = Type.Hero, color = Nf.Text)
             Text(
@@ -344,19 +399,41 @@ private fun KindCard(o: KindOption, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
+/** What a chip in the drifting cloud stands for: the way of watching it belongs to, or none (picture quality). */
+private enum class ChipKind(val key: String?, val tint: Color) {
+    Voice("VoiceRu", Nf.Pink), Sub("SubRu", Nf.Violet), Raw("Raw", Nf.Mint), Plain(null, Nf.TextDim)
+}
+
 /**
- * Studio names drifting by: Anime 365 is about the choice of voices and translations. Rows run level at their own
- * speeds, moved by whole pixels so the letters stay crisp, and loop seamlessly. The block melts into the background
- * on every edge through an alpha mask, whatever colour is behind it.
+ * Real names from Anime 365: the studios that upload most often, by kind. Every row mixes kinds, so whichever way
+ * of watching is chosen, its chips light up across the whole cloud.
+ */
+private val chipRows: List<Triple<List<Pair<String, ChipKind>>, Float, Boolean>> = listOf(
+    Triple(listOf("AniStar" to ChipKind.Voice, "Crunchyroll" to ChipKind.Sub, "Dream Cast" to ChipKind.Voice, "SubsPlease" to ChipKind.Raw,
+        "Animaunt" to ChipKind.Voice, "FanSUBik" to ChipKind.Sub, "HDEncodes" to ChipKind.Raw, "1080p" to ChipKind.Plain), 26f, false),
+    Triple(listOf("Kazoku Project" to ChipKind.Sub, "AniDUB" to ChipKind.Voice, "Японский звук" to ChipKind.Raw, "AniLiberty" to ChipKind.Voice,
+        "Netflix" to ChipKind.Sub, "Студия Константина Исаева" to ChipKind.Voice, "Без перевода" to ChipKind.Raw, "BD" to ChipKind.Plain), 19f, true),
+    Triple(listOf("Озвучка" to ChipKind.Voice, "Sanae" to ChipKind.Sub, "SHIZA Project" to ChipKind.Voice, "Оригинал" to ChipKind.Raw,
+        "Freedub Studio" to ChipKind.Voice, "Субтитры" to ChipKind.Sub, "Dynamis One" to ChipKind.Raw, "КОМНАТА ДИДИ" to ChipKind.Voice), 23f, false),
+    Triple(listOf("JAM CLUB" to ChipKind.Voice, "SubVost" to ChipKind.Sub, "Shiniori-Raws" to ChipKind.Raw, "FumoDub" to ChipKind.Voice,
+        "YoruSub" to ChipKind.Sub, "Японский BD" to ChipKind.Raw, "TV-версия" to ChipKind.Plain, "AniBaza" to ChipKind.Voice), 17f, true),
+)
+
+/**
+ * Studio names drifting by: Anime 365 is about the choice of voices and translations. Each chip's colour is its kind
+ * (the same as the cards below), so it never changes as the rows loop; the chosen kind glows and the rest step back.
+ * Rows run level at their own speeds, moved by whole pixels so the letters stay crisp, and loop seamlessly. The block
+ * melts into the background on every edge through an alpha mask, whatever colour is behind it.
  */
 @Composable
-private fun StudioMarquee(modifier: Modifier) {
-    val rows = listOf(
-        Triple(listOf("AniLibria", "AniDUB", "Dream Cast", "StudioBand", "AniStar", "SHIZA Project", "Animaunt"), 26f, false),
-        Triple(listOf("Субтитры", "Kazoku Project", "AniRise", "JAM CLUB", "AnimeVost", "Crunchyroll", "Оригинал"), 19f, true),
-        Triple(listOf("Озвучка", "Freedub", "AniMedia", "OnWave", "SovetRomantica", "AniJoy", "1080p"), 23f, false),
-        Triple(listOf("AniMaunt", "Anilibria.TV", "Zendos", "BD", "Субтитры RU", "TV-версия", "Persona99"), 17f, true),
-    )
+private fun StudioMarquee(chosen: String, modifier: Modifier) {
+    // How lit each kind is: 1 for the chosen way of watching, low for the others. Read only while drawing.
+    val lit = ChipKind.entries.associateWith { k ->
+        animateFloatAsState(
+            when (k.key) { null -> 0.22f; chosen -> 1f; else -> 0.15f },
+            tween(450, easing = FastOutSlowInEasing), label = "lit-$k",
+        )
+    }
     Column(
         modifier
             .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
@@ -367,17 +444,17 @@ private fun StudioMarquee(modifier: Modifier) {
             },
         verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
     ) {
-        rows.forEachIndexed { r, (names, speed, reverse) -> MarqueeRow(names, speed, reverse, r) }
+        chipRows.forEach { (chips, speed, reverse) -> MarqueeRow(chips, speed, reverse, lit) }
     }
 }
 
 @Composable
-private fun MarqueeRow(names: List<String>, dpPerSecond: Float, reverse: Boolean, row: Int) {
+private fun MarqueeRow(chips: List<Pair<String, ChipKind>>, dpPerSecond: Float, reverse: Boolean, lit: Map<ChipKind, State<Float>>) {
     var width by remember { mutableIntStateOf(0) }
     val offset = remember { mutableFloatStateOf(0f) }
     val gap = with(LocalDensity.current) { 10.dp.toPx() }
     val speed = with(LocalDensity.current) { dpPerSecond.dp.toPx() }
-    // Two copies of the names side by side: one period is half the row plus one gap.
+    // Two copies of the chips side by side: one period is half the row plus one gap.
     val period = (width + gap) / 2f
     LaunchedEffect(period) {
         if (period <= 0f) return@LaunchedEffect
@@ -396,14 +473,26 @@ private fun MarqueeRow(names: List<String>, dpPerSecond: Float, reverse: Boolean
             },
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        (names + names).forEachIndexed { i, n ->
-            val accent = listOf(Nf.Violet, Nf.Pink, Nf.Mint)[(i + row) % 3]
-            Text(
-                n, style = Type.Title.copy(fontSize = 16.sp), color = Nf.Text.copy(alpha = 0.88f), maxLines = 1, softWrap = false,
-                modifier = Modifier.clip(CircleShape).background(accent.copy(alpha = 0.13f))
-                    .border(1.dp, accent.copy(alpha = 0.28f), CircleShape).padding(horizontal = 18.dp, vertical = 10.dp),
-            )
-        }
+        (chips + chips).forEach { (name, kind) -> StudioChip(name, kind, lit.getValue(kind)) }
+    }
+}
+
+@Composable
+private fun StudioChip(name: String, kind: ChipKind, lit: State<Float>) {
+    Box(
+        Modifier
+            .drawBehind {
+                val l = lit.value
+                val r = CornerRadius(size.height / 2)
+                drawRoundRect(kind.tint.copy(alpha = 0.04f + 0.14f * l), cornerRadius = r)
+                drawRoundRect(kind.tint.copy(alpha = 0.10f + 0.40f * l), cornerRadius = r, style = Stroke(1.dp.toPx()))
+            }
+            .padding(horizontal = 18.dp, vertical = 10.dp),
+    ) {
+        Text(
+            name, style = Type.Title.copy(fontSize = 16.sp), color = Nf.Text, maxLines = 1, softWrap = false,
+            modifier = Modifier.graphicsLayer { alpha = 0.32f + 0.64f * lit.value },
+        )
     }
 }
 
