@@ -504,7 +504,8 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                             WatchButton(play, history, anime, isMovie, accent, signedIn, Modifier.weight(1f), { vm.askSignIn = true }) { idx ->
                                 if ((play as? PlayState.Ready)?.started == false) { startFor = idx; sheet = SheetPage.Translations } else vm.play(ctx, idx)
                             }
-                            if (!isMovie) {
+                            // An announcement has nothing to list yet: the button would open an empty sheet.
+                            if (!isMovie && (play as? PlayState.Ready)?.episodes?.isEmpty() != true) {
                                 Spacer(Modifier.width(10.dp))
                                 SquareAction(Icons.AutoMirrored.Rounded.FormatListBulleted, "Серии") { sheet = SheetPage.Episodes }
                             }

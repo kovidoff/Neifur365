@@ -15,6 +15,7 @@ sealed interface AccountState {
 /** The viewer's Anime 365 account, shared by every screen. */
 class Account(
     private val api: Anime365,
+    private val prefs: app.neifur.data.Prefs,
     private val scope: CoroutineScope,
     /** Runs before an account is shown as signed in (the app moves its per-account data over to it). */
     private val beforeSignIn: suspend (Profile) -> Unit = {},
@@ -29,8 +30,14 @@ class Account(
     val expired: StateFlow<Boolean> = _expired
     @Volatile private var checking = false
 
+    /** The start-up check couldn't reach the site (offline): the state shown is a guess until it answers. */
+    @Volatile var unconfirmed = false
+        private set
+
     private suspend fun signIn(p: Profile) {
         runCatching { beforeSignIn(p) }
+        runCatching { prefs.saveProfile(p) }
+        unconfirmed = false
         _expired.value = false
         _state.value = AccountState.SignedIn(p)
     }
@@ -43,18 +50,34 @@ class Account(
                 checking = true
                 scope.launch {
                     val p = runCatching { api.profile() }
-                    if (p.isSuccess && p.getOrNull() == null) { _expired.value = true; _state.value = AccountState.SignedOut }
+                    if (p.isSuccess && p.getOrNull() == null) {
+                        _expired.value = true; unconfirmed = false; _state.value = AccountState.SignedOut
+                        runCatching { prefs.saveProfile(null) }
+                    }
                     checking = false
                 }
             }
         }
     }
 
-    /** Re-checks the saved session; a network failure keeps the last known state instead of signing out. */
+    /**
+     * Re-checks the saved session. A network failure keeps the last known state instead of signing out; at start-up
+     * it shows the account last seen (if any) until the site can confirm it.
+     */
     fun refresh() = scope.launch {
         runCatching { api.profile() }
-            .onSuccess { if (it != null) signIn(it) else _state.value = AccountState.SignedOut }
-            .onFailure { if (_state.value == AccountState.Unknown) _state.value = AccountState.SignedOut }
+            .onSuccess {
+                if (it != null) signIn(it)
+                else { unconfirmed = false; _state.value = AccountState.SignedOut; runCatching { prefs.saveProfile(null) } }
+            }
+            .onFailure {
+                if (_state.value == AccountState.Unknown) {
+                    val last = runCatching { prefs.savedProfile() }.getOrNull()
+                    // Either way the site hasn't said yet: ask again once the network is back.
+                    unconfirmed = true
+                    _state.value = if (last != null) AccountState.SignedIn(last) else AccountState.SignedOut
+                }
+            }
     }
 
     suspend fun login(email: String, password: String): Profile =
@@ -73,6 +96,8 @@ class Account(
         api.logout()
         runCatching { android.webkit.CookieManager.getInstance().apply { removeAllCookies(null); flush() } }
         _expired.value = false
+        unconfirmed = false
         _state.value = AccountState.SignedOut
+        scope.launch { runCatching { prefs.saveProfile(null) } }
     }
 }

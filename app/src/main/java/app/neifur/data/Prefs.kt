@@ -63,6 +63,7 @@ class Prefs(private val context: Context) {
     private val KEY_ALERTS_CHECKED = stringPreferencesKey("alerts_checked")
     private val KEY_OWNER = stringPreferencesKey("owner")
     private val KEY_STASH = stringPreferencesKey("account_stash")
+    private val KEY_PROFILE = stringPreferencesKey("profile")
 
     /** What belongs to one Anime 365 account rather than to the phone: put aside when another account signs in. */
     private val accountKeys = listOf(KEY_HISTORY, KEY_PICKS, KEY_ALERTS_SEEN, KEY_ALERTS_CHECKED, KEY_CHANNEL_CHECKED)
@@ -116,6 +117,20 @@ class Prefs(private val context: Context) {
             p[KEY_STASH] = AppJson.encodeToString(stashSer, stash.entries.toList().takeLast(4).associate { it.key to it.value })
         }
         return changed
+    }
+
+    /**
+     * The account last seen signed in. Started without a connection, the app shows it instead of "sign in"
+     * and confirms it with the site once the network is back.
+     */
+    suspend fun savedProfile(): app.neifur.data.a365.Profile? = context.store.data.first()[KEY_PROFILE]?.split('	')?.let { f ->
+        val id = f.getOrNull(0)?.toLongOrNull() ?: return@let null
+        app.neifur.data.a365.Profile(id, f.getOrNull(1).orEmpty(), f.getOrNull(2)?.ifBlank { null })
+    }
+
+    suspend fun saveProfile(p: app.neifur.data.a365.Profile?) = context.store.edit {
+        if (p == null) it.remove(KEY_PROFILE)
+        else it[KEY_PROFILE] = listOf(p.id.toString(), p.name.replace('	', ' '), p.avatarUrl.orEmpty()).joinToString("	")
     }
 
     // --- onboarding ----------------------------------------------------------------------------------

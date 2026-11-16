@@ -3,6 +3,12 @@ package app.neifur
 import android.app.Application
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.stateIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
@@ -57,7 +63,7 @@ class Container(app: Application) {
     val prefs = Prefs(app)
     val shikimori = ShikimoriApi(http)
     val a365 = Anime365(app, http, prefs)
-    val account = Account(a365, scope) { p ->
+    val account = Account(a365, prefs, scope) { p ->
         // Another account than last time: its own history, picks and marks come in, the previous one's are put
         // aside, and nothing shown so far (new-episode notifications, a half-restored player) is about it.
         if (prefs.claimFor(p.id)) {
@@ -68,6 +74,32 @@ class Container(app: Application) {
     val lists = Lists(a365, account, scope)
     val channels = ChannelPilot(a365, prefs, account, scope) {
         app.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered ?: false
+    }
+
+    /** Whether the phone has a network right now. Coming back online, what failed for lack of it is retried. */
+    val online: StateFlow<Boolean> = callbackFlow {
+        val cm = app.getSystemService(ConnectivityManager::class.java)
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { trySend(true) }
+            override fun onLost(network: Network) { trySend(cm.activeNetwork != null) }
+        }
+        trySend(cm.activeNetwork != null)
+        cm.registerDefaultNetworkCallback(cb)
+        awaitClose { cm.unregisterNetworkCallback(cb) }
+    }.stateIn(scope, SharingStarted.Eagerly, true)
+
+    init {
+        // Started offline: confirm the account with the site once there is a network, then load its lists.
+        scope.launch {
+            online.collect { on ->
+                if (on && account.unconfirmed) {
+                    val before = account.state.value
+                    account.refresh().join()
+                    // Same account as guessed: the state didn't change, so the lists need asking for themselves.
+                    if (!account.unconfirmed && account.state.value == before) lists.refresh()
+                }
+            }
+        }
     }
 
     val stubs = HashMap<String, AnimeStub>()

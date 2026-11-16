@@ -119,7 +119,8 @@ class CatalogVm(private val c: Container) : ViewModel() {
 private val kinds = listOf(null to "Любой тип", "tv" to "TV сериал", "movie" to "Фильм", "ova" to "OVA", "ona" to "ONA", "special" to "Спешл")
 private val statuses = listOf(false to "Любой статус", true to "Онгоинг")
 private val years: List<Pair<Int?, String>> = listOf<Pair<Int?, String>>(null to "Любой год") +
-    (java.time.LocalDate.now().year downTo 1980).map { it to it.toString() }
+    // Next year too: announcements are listed under it well before it starts.
+    (java.time.LocalDate.now().year + 1 downTo 1980).map { it to it.toString() }
 
 @Composable
 fun CatalogScreen(open: OpenAnime) {

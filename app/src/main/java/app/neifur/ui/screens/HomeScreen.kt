@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -82,6 +83,8 @@ class HomeVm(private val c: Container) : ViewModel() {
 
     init {
         load()
+        // The catalog failed for lack of a network: try again by itself once it's back.
+        viewModelScope.launch { c.online.collect { if (it && feed.value is Load.Error) load() } }
     }
 
     /** New episodes come out while the app sits in the background: reread the lists when Home shows up again. */
@@ -118,10 +121,14 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit) {
 
     Box(Modifier.fillMaxSize()) {
         when (val f = feed) {
-            is Load.Error -> EmptyState(
+            // Nothing to show at all: the full message. With something watched on this phone, it stays reachable.
+            is Load.Error -> if (cont.isEmpty()) EmptyState(
                 "Не получилось загрузить каталог", f.message, Icons.Rounded.WifiOff,
                 Modifier.align(Alignment.Center), action = "Повторить", onAction = vm::load,
-            )
+            ) else LazyColumn(contentPadding = PaddingValues(bottom = 120.dp), modifier = Modifier.statusBarsPadding().padding(top = 60.dp)) {
+                item(key = "offline") { OfflineCard(f.message, vm::load) }
+                item(key = "continue") { ContinueRow(cont, lists.titles, open) }
+            }
             else -> {
                 val data = (f as? Load.Ready)?.value
                 LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 120.dp)) {
@@ -171,6 +178,30 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit) {
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.Rounded.Search, "Поиск", tint = Nf.Text, modifier = Modifier.size(22.dp)) }
         }
+    }
+}
+
+/** The catalog didn't load, but what's watched here is still below: a compact note instead of a full-screen error. */
+@Composable
+private fun OfflineCard(message: String, retry: () -> Unit) {
+    Row(
+        Modifier.padding(horizontal = 20.dp).padding(top = 12.dp, bottom = 8.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp))
+            .background(Nf.Surface).border(1.dp, Nf.Line, RoundedCornerShape(20.dp)).padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(40.dp).clip(CircleShape).background(Nf.Ink), contentAlignment = Alignment.Center) {
+            Icon(Icons.Rounded.WifiOff, null, tint = Nf.TextDim, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Каталог не загрузился", style = Type.Title.copy(fontSize = 15.sp), color = Nf.Text)
+            Text(message, style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 2.dp))
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            "Повторить", style = Type.Label, color = Nf.Text,
+            modifier = Modifier.clip(CircleShape).background(Nf.SurfaceHi).pressable(0.95f, onClick = retry).padding(horizontal = 14.dp, vertical = 9.dp),
+        )
     }
 }
 
