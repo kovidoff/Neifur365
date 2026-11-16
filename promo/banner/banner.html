@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Neifur 365 banner</title>
+<style>
+  @font-face { font-family: Unbounded; src: url(unbounded.ttf); font-weight: 200 900; }
+  @font-face { font-family: Manrope; src: url(manrope.ttf); font-weight: 200 800; }
+  :root {
+    --ink: #08080C; --text: #F3F1FA; --dim: #A9A6BC; --mute: #6F6C84; --line: #282836;
+    --violet: #9B7BFF; --pink: #FF6B9A; --mint: #5CF2B0; --amber: #FFC56B;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 2560px; height: 1440px; overflow: hidden; background: var(--ink); }
+  body { position: relative; font-family: Manrope, sans-serif; color: var(--text); }
+
+  /* ---- backdrop ---- */
+  .bg { position: absolute; inset: 0; overflow: hidden; }
+  .glow { position: absolute; border-radius: 50%; filter: blur(140px); }
+  .g1 { width: 1300px; height: 1000px; right: -200px; top: -380px; background: #3A2A86; opacity: .75; }
+  .g2 { width: 1000px; height: 800px; left: -300px; bottom: -420px; background: #6B2346; opacity: .55; }
+  .g3 { width: 700px; height: 600px; left: 1250px; top: 700px; background: #2B1F5E; opacity: .7; }
+  .grid { position: absolute; inset: 0;
+    background-image: linear-gradient(rgba(255,255,255,.028) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.028) 1px, transparent 1px);
+    background-size: 80px 80px;
+    mask-image: radial-gradient(ellipse 70% 80% at 30% 45%, #000 20%, transparent 75%); }
+  .ring { position: absolute; border-radius: 50%; border: 2px solid rgba(155,123,255,.10); }
+  .r1 { width: 1500px; height: 1500px; left: 1350px; top: -280px; }
+  .r2 { width: 1100px; height: 1100px; left: 1550px; top: -80px; border-color: rgba(255,107,154,.08); }
+
+  /* ---- copy ---- */
+  .copy { position: absolute; left: 150px; top: 0; bottom: 0; width: 1060px; display: flex; flex-direction: column; justify-content: center; }
+  .tag { display: inline-flex; align-self: flex-start; align-items: center; gap: 18px; padding: 16px 30px 16px 22px;
+    border: 2px solid rgba(155,123,255,.35); border-radius: 999px; background: rgba(155,123,255,.08);
+    font: 700 30px Manrope; letter-spacing: .14em; color: #C7B6FF; }
+  .tag .dot { width: 16px; height: 16px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 18px var(--mint); }
+  .logo { display: flex; align-items: center; gap: 28px; margin-top: 52px; }
+  .logo .word { font: 800 176px/0.9 Unbounded; letter-spacing: -.035em; }
+  .badge { font: 800 90px/1 Unbounded; letter-spacing: -.02em; color: #0B0A12; padding: 16px 28px 19px; border-radius: 34px;
+    background: linear-gradient(100deg, var(--violet), var(--pink)); box-shadow: 0 20px 80px rgba(220,110,200,.35); transform: translateY(10px); }
+  .headline { margin-top: 70px; font: 700 76px/1.12 Unbounded; letter-spacing: -.02em; }
+  .headline em { font-style: normal; background: linear-gradient(100deg, #C2AEFF, var(--pink)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .feats { list-style: none; margin-top: 64px; display: grid; gap: 30px; }
+  .feats li { display: flex; align-items: center; gap: 26px; font: 500 40px Manrope; color: #D9D6E8; }
+  .feats i { width: 20px; height: 20px; border-radius: 7px; flex: none; }
+
+  /* ---- devices ---- */
+  .tablet { position: absolute; left: 1250px; top: 110px; width: 1200px; padding: 18px; border-radius: 62px;
+    background: #121219; border: 2px solid #2C2C3A; box-shadow: 0 60px 140px rgba(0,0,0,.6), inset 0 0 0 2px #000; }
+  .tablet img { display: block; width: 100%; border-radius: 46px; }
+  .phone { position: absolute; width: 520px; padding: 16px; border-radius: 82px; background: #121219;
+    border: 2px solid #30303F; box-shadow: 0 70px 160px rgba(0,0,0,.75), 0 0 0 1px #000 inset; }
+  .phone .screen { position: relative; border-radius: 66px; overflow: hidden; background: var(--ink); }
+  .phone .bar { height: 50px; display: flex; align-items: center; justify-content: space-between; padding: 6px 44px 0 50px;
+    font: 700 22px Manrope; color: #fff; position: absolute; top: 0; left: 0; right: 0; z-index: 2; }
+  .phone .bar .ic { display: flex; gap: 8px; align-items: center; }
+  .phone .bar .sig { display: flex; align-items: flex-end; gap: 3px; height: 16px; }
+  .phone .bar .sig b { width: 4px; background: #fff; border-radius: 1px; }
+  .phone .bar .bat { width: 32px; height: 16px; border-radius: 5px; border: 2px solid rgba(255,255,255,.8); padding: 2px; }
+  .phone .bar .bat::after { content: ""; display: block; width: 70%; height: 100%; background: #fff; border-radius: 2px; }
+  .phone .cam { position: absolute; top: 16px; left: 50%; width: 24px; height: 24px; margin-left: -12px; border-radius: 50%; background: #000; z-index: 3; box-shadow: 0 0 0 3px #15151d; }
+  .phone img { display: block; width: 100%; margin-top: 50px; }
+  .p1 { left: 1300px; top: 600px; transform: rotate(-4deg); }
+  .p2 { left: 1880px; top: 500px; transform: rotate(3deg); }
+
+  /* chip floating near the phones */
+  .chip { position: absolute; display: flex; align-items: center; gap: 16px; padding: 18px 28px 18px 18px; border-radius: 30px;
+    background: rgba(18,18,26,.82); border: 2px solid rgba(255,255,255,.08); backdrop-filter: blur(20px);
+    box-shadow: 0 30px 80px rgba(0,0,0,.55); font: 600 28px Manrope; color: var(--text); white-space: nowrap; }
+  .chip .ico { width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center; }
+  .chip small { display: block; font: 500 22px Manrope; color: var(--dim); margin-top: 2px; }
+  .c1 { left: 1110px; top: 1220px; }
+  .c1 .ico { background: rgba(255,107,154,.16); }
+  .c2 { left: 2150px; top: 1270px; }
+  .c2 .ico { background: rgba(92,242,176,.14); }
+</style>
+</head>
+<body>
+  <div class="bg">
+    <div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div>
+    <div class="grid"></div>
+    <div class="ring r1"></div><div class="ring r2"></div>
+  </div>
+
+  <section class="copy">
+    <div class="tag"><span class="dot"></span>ANDROID · ПУБЛИЧНАЯ БЕТА</div>
+    <div class="logo"><span class="word">neifur</span><span class="badge">365</span></div>
+    <h1 class="headline">Аниме <em>в любимой<br>озвучке</em></h1>
+    <ul class="feats">
+      <li><i style="background:var(--pink)"></i>Озвучка, субтитры или оригинал</li>
+      <li><i style="background:var(--violet)"></i>Списки общие с Anime 365</li>
+      <li><i style="background:var(--mint)"></i>Плеер mpv до 1080p</li>
+      <li><i style="background:var(--amber)"></i>Уведомления о новых сериях</li>
+    </ul>
+  </section>
+
+  <div class="tablet"><img src="shots/player.png" alt=""></div>
+
+  <div class="phone p1"><div class="screen">
+    <div class="cam"></div>
+    <div class="bar"><span>17:38</span><span class="ic"><span class="sig"><b style="height:5px"></b><b style="height:9px"></b><b style="height:13px"></b><b style="height:16px"></b></span><span class="bat"></span></span></div>
+    <img src="shots/home.png" alt="">
+  </div></div>
+
+  <div class="phone p2"><div class="screen">
+    <div class="cam"></div>
+    <div class="bar"><span>17:40</span><span class="ic"><span class="sig"><b style="height:5px"></b><b style="height:9px"></b><b style="height:13px"></b><b style="height:16px"></b></span><span class="bat"></span></span></div>
+    <img src="shots/detail.png" alt="">
+  </div></div>
+
+  <div class="chip c1">
+    <span class="ico"><svg width="30" height="30" viewBox="0 0 24 24" fill="#FF6B9A"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg></span>
+    <span>КОМНАТА ДИДИ<small>Озвучка · запомнена для тайтла</small></span>
+  </div>
+  <div class="chip c2">
+    <span class="ico"><svg width="30" height="30" viewBox="0 0 24 24" fill="#5CF2B0"><path d="M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6V11c0-3.07-1.63-5.64-4.5-6.32V4a1.5 1.5 0 0 0-3 0v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg></span>
+    <span>Новая серия<small>уже в вашей озвучке</small></span>
+  </div>
+</body>
+</html>
