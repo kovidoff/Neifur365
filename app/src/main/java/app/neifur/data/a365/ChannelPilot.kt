@@ -35,7 +35,14 @@ data class ChannelState(
  * fastest one that does. Checks are cheap: only the current channel is sampled unless it fails; the full test
  * measures all of them and is run when asked (Settings) or when switching is needed.
  */
-class ChannelPilot(private val api: Anime365, private val prefs: Prefs, private val account: Account, private val scope: CoroutineScope) {
+class ChannelPilot(
+    private val api: Anime365,
+    private val prefs: Prefs,
+    private val account: Account,
+    private val scope: CoroutineScope,
+    /** On mobile data (or another metered network): no background measuring, and lighter tests. */
+    private val metered: () -> Boolean = { false },
+) {
     private val _state = MutableStateFlow(ChannelState())
     val state: StateFlow<ChannelState> = _state
     private val lock = Mutex()
@@ -63,6 +70,8 @@ class ChannelPilot(private val api: Anime365, private val prefs: Prefs, private 
         if (!prefs.channelAuto.first()) { load(); return@launch }
         val now = System.currentTimeMillis()
         if (now - prefs.channelCheckedAt() < BACKGROUND_EVERY) { load(); return@launch }
+        // Not on the viewer's mobile data: the check waits for Wi-Fi (video that won't start is still fixed at once).
+        if (metered()) { load(); return@launch }
         ensureWorking()
         prefs.setChannelCheckedAt(now)
     }
@@ -75,8 +84,9 @@ class ChannelPilot(private val api: Anime365, private val prefs: Prefs, private 
         val setup = load() ?: return@withLock null
         val current = setup.currentChannel
         if (current != null) {
-            val sp = sample(current, quick = true)
-            if (sp.works) return@withLock null
+            // A second try before blaming the channel: one slow moment of the network is not a reason to switch.
+            if (sample(current, quick = true).works) return@withLock null
+            if (sample(current, quick = true).works) return@withLock null
         }
         val others = setup.channels.filter { it.id != setup.current }
         coroutineScope { others.map { ch -> async { sample(ch, quick = true) } }.awaitAll() }
@@ -91,7 +101,12 @@ class ChannelPilot(private val api: Anime365, private val prefs: Prefs, private 
         lock.withLock {
             val setup = _state.value.setup ?: load() ?: return@withLock
             _state.update { it.copy(speeds = emptyMap(), note = null) }
-            coroutineScope { setup.channels.map { ch -> async { sample(ch, quick = false) } }.awaitAll() }
+            val light = metered()
+            coroutineScope { setup.channels.map { ch -> async { sample(ch, quick = light) } }.awaitAll() }
+            // The current channel failed while others got through: give it one more chance before leaving it.
+            setup.currentChannel?.let { cur ->
+                if (_state.value.speeds[cur.id]?.works != true && _state.value.fastest != null) sample(cur, quick = true)
+            }
             val st = _state.value
             val best = st.fastest
             val current = setup.currentChannel

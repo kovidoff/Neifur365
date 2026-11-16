@@ -13,7 +13,12 @@ sealed interface AccountState {
 }
 
 /** The viewer's Anime 365 account, shared by every screen. */
-class Account(private val api: Anime365, private val scope: CoroutineScope) {
+class Account(
+    private val api: Anime365,
+    private val scope: CoroutineScope,
+    /** Runs before an account is shown as signed in (the app moves its per-account data over to it). */
+    private val beforeSignIn: suspend (Profile) -> Unit = {},
+) {
     private val _state = MutableStateFlow<AccountState>(AccountState.Unknown)
     val state: StateFlow<AccountState> = _state
 
@@ -23,6 +28,12 @@ class Account(private val api: Anime365, private val scope: CoroutineScope) {
     private val _expired = MutableStateFlow(false)
     val expired: StateFlow<Boolean> = _expired
     @Volatile private var checking = false
+
+    private suspend fun signIn(p: Profile) {
+        runCatching { beforeSignIn(p) }
+        _expired.value = false
+        _state.value = AccountState.SignedIn(p)
+    }
 
     init {
         refresh()
@@ -42,18 +53,18 @@ class Account(private val api: Anime365, private val scope: CoroutineScope) {
     /** Re-checks the saved session; a network failure keeps the last known state instead of signing out. */
     fun refresh() = scope.launch {
         runCatching { api.profile() }
-            .onSuccess { _state.value = if (it != null) AccountState.SignedIn(it) else AccountState.SignedOut }
+            .onSuccess { if (it != null) signIn(it) else _state.value = AccountState.SignedOut }
             .onFailure { if (_state.value == AccountState.Unknown) _state.value = AccountState.SignedOut }
     }
 
     suspend fun login(email: String, password: String): Profile =
-        api.login(email, password).also { _expired.value = false; _state.value = AccountState.SignedIn(it) }
+        api.login(email, password).also { signIn(it) }
 
     /** After signing in through the site page: take its cookies and confirm who we are. */
     suspend fun adoptBrowserSession(cookieHeader: String): Profile? {
         api.cookies.import(cookieHeader)
         val p = runCatching { api.profile() }.getOrNull()
-        if (p != null) { _expired.value = false; _state.value = AccountState.SignedIn(p) }
+        if (p != null) signIn(p)
         return p
     }
 

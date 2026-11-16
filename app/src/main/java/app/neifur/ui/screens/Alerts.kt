@@ -85,6 +85,36 @@ private fun rememberPermitted(): Boolean {
     return permitted
 }
 
+/**
+ * Xiaomi, Redmi and POCO phones (MIUI / HyperOS) keep sideloaded apps from starting on their own, which also stops
+ * the hourly check from coming back after a reboot. True: autostart is allowed; false: it is not; null: not such a
+ * phone, or the system wouldn't say.
+ */
+private fun xiaomiAutostart(ctx: android.content.Context): Boolean? {
+    if (!Build.MANUFACTURER.equals("Xiaomi", ignoreCase = true)) return null
+    return runCatching {
+        val ops = ctx.getSystemService(android.app.AppOpsManager::class.java)
+        val m = android.app.AppOpsManager::class.java.getMethod("checkOpNoThrow", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, String::class.java)
+        m.invoke(ops, 10008, android.os.Process.myUid(), ctx.packageName) as Int == android.app.AppOpsManager.MODE_ALLOWED
+    }.getOrNull()
+}
+
+@Composable
+private fun rememberAutostart(): Boolean? {
+    val ctx = LocalContext.current
+    var allowed by remember { mutableStateOf(xiaomiAutostart(ctx)) }
+    LifecycleResumeEffect(Unit) { allowed = xiaomiAutostart(ctx); onPauseOrDispose {} }
+    return allowed
+}
+
+/** MIUI's own autostart list; the app's system page when that screen isn't there. */
+private fun openAutostart(ctx: android.content.Context) {
+    val miui = Intent().setClassName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")
+    val app = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", ctx.packageName, null))
+    if (runCatching { ctx.startActivity(miui.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isFailure)
+        runCatching { ctx.startActivity(app.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+}
+
 private fun openSystemSettings(ctx: android.content.Context) {
     val i = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
     runCatching { ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
@@ -102,6 +132,7 @@ fun AlertsSettings(signedIn: Boolean) {
     val planned by c.prefs.alertsPlanned.collectAsStateWithLifecycle(false)
     val checked by c.prefs.alertsChecked.collectAsStateWithLifecycle(0L)
     val permitted = rememberPermitted()
+    val autostart = rememberAutostart()
     var denied by remember { mutableStateOf(false) }
     val toggle = rememberAlertsSwitch(onDenied = { denied = true })
     val active = on && signedIn
@@ -145,6 +176,22 @@ fun AlertsSettings(signedIn: Boolean) {
             ) {
                 Text("Android не разрешает уведомления приложению", style = Type.Caption, color = Nf.Amber, modifier = Modifier.weight(1f))
                 Text("Разрешить", style = Type.Label, color = Nf.Amber)
+            }
+        }
+
+        // Xiaomi without autostart: notifications stop after a reboot until the app is opened. Say so once it matters.
+        AnimatedVisibility(active && permitted && autostart == false, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+            Row(
+                Modifier.padding(top = 14.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Nf.Amber.copy(alpha = 0.1f))
+                    .pressable(0.98f) { openAutostart(ctx) }.padding(horizontal = 14.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "После перезагрузки телефона уведомления не придут, пока не откроете Neifur. Включите автозапуск",
+                    style = Type.Caption, color = Nf.Amber, modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(10.dp))
+                Text("Включить", style = Type.Label, color = Nf.Amber)
             }
         }
 

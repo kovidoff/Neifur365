@@ -414,8 +414,9 @@ class PlayerActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    private companion object {
-        const val PIP_ACTION = "app.neifur.PIP_CONTROL"
+    companion object {
+        private const val PIP_ACTION = "app.neifur.PIP_CONTROL"
+        /** The player's state kept across process death; another account signing in drops it. */
         const val SESSION_FILE = "player_session.json"
     }
 }

@@ -2,13 +2,16 @@ package app.neifur
 
 import android.app.Application
 import android.content.Context
+import android.net.ConnectivityManager
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.core.app.NotificationManagerCompat
 import app.neifur.core.buildHttpClient
+import app.neifur.player.PlayerActivity
 import app.neifur.data.Prefs
 import app.neifur.data.SavedAnime
 import app.neifur.data.a365.Account
@@ -54,9 +57,18 @@ class Container(app: Application) {
     val prefs = Prefs(app)
     val shikimori = ShikimoriApi(http)
     val a365 = Anime365(app, http, prefs)
-    val account = Account(a365, scope)
+    val account = Account(a365, scope) { p ->
+        // Another account than last time: its own history, picks and marks come in, the previous one's are put
+        // aside, and nothing shown so far (new-episode notifications, a half-restored player) is about it.
+        if (prefs.claimFor(p.id)) {
+            NotificationManagerCompat.from(app).cancelAll()
+            app.cacheDir.resolve(PlayerActivity.SESSION_FILE).delete()
+        }
+    }
     val lists = Lists(a365, account, scope)
-    val channels = ChannelPilot(a365, prefs, account, scope)
+    val channels = ChannelPilot(a365, prefs, account, scope) {
+        app.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered ?: false
+    }
 
     val stubs = HashMap<String, AnimeStub>()
     fun remember(stub: AnimeStub) { stubs[stub.id] = stub }

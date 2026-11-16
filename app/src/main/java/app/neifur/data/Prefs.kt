@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 
 private val Context.store by preferencesDataStore("neifur")
 
@@ -59,6 +61,12 @@ class Prefs(private val context: Context) {
     private val KEY_ALERTS_SEEN = stringPreferencesKey("alerts_seen")
     private val KEY_ALERTS_ASKED = stringPreferencesKey("alerts_asked")
     private val KEY_ALERTS_CHECKED = stringPreferencesKey("alerts_checked")
+    private val KEY_OWNER = stringPreferencesKey("owner")
+    private val KEY_STASH = stringPreferencesKey("account_stash")
+
+    /** What belongs to one Anime 365 account rather than to the phone: put aside when another account signs in. */
+    private val accountKeys = listOf(KEY_HISTORY, KEY_PICKS, KEY_ALERTS_SEEN, KEY_ALERTS_CHECKED, KEY_CHANNEL_CHECKED)
+    private val stashSer = MapSerializer(String.serializer(), MapSerializer(String.serializer(), String.serializer()))
 
     private val historySer = ListSerializer(WatchEntry.serializer())
     private val favSer = ListSerializer(SavedAnime.serializer())
@@ -82,6 +90,33 @@ class Prefs(private val context: Context) {
     /** When the channel was last checked in the background (ms). */
     suspend fun channelCheckedAt(): Long = context.store.data.first()[KEY_CHANNEL_CHECKED]?.toLongOrNull() ?: 0L
     suspend fun setChannelCheckedAt(ms: Long) = context.store.edit { it[KEY_CHANNEL_CHECKED] = ms.toString() }
+
+    // --- whose data this is ---------------------------------------------------------------------------
+    /**
+     * Called before an account is shown as signed in. Another account than last time: the previous one's history,
+     * studio picks, notification marks and channel check are put aside (and come back if it signs in again), and
+     * the new one starts from its own or from nothing. Returns true when the account changed.
+     */
+    suspend fun claimFor(userId: Long): Boolean {
+        var changed = false
+        context.store.edit { p ->
+            val me = userId.toString()
+            val before = p[KEY_OWNER]
+            if (before == me) return@edit
+            p[KEY_OWNER] = me
+            // The first sign-in after an update (no owner yet) keeps what is here: it was this viewer's.
+            if (before == null) return@edit
+            changed = true
+            val stash = p[KEY_STASH]?.let { runCatching { AppJson.decodeFromString(stashSer, it) }.getOrNull() }.orEmpty().toMutableMap()
+            stash.remove(before)
+            stash[before] = accountKeys.mapNotNull { k -> p[k]?.let { k.name to it } }.toMap()
+            val mine = stash.remove(me).orEmpty()
+            accountKeys.forEach { k -> val v = mine[k.name]; if (v == null) p.remove(k) else p[k] = v }
+            // A handful of accounts is plenty; the oldest set aside goes first.
+            p[KEY_STASH] = AppJson.encodeToString(stashSer, stash.entries.toList().takeLast(4).associate { it.key to it.value })
+        }
+        return changed
+    }
 
     // --- onboarding ----------------------------------------------------------------------------------
     /** Whether the welcome flow is done: "1" done, "0" in progress (or shown again from Settings). */
