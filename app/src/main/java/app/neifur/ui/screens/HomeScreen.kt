@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -39,9 +40,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewModelScope
 import app.neifur.AnimeStub
 import app.neifur.Container
@@ -147,7 +151,8 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = 
                 val data = (f as? Load.Ready)?.value
                 LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 120.dp)) {
                     item(key = "hero", contentType = "hero") {
-                        if (data == null) HeroSkeleton() else Hero(data.ongoing.take(7), open)
+                        val heroVisible by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
+                        if (data == null) HeroSkeleton() else Hero(data.ongoing.take(7), visible = heroVisible, open = open)
                     }
                     if (cont.isNotEmpty()) item(key = "continue", contentType = "continue") {
                         Appear("continue", 0, vm.appeared) { ContinueRow(cont, lists.titles, open) }
@@ -281,13 +286,30 @@ private fun Appear(key: String, index: Int, played: MutableSet<String>, ready: B
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Hero(items: List<Series>, open: OpenAnime) {
+private fun Hero(items: List<Series>, visible: Boolean, open: OpenAnime) {
     if (items.isEmpty()) return
     val height = (LocalConfiguration.current.screenHeightDp * 0.66f).dp
     val pager = rememberPagerState { items.size }
-    LaunchedEffect(pager.settledPage) {
-        delay(6500)
-        if (!pager.isScrollInProgress) pager.animateScrollToPage((pager.settledPage + 1) % items.size, animationSpec = tween(900, easing = FastOutSlowInEasing))
+    val dragged by pager.interactionSource.collectIsDraggedAsState()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    // Auto-scroll only while Home is resumed, Hero is on screen, and the user isn't dragging.
+    // If a previous transition was cut short mid-flight (tab switch or scroll away), snap cleanly at once.
+    LaunchedEffect(pager, items.size, visible, dragged, lifecycle) {
+        if (items.size <= 1 || !visible || dragged) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            if (!pager.isScrollInProgress && pager.currentPageOffsetFraction != 0f) {
+                pager.scrollToPage(pager.currentPage)
+            }
+            while (true) {
+                delay(6500)
+                if (!pager.isScrollInProgress) {
+                    pager.animateScrollToPage(
+                        (pager.currentPage + 1) % items.size,
+                        animationSpec = tween(900, easing = FastOutSlowInEasing),
+                    )
+                }
+            }
+        }
     }
     Box(Modifier.fillMaxWidth().height(height)) {
         HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
