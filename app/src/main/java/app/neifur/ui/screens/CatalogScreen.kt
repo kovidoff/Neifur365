@@ -149,14 +149,17 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
     val marks = remember(lists) { lists.titles.mapValues { it.value.status } }
     val q = vm.query
     var sheet by remember { mutableStateOf<String?>(null) }
+    val layout = rememberScreenLayout()
+    val cols = layout.posterColumns
+    val padH = layout.horizontalPadding
     val grid = rememberLazyGridState()
     val focus = LocalFocusManager.current
     var handledQueryVersion by rememberSaveable { mutableIntStateOf(vm.queryVersion) }
 
-    val nearEnd by remember {
+    val nearEnd by remember(cols) {
         derivedStateOf {
             val info = grid.layoutInfo
-            info.totalItemsCount > 0 && (info.visibleItemsInfo.lastOrNull()?.index ?: -1) >= info.totalItemsCount - 9
+            info.totalItemsCount > 0 && (info.visibleItemsInfo.lastOrNull()?.index ?: -1) >= info.totalItemsCount - cols * 3
         }
     }
     LaunchedEffect(nearEnd, vm.items.size, vm.moreError) { if (nearEnd && vm.items.isNotEmpty() && vm.moreError == null) vm.loadMore() }
@@ -169,7 +172,7 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 14.dp),
+            Modifier.fillMaxWidth().padding(start = padH, end = padH, top = 14.dp, bottom = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("Каталог", style = Type.Display, color = Nf.Text, modifier = Modifier.weight(1f))
@@ -184,37 +187,35 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
             }
         }
 
-        Row(
-            Modifier.padding(horizontal = 20.dp).fillMaxWidth().height(50.dp).clip(CircleShape).background(Nf.Surface)
-                .border(1.dp, Nf.Line, CircleShape).padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Rounded.Search, null, tint = Nf.TextMute, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(10.dp))
-            Box(Modifier.weight(1f)) {
-                if (q.search.isEmpty()) Text("Поиск по каталогу Anime 365", style = Type.Body, color = Nf.TextMute, maxLines = 1)
-                BasicTextField(
-                    q.search, { vm.update(q.copy(search = it)) }, singleLine = true,
-                    textStyle = Type.Body.copy(color = Nf.Text), cursorBrush = SolidColor(Nf.Violet),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
-                    modifier = Modifier.fillMaxWidth(),
-                )
+        if (layout.isExpanded) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = padH, end = padH, bottom = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                CatalogSearchBox(q.search, { vm.update(q.copy(search = it)) }, { focus.clearFocus() }, Modifier.width(360.dp))
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    item { FilterPill(kinds.first { it.first == q.kind }.second, q.kind != null) { sheet = "kind" } }
+                    item { FilterPill(statuses.first { it.first == q.airing }.second, q.airing) { sheet = "status" } }
+                    item { FilterPill(A365Genres.firstOrNull { it.first == q.genreId }?.second ?: "Жанр", q.genreId != null) { sheet = "genre" } }
+                    item { FilterPill(q.year?.toString() ?: "Год", q.year != null) { sheet = "year" } }
+                }
             }
-            if (q.search.isNotEmpty()) Icon(
-                Icons.Rounded.Close, "Очистить", tint = Nf.TextDim,
-                modifier = Modifier.size(30.dp).clip(CircleShape).clickable { vm.update(q.copy(search = "")) }.padding(5.dp),
-            )
-        }
+        } else {
+            CatalogSearchBox(q.search, { vm.update(q.copy(search = it)) }, { focus.clearFocus() }, Modifier.padding(horizontal = padH).fillMaxWidth())
 
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(vertical = 12.dp),
-        ) {
-            item { FilterPill(kinds.first { it.first == q.kind }.second, q.kind != null) { sheet = "kind" } }
-            item { FilterPill(statuses.first { it.first == q.airing }.second, q.airing) { sheet = "status" } }
-            item { FilterPill(A365Genres.firstOrNull { it.first == q.genreId }?.second ?: "Жанр", q.genreId != null) { sheet = "genre" } }
-            item { FilterPill(q.year?.toString() ?: "Год", q.year != null) { sheet = "year" } }
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = padH), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(vertical = 12.dp),
+            ) {
+                item { FilterPill(kinds.first { it.first == q.kind }.second, q.kind != null) { sheet = "kind" } }
+                item { FilterPill(statuses.first { it.first == q.airing }.second, q.airing) { sheet = "status" } }
+                item { FilterPill(A365Genres.firstOrNull { it.first == q.genreId }?.second ?: "Жанр", q.genreId != null) { sheet = "genre" } }
+                item { FilterPill(q.year?.toString() ?: "Год", q.year != null) { sheet = "year" } }
+            }
         }
 
         Box(Modifier.fillMaxSize()) {
@@ -222,20 +223,21 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
                 vm.error != null -> EmptyState("Не получилось загрузить", vm.error, Icons.Rounded.WifiOff, Modifier.padding(top = 40.dp), "Повторить", vm::retry)
                 !vm.loading && vm.items.isEmpty() -> EmptyState("Ничего не нашлось", "Попробуйте другое название или уберите фильтры", Icons.Rounded.SearchOff, Modifier.padding(top = 40.dp))
                 else -> LazyVerticalGrid(
-                    GridCells.Fixed(3), state = grid,
-                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 120.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(18.dp),
+                    GridCells.Fixed(cols), state = grid,
+                    contentPadding = PaddingValues(start = padH, end = padH, top = 4.dp, bottom = 120.dp),
+                    horizontalArrangement = Arrangement.spacedBy(if (layout.isTablet) 14.dp else 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
                 ) {
-                    if (vm.items.isEmpty()) items(12) { PosterCardSkeleton(width = null) }
+                    if (vm.items.isEmpty()) items(cols * 4) { PosterCardSkeleton(width = null) }
                     else {
                         items(vm.items, key = { it.id }, contentType = { "card" }) { a ->
                             PosterCard(a.stub(), "catalog", { focus.clearFocus(); open(a.stub(), "catalog") }, Modifier.animateItem(), width = null, listStatus = marks[a.id])
                         }
-                        if (vm.loading) item(span = { GridItemSpan(3) }) {
+                        if (vm.loading) item(span = { GridItemSpan(cols) }) {
                             Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                                 CircularProgressIndicator(Modifier.size(24.dp), color = Nf.Violet, strokeWidth = 2.5.dp)
                             }
-                        } else if (vm.moreError != null) item(span = { GridItemSpan(3) }) {
+                        } else if (vm.moreError != null) item(span = { GridItemSpan(cols) }) {
                             Row(
                                 Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(18.dp))
                                     .background(Nf.Surface).border(1.dp, Nf.Line, RoundedCornerShape(18.dp))
@@ -263,6 +265,32 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
         "status" -> OptionSheet("Статус", statuses, q.airing, { sheet = null }) { vm.update(q.copy(airing = it)) }
         "year" -> OptionSheet("Год", years, q.year, { sheet = null }) { vm.update(q.copy(year = it)) }
         "genre" -> OptionSheet("Жанр", listOf<Pair<Int?, String>>(null to "Любой жанр") + A365Genres.map { it.first to it.second }, q.genreId, { sheet = null }) { vm.update(q.copy(genreId = it)) }
+    }
+}
+
+@Composable
+private fun CatalogSearchBox(value: String, onValue: (String) -> Unit, onSearch: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier.height(50.dp).clip(CircleShape).background(Nf.Surface)
+            .border(1.dp, Nf.Line, CircleShape).padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.Search, null, tint = Nf.TextMute, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.weight(1f)) {
+            if (value.isEmpty()) Text("Поиск по каталогу Anime 365", style = Type.Body, color = Nf.TextMute, maxLines = 1)
+            BasicTextField(
+                value, onValue, singleLine = true,
+                textStyle = Type.Body.copy(color = Nf.Text), cursorBrush = SolidColor(Nf.Violet),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (value.isNotEmpty()) Icon(
+            Icons.Rounded.Close, "Очистить", tint = Nf.TextDim,
+            modifier = Modifier.size(30.dp).clip(CircleShape).clickable { onValue("") }.padding(5.dp),
+        )
     }
 }
 

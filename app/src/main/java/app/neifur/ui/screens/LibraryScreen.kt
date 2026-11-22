@@ -133,6 +133,10 @@ fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
     val otherMatches = remember(lists, vm.status, vm.query, items.isEmpty()) {
         if (items.isEmpty() && vm.query.isNotBlank()) lists.matchesInOtherTabs(vm.status, vm.query) else emptyList()
     }
+    val layout = rememberScreenLayout()
+    val cols = layout.posterColumns
+    val wideSpan = layout.wideSpan
+    val padH = layout.horizontalPadding
     val showTools = signedIn && lists.loaded && (lists.count(vm.status) > 0 || vm.query.isNotBlank() || vm.sort != ListSort.Default)
     val wide = vm.status != ListStatus.Planned && vm.status != ListStatus.Completed
 
@@ -142,21 +146,22 @@ fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
             modifier = Modifier.fillMaxSize(),
         ) {
             LazyVerticalGrid(
-                GridCells.Fixed(3), modifier = Modifier.fillMaxSize().statusBarsPadding().imePadding(),
-                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 120.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(14.dp),
+                GridCells.Fixed(cols), modifier = Modifier.fillMaxSize().statusBarsPadding().imePadding(),
+                contentPadding = PaddingValues(start = padH, end = padH, bottom = 120.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (layout.isTablet) 14.dp else 12.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                item(span = { GridItemSpan(3) }, key = "head") { Header(account, downloads, onDownloads) }
+                item(span = { GridItemSpan(cols) }, key = "head") { Header(account, downloads, onDownloads) }
 
-                if (recent.isNotEmpty() && vm.query.isBlank()) item(span = { GridItemSpan(3) }, key = "continue") {
+                if (recent.isNotEmpty() && vm.query.isBlank()) item(span = { GridItemSpan(cols) }, key = "continue") {
                     ContinueStrip(recent, lists.titles, open, onForget = { vm.forget(it) })
                 }
 
                 if (signedIn) {
-                    item(span = { GridItemSpan(3) }, key = "tabs") {
+                    item(span = { GridItemSpan(cols) }, key = "tabs") {
                         StatusTabs(vm.status, { lists.count(it) }, lists.loaded) { vm.status = it }
                     }
-                    if (showTools) item(span = { GridItemSpan(3) }, key = "tools") {
+                    if (showTools) item(span = { GridItemSpan(cols) }, key = "tools") {
                         ListToolsRow(
                             status = vm.status,
                             query = vm.query,
@@ -168,21 +173,25 @@ fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
                     }
                     // Asked once, where it makes sense: above what the viewer is watching.
                     if (vm.status == ListStatus.Watching && vm.query.isBlank() && lists.loaded && lists.count(ListStatus.Watching) > 0 && !alertsAsked && !alertsOn) {
-                        item(span = { GridItemSpan(3) }, key = "alerts-offer") { AlertsOffer(Modifier.animateItem()) }
+                        item(span = { GridItemSpan(cols) }, key = "alerts-offer") {
+                            Box(Modifier.fillMaxWidth()) {
+                                AlertsOffer(Modifier.widthIn(max = 620.dp).animateItem())
+                            }
+                        }
                     }
                     when {
-                        !lists.loaded && lists.error != null -> item(span = { GridItemSpan(3) }) {
+                        !lists.loaded && lists.error != null -> item(span = { GridItemSpan(cols) }) {
                             EmptyState("Не получилось загрузить списки", lists.error, Icons.Rounded.WifiOff, action = "Повторить", onAction = vm::refresh)
                         }
-                        !lists.loaded -> items(6, span = { GridItemSpan(if (wide) 3 else 1) }) {
+                        !lists.loaded -> items(if (wide) layout.wideColumns * 4 else cols * 3, span = { GridItemSpan(if (wide) wideSpan else 1) }) {
                             if (wide) Box(Modifier.fillMaxWidth().height(104.dp).clip(RoundedCornerShape(20.dp)).shimmer())
                             else PosterCardSkeleton(width = null)
                         }
-                        items.isEmpty() && vm.query.isNotBlank() -> item(span = { GridItemSpan(3) }, key = "empty-search") {
+                        items.isEmpty() && vm.query.isNotBlank() -> item(span = { GridItemSpan(cols) }, key = "empty-search") {
                             EmptySearch(vm.status, vm.query, otherMatches, onSwitch = { vm.status = it }, onClear = { vm.query = "" })
                         }
-                        items.isEmpty() -> item(span = { GridItemSpan(3) }) { EmptyList(vm.status) }
-                        wide -> items(items, key = { "w${it.entry.seriesId}" }, span = { GridItemSpan(3) }, contentType = { "wide" }) { t ->
+                        items.isEmpty() -> item(span = { GridItemSpan(cols) }) { EmptyList(vm.status) }
+                        wide -> items(items, key = { "w${it.entry.seriesId}" }, span = { GridItemSpan(wideSpan) }, contentType = { "wide" }) { t ->
                             WideRow(t, Modifier.animateItem(), onOpen = { focus.clearFocus(); open(stubOf(t), "lists") }, onEdit = { editing = t }, onBump = { vm.bump(t) })
                         }
                         else -> items(items, key = { "g${it.entry.seriesId}" }, contentType = { "card" }) { t ->
@@ -190,9 +199,11 @@ fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
                         }
                     }
                 } else {
-                    if (account == AccountState.SignedOut) item(span = { GridItemSpan(3) }, key = "signin") { SignInCard(expired) { signIn = true } }
+                    if (account == AccountState.SignedOut) item(span = { GridItemSpan(cols) }, key = "signin") {
+                        Box(Modifier.fillMaxWidth()) { SignInCard(expired, Modifier.widthIn(max = 560.dp)) { signIn = true } }
+                    }
                     if (favorites.isNotEmpty()) {
-                        item(span = { GridItemSpan(3) }) { Text("Избранное на этом телефоне", style = Type.Section, color = Nf.Text, modifier = Modifier.padding(top = 10.dp)) }
+                        item(span = { GridItemSpan(cols) }) { Text("Избранное на этом телефоне", style = Type.Section, color = Nf.Text, modifier = Modifier.padding(top = 10.dp)) }
                         items(favorites, key = { "f-${it.id}" }) { f ->
                             val stub = AnimeStub(f.id, f.title, f.poster, f.kind, f.year, f.score)
                             PosterCard(stub, "library-f", { open(stub, "library-f") }, Modifier.animateItem(), width = null)
@@ -255,7 +266,8 @@ private fun ListToolsRow(
     val searchBorder by animateColorAsState(if (searchActive) Nf.Violet.copy(alpha = 0.5f) else Nf.Line, label = "lsb")
     val sortBg by animateColorAsState(if (sortActive) Nf.Violet.copy(alpha = 0.16f) else Nf.Surface, label = "lsbg")
     val sortBorder by animateColorAsState(if (sortActive) Nf.Violet.copy(alpha = 0.5f) else Nf.Line, label = "lsbr")
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+    Box(Modifier.fillMaxWidth()) {
+        Row(Modifier.widthIn(max = 560.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         Row(
             Modifier.weight(1f).height(42.dp).clip(CircleShape).background(Nf.Surface)
                 .border(1.dp, searchBorder, CircleShape).padding(start = 13.dp, end = 6.dp),
@@ -293,6 +305,7 @@ private fun ListToolsRow(
                 Text(sort.chip, style = Type.Label, color = Nf.Violet, maxLines = 1)
             }
         }
+    }
     }
 }
 
@@ -549,9 +562,9 @@ private fun ContinueStrip(recent: List<WatchEntry>, listed: Map<Long, ListedTitl
 }
 
 @Composable
-private fun SignInCard(expired: Boolean, onClick: () -> Unit) {
+private fun SignInCard(expired: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Column(
-        Modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(24.dp))
+        modifier.padding(top = 10.dp).fillMaxWidth().clip(RoundedCornerShape(24.dp))
             .background(androidx.compose.ui.graphics.Brush.linearGradient(listOf(Nf.Violet.copy(alpha = 0.16f), Nf.Pink.copy(alpha = 0.07f), Nf.Surface)))
             .border(1.dp, Nf.Violet.copy(alpha = 0.22f), RoundedCornerShape(24.dp)).padding(18.dp),
     ) {

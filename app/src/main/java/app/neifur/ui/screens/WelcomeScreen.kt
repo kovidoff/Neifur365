@@ -156,21 +156,27 @@ fun WelcomeScreen() {
                     }
                 }
             }
-            Column(Modifier.onSizeChanged { belowPager = it.height }.padding(horizontal = 24.dp).padding(top = 10.dp, bottom = 14.dp)) {
-                Dots(pager, Modifier.align(Alignment.CenterHorizontally).padding(bottom = 18.dp))
-                val last = pager.currentPage == PAGES - 1
-                val signedIn = signIn.profile != null
-                // On the sign-in page the form has its own button; this one is the way out (or in, once signed in).
-                AnimatedContent(Pair(last, signedIn), label = "wb", transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) }) { (l, si) ->
-                    if (l && !si) Box(
-                        Modifier.fillMaxWidth().height(56.dp).clip(CircleShape).pressable(0.97f) { focus.clearFocus(); vm.finish() },
-                        contentAlignment = Alignment.Center,
-                    ) { Text("Позже — сначала посмотрю каталог", style = Type.Title, color = Nf.TextDim) }
-                    else PrimaryButton(
-                        text = if (l) "Смотреть аниме" else if (pager.currentPage == 0) "Начать" else "Дальше",
-                        color = if (l) Nf.Mint else Nf.Violet,
-                    ) {
-                        if (l) vm.finish() else scope.launch { pager.animateScrollToPage(pager.currentPage + 1) }
+            Box(
+                Modifier.fillMaxWidth().onSizeChanged { belowPager = it.height }
+                    .padding(horizontal = 24.dp).padding(top = 10.dp, bottom = 14.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(Modifier.widthIn(max = 540.dp).fillMaxWidth()) {
+                    Dots(pager, Modifier.align(Alignment.CenterHorizontally).padding(bottom = 18.dp))
+                    val last = pager.currentPage == PAGES - 1
+                    val signedIn = signIn.profile != null
+                    // On the sign-in page the form has its own button; this one is the way out (or in, once signed in).
+                    AnimatedContent(Pair(last, signedIn), label = "wb", transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) }) { (l, si) ->
+                        if (l && !si) Box(
+                            Modifier.fillMaxWidth().height(56.dp).clip(CircleShape).pressable(0.97f) { focus.clearFocus(); vm.finish() },
+                            contentAlignment = Alignment.Center,
+                        ) { Text("Позже — сначала посмотрю каталог", style = Type.Title, color = Nf.TextDim) }
+                        else PrimaryButton(
+                            text = if (l) "Смотреть аниме" else if (pager.currentPage == 0) "Начать" else "Дальше",
+                            color = if (l) Nf.Mint else Nf.Violet,
+                        ) {
+                            if (l) vm.finish() else scope.launch { pager.animateScrollToPage(pager.currentPage + 1) }
+                        }
                     }
                 }
             }
@@ -185,7 +191,7 @@ fun WelcomeScreen() {
 private fun IntroPage(airing: List<Series>, offline: Boolean) {
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { PosterDeck(airing, offline) }
-        Column(Modifier.fillMaxWidth().padding(horizontal = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(Modifier.widthIn(max = 540.dp).fillMaxWidth().padding(horizontal = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Rise(0) { Wordmark(big = true) }
             Rise(1) {
                 Text(
@@ -356,9 +362,9 @@ private val kindOptions = listOf(
 @Composable
 private fun KindPage(vm: WelcomeVm, visible: Boolean) {
     val kind by vm.kind.collectAsStateWithLifecycle("VoiceRu")
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
         StudioMarquee(kind, Modifier.weight(1f).fillMaxWidth())
-        Column(Modifier.padding(horizontal = 24.dp)) {
+        Column(Modifier.widthIn(max = 540.dp).fillMaxWidth().padding(horizontal = 24.dp)) {
             Text("Как вы смотрите?", style = Type.Hero, color = Nf.Text)
             Text(
                 "Neifur 365 будет сразу включать то, что вам нужно. Студию можно выбрать на странице тайтла — она запомнится",
@@ -510,9 +516,9 @@ private fun AccountPage(vm: SignInVm, visible: Boolean, belowPx: Int) {
     }
     // The keyboard's height above the bottom block, applied while laying out (no recomposition per frame).
     val keyboard = WindowInsets.ime.exclude(WindowInsets.navigationBars).exclude(WindowInsets(bottom = belowPx))
-    BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(keyboard)) {
+    BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(keyboard), contentAlignment = Alignment.BottomCenter) {
         Column(
-            Modifier.fillMaxWidth().verticalScroll(scroll).heightIn(min = maxHeight).padding(horizontal = 24.dp),
+            Modifier.widthIn(max = 540.dp).fillMaxWidth().verticalScroll(scroll).heightIn(min = maxHeight).padding(horizontal = 24.dp),
             verticalArrangement = Arrangement.Bottom,
         ) {
             Box(

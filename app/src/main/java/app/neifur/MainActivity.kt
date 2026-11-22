@@ -68,6 +68,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(SystemBarStyle.dark(AColor.TRANSPARENT), SystemBarStyle.dark(AColor.TRANSPARENT))
         super.onCreate(savedInstanceState)
+        // Phones stay in portrait; tablets and unfolded screens rotate freely.
+        if (resources.configuration.smallestScreenWidthDp < 600) {
+            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
         if (savedInstanceState == null) takeOpenRequest(intent)
         setContent { NeifurTheme { AppRoot() } }
     }
@@ -341,12 +345,15 @@ private fun pushPopExit(): ExitTransition =
 private fun BottomBar(current: String, onSelect: (String) -> Unit) {
     val sel = tabIndex(current).coerceAtLeast(0)
     val view = LocalView.current
+    val layout = rememberScreenLayout()
     val weights = tabs.indices.map { i ->
         animateFloatAsState(if (i == sel) 2.1f else 1f, spring(dampingRatio = 0.82f, stiffness = 420f), label = "w$i").value
     }
     val pos by animateFloatAsState(sel.toFloat(), spring(dampingRatio = 0.78f, stiffness = 380f), label = "pos")
     BoxWithConstraints(
-        Modifier.navigationBarsPadding().padding(start = 20.dp, end = 20.dp, bottom = 14.dp).fillMaxWidth().height(62.dp)
+        Modifier.navigationBarsPadding()
+            .padding(start = layout.horizontalPadding, end = layout.horizontalPadding, bottom = 14.dp)
+            .widthIn(max = 460.dp).fillMaxWidth().height(62.dp)
             .shadow(28.dp, CircleShape, ambientColor = Color.Black, spotColor = Color.Black)
             .clip(CircleShape).background(Color(0xF2151520)).border(1.dp, Color(0x14FFFFFF), CircleShape)
             .padding(6.dp)

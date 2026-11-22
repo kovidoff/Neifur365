@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -168,11 +169,12 @@ fun PlayerPanel(
             exit = slideOutHorizontally(tween(220)) { it } + fadeOut(tween(200)),
         ) {
             // A floating card: only the screen edge it sits against is inset.
+            val panelW = if (LocalConfiguration.current.screenWidthDp >= 900) 460.dp else PanelWidth
             Column(
                 Modifier.fillMaxHeight()
                     .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
                     .padding(top = 12.dp, bottom = 12.dp, end = 12.dp)
-                    .width(PanelWidth)
+                    .width(panelW)
                     .clip(RoundedCornerShape(28.dp)).background(PanelBg).border(1.dp, Color(0x14FFFFFF), RoundedCornerShape(28.dp))
                     .clickable(remember { MutableInteractionSource() }, null) {}
             ) {
@@ -218,12 +220,12 @@ private fun Tabs(tabs: List<PanelTab>, current: PanelTab, onTab: (PanelTab) -> U
                 val on = t == current
                 val c by animateColorAsState(if (on) Color.White else Color(0x8CFFFFFF), label = "tabc")
                 Row(
-                    Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(14.dp)).clickable { onTab(t) }.padding(horizontal = 8.dp),
+                    Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(14.dp)).clickable { onTab(t) }.padding(horizontal = 4.dp),
                     horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(t.icon, null, tint = c, modifier = Modifier.size(17.dp))
-                    Spacer(Modifier.width(7.dp))
-                    Text(t.title, style = Type.Label.copy(fontSize = 13.5.sp), color = c, maxLines = 1, softWrap = false)
+                    Icon(t.icon, null, tint = c, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text(t.title, style = Type.Label.copy(fontSize = 13.sp), color = c, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
