@@ -2,119 +2,355 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>Neifur 365 banner</title>
+<title>Neifur 365 Banner</title>
 <style>
   @font-face { font-family: Unbounded; src: url(unbounded.ttf); font-weight: 200 900; }
   @font-face { font-family: Manrope; src: url(manrope.ttf); font-weight: 200 800; }
   :root {
-    --ink: #08080C; --text: #F3F1FA; --dim: #A9A6BC; --mute: #6F6C84; --line: #282836;
-    --violet: #9B7BFF; --pink: #FF6B9A; --mint: #5CF2B0; --amber: #FFC56B;
+    --ink: #07070B;
+    --surface: #12121A;
+    --text: #F4F2FB;
+    --dim: #A6A3BA;
+    --mute: #6E6B83;
+    --line: rgba(255, 255, 255, .09);
+    --violet: #9B7BFF;
+    --pink: #FF6B9A;
+    --mint: #5CF2B0;
+    --amber: #FFC56B;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { width: 2560px; height: 1440px; overflow: hidden; background: var(--ink); }
-  body { position: relative; font-family: Manrope, sans-serif; color: var(--text); }
+  html, body {
+    width: 2560px;
+    height: 1440px;
+    overflow: hidden;
+    background: var(--ink);
+  }
+  body {
+    position: relative;
+    font-family: Manrope, sans-serif;
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
 
   /* ---- backdrop ---- */
   .bg { position: absolute; inset: 0; overflow: hidden; }
-  .glow { position: absolute; border-radius: 50%; filter: blur(140px); }
-  .g1 { width: 1300px; height: 1000px; right: -200px; top: -380px; background: #3A2A86; opacity: .75; }
-  .g2 { width: 1000px; height: 800px; left: -300px; bottom: -420px; background: #6B2346; opacity: .55; }
-  .g3 { width: 700px; height: 600px; left: 1250px; top: 700px; background: #2B1F5E; opacity: .7; }
-  .grid { position: absolute; inset: 0;
-    background-image: linear-gradient(rgba(255,255,255,.028) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.028) 1px, transparent 1px);
-    background-size: 80px 80px;
-    mask-image: radial-gradient(ellipse 70% 80% at 30% 45%, #000 20%, transparent 75%); }
-  .ring { position: absolute; border-radius: 50%; border: 2px solid rgba(155,123,255,.10); }
-  .r1 { width: 1500px; height: 1500px; left: 1350px; top: -280px; }
-  .r2 { width: 1100px; height: 1100px; left: 1550px; top: -80px; border-color: rgba(255,107,154,.08); }
+  .glow { position: absolute; border-radius: 50%; filter: blur(150px); }
+  .g1 { width: 1380px; height: 1050px; right: -220px; top: -360px; background: #3E2B96; opacity: .72; }
+  .g2 { width: 1050px; height: 820px; left: -320px; bottom: -400px; background: #64214A; opacity: .48; }
+  .g3 { width: 820px; height: 680px; left: 1180px; top: 680px; background: #261D5A; opacity: .75; }
+  .g4 { width: 600px; height: 500px; left: 420px; top: -220px; background: #261E52; opacity: .42; }
 
-  /* ---- copy ---- */
-  .copy { position: absolute; left: 150px; top: 0; bottom: 0; width: 1060px; display: flex; flex-direction: column; justify-content: center; }
-  .tag { display: inline-flex; align-self: flex-start; align-items: center; gap: 18px; padding: 16px 30px 16px 22px;
-    border: 2px solid rgba(155,123,255,.35); border-radius: 999px; background: rgba(155,123,255,.08);
-    font: 700 30px Manrope; letter-spacing: .14em; color: #C7B6FF; }
-  .tag .dot { width: 16px; height: 16px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 18px var(--mint); }
-  .logo { display: flex; align-items: center; gap: 28px; margin-top: 52px; }
-  .logo .word { font: 800 176px/0.9 Unbounded; letter-spacing: -.035em; }
-  .badge { font: 800 90px/1 Unbounded; letter-spacing: -.02em; color: #0B0A12; padding: 16px 28px 19px; border-radius: 34px;
-    background: linear-gradient(100deg, var(--violet), var(--pink)); box-shadow: 0 20px 80px rgba(220,110,200,.35); transform: translateY(10px); }
-  .headline { margin-top: 70px; font: 700 76px/1.12 Unbounded; letter-spacing: -.02em; }
-  .headline em { font-style: normal; background: linear-gradient(100deg, #C2AEFF, var(--pink)); -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .feats { list-style: none; margin-top: 64px; display: grid; gap: 30px; }
-  .feats li { display: flex; align-items: center; gap: 26px; font: 500 40px Manrope; color: #D9D6E8; }
-  .feats i { width: 20px; height: 20px; border-radius: 7px; flex: none; }
+  .grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,.026) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.026) 1px, transparent 1px);
+    background-size: 72px 72px;
+    mask-image: radial-gradient(ellipse 68% 78% at 28% 48%, #000 18%, transparent 74%);
+  }
+  .ring { position: absolute; border-radius: 50%; border: 2px solid rgba(155,123,255,.10); }
+  .r1 { width: 1560px; height: 1560px; left: 1320px; top: -290px; }
+  .r2 { width: 1120px; height: 1120px; left: 1540px; top: -70px; border-color: rgba(255,107,154,.08); }
+  .vignette {
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse 100% 100% at 50% 50%, transparent 58%, rgba(4,4,8,.55) 100%);
+  }
+
+  /* ---- left column ---- */
+  .copy {
+    position: absolute;
+    left: 148px;
+    top: 0;
+    bottom: 0;
+    width: 1020px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .tag {
+    display: inline-flex;
+    align-self: flex-start;
+    align-items: center;
+    gap: 16px;
+    padding: 15px 28px 15px 22px;
+    border: 1.5px solid rgba(155,123,255,.32);
+    border-radius: 999px;
+    background: rgba(155,123,255,.08);
+    font: 700 26px Manrope;
+    letter-spacing: .16em;
+    color: #CFC0FF;
+  }
+  .tag .dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--mint);
+    box-shadow: 0 0 18px var(--mint);
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 26px;
+    margin-top: 44px;
+  }
+  .logo .word {
+    font: 800 172px/0.92 Unbounded;
+    letter-spacing: -.038em;
+    color: var(--text);
+  }
+  .badge {
+    font: 800 88px/1 Unbounded;
+    letter-spacing: -.02em;
+    color: #090810;
+    padding: 15px 28px 18px;
+    border-radius: 34px;
+    background: linear-gradient(108deg, var(--violet), var(--pink));
+    box-shadow: 0 22px 76px rgba(215, 108, 198, .36), inset 0 1px 0 rgba(255,255,255,.35);
+    transform: translateY(8px);
+  }
+
+  .headline {
+    margin-top: 56px;
+    font: 700 66px/1.15 Unbounded;
+    letter-spacing: -.022em;
+    color: var(--text);
+  }
+  .headline em {
+    font-style: normal;
+    background: linear-gradient(96deg, #C9B7FF 0%, var(--pink) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .feats {
+    list-style: none;
+    margin-top: 56px;
+    display: grid;
+    gap: 24px;
+  }
+  .feats li {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    font: 600 36px/1.2 Manrope;
+    color: #DDD9EC;
+  }
+  .feats .fi {
+    width: 58px;
+    height: 58px;
+    border-radius: 18px;
+    display: grid;
+    place-items: center;
+    flex: none;
+    border: 1.5px solid rgba(255,255,255,.08);
+  }
+  .fi.v { background: rgba(155,123,255,.14); }
+  .fi.m { background: rgba(92,242,176,.13); }
+  .fi.p { background: rgba(255,107,154,.14); }
+  .fi.a { background: rgba(255,197,107,.13); }
 
   /* ---- devices ---- */
-  .tablet { position: absolute; left: 1250px; top: 110px; width: 1200px; padding: 18px; border-radius: 62px;
-    background: #121219; border: 2px solid #2C2C3A; box-shadow: 0 60px 140px rgba(0,0,0,.6), inset 0 0 0 2px #000; }
-  .tablet img { display: block; width: 100%; border-radius: 46px; }
-  .phone { position: absolute; width: 520px; padding: 16px; border-radius: 82px; background: #121219;
-    border: 2px solid #30303F; box-shadow: 0 70px 160px rgba(0,0,0,.75), 0 0 0 1px #000 inset; }
-  .phone .screen { position: relative; border-radius: 66px; overflow: hidden; background: var(--ink); }
-  .phone .bar { height: 50px; display: flex; align-items: center; justify-content: space-between; padding: 6px 44px 0 50px;
-    font: 700 22px Manrope; color: #fff; position: absolute; top: 0; left: 0; right: 0; z-index: 2; }
-  .phone .bar .ic { display: flex; gap: 8px; align-items: center; }
-  .phone .bar .sig { display: flex; align-items: flex-end; gap: 3px; height: 16px; }
-  .phone .bar .sig b { width: 4px; background: #fff; border-radius: 1px; }
-  .phone .bar .bat { width: 32px; height: 16px; border-radius: 5px; border: 2px solid rgba(255,255,255,.8); padding: 2px; }
-  .phone .bar .bat::after { content: ""; display: block; width: 70%; height: 100%; background: #fff; border-radius: 2px; }
-  .phone .cam { position: absolute; top: 16px; left: 50%; width: 24px; height: 24px; margin-left: -12px; border-radius: 50%; background: #000; z-index: 3; box-shadow: 0 0 0 3px #15151d; }
-  .phone img { display: block; width: 100%; margin-top: 50px; }
-  .p1 { left: 1300px; top: 600px; transform: rotate(-4deg); }
-  .p2 { left: 1880px; top: 500px; transform: rotate(3deg); }
+  .stage {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .tablet {
+    position: absolute;
+    left: 1245px;
+    top: 96px;
+    width: 1190px;
+    padding: 16px;
+    border-radius: 58px;
+    background: linear-gradient(155deg, #1A1A26 0%, #0E0E15 100%);
+    border: 2px solid rgba(255,255,255,.13);
+    box-shadow:
+      0 60px 140px rgba(0,0,0,.68),
+      0 0 0 1px rgba(0,0,0,.8) inset,
+      0 0 90px rgba(155,123,255,.12);
+  }
+  .tablet img {
+    display: block;
+    width: 100%;
+    border-radius: 44px;
+  }
 
-  /* chip floating near the phones */
-  .chip { position: absolute; display: flex; align-items: center; gap: 16px; padding: 18px 28px 18px 18px; border-radius: 30px;
-    background: rgba(18,18,26,.82); border: 2px solid rgba(255,255,255,.08); backdrop-filter: blur(20px);
-    box-shadow: 0 30px 80px rgba(0,0,0,.55); font: 600 28px Manrope; color: var(--text); white-space: nowrap; }
-  .chip .ico { width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center; }
-  .chip small { display: block; font: 500 22px Manrope; color: var(--dim); margin-top: 2px; }
-  .c1 { left: 1110px; top: 1220px; }
-  .c1 .ico { background: rgba(255,107,154,.16); }
-  .c2 { left: 2150px; top: 1270px; }
-  .c2 .ico { background: rgba(92,242,176,.14); }
+  .phone {
+    position: absolute;
+    width: 505px;
+    padding: 15px;
+    border-radius: 78px;
+    background: linear-gradient(155deg, #1E1E2B 0%, #0F0F16 100%);
+    border: 2px solid rgba(255,255,255,.14);
+    box-shadow:
+      0 70px 160px rgba(0,0,0,.78),
+      0 0 0 1px rgba(0,0,0,.85) inset;
+  }
+  .phone .screen {
+    position: relative;
+    border-radius: 64px;
+    overflow: hidden;
+    background: var(--ink);
+  }
+  .phone .bar {
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 42px 0 46px;
+    font: 700 21px Manrope;
+    color: #fff;
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    z-index: 2;
+    background: linear-gradient(to bottom, rgba(7,7,11,.72), transparent);
+  }
+  .phone .bar .ic { display: flex; gap: 8px; align-items: center; }
+  .phone .bar .sig { display: flex; align-items: flex-end; gap: 3px; height: 15px; }
+  .phone .bar .sig b { width: 4px; background: #fff; border-radius: 1px; }
+  .phone .bar .bat { width: 30px; height: 15px; border-radius: 4px; border: 2px solid rgba(255,255,255,.85); padding: 2px; }
+  .phone .bar .bat::after { content: ""; display: block; width: 74%; height: 100%; background: #fff; border-radius: 1.5px; }
+  .phone .cam {
+    position: absolute;
+    top: 15px; left: 50%;
+    width: 22px; height: 22px;
+    margin-left: -11px;
+    border-radius: 50%;
+    background: #000;
+    z-index: 3;
+    box-shadow: 0 0 0 3px #171720;
+  }
+  .phone img { display: block; width: 100%; margin-top: 48px; }
+  .p1 { left: 1295px; top: 585px; transform: rotate(-3.5deg); }
+  .p2 { left: 1875px; top: 495px; transform: rotate(2.8deg); }
+
+  /* floating glass pills */
+  .chip {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 18px 30px 18px 18px;
+    border-radius: 30px;
+    background: rgba(16, 16, 24, .88);
+    border: 1.5px solid rgba(255,255,255,.11);
+    backdrop-filter: blur(22px);
+    box-shadow: 0 32px 84px rgba(0,0,0,.62);
+    font: 700 27px Manrope;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  .chip .ico {
+    width: 56px;
+    height: 56px;
+    border-radius: 18px;
+    display: grid;
+    place-items: center;
+  }
+  .chip small {
+    display: block;
+    font: 500 22px Manrope;
+    color: var(--dim);
+    margin-top: 2px;
+  }
+  .c1 { left: 1035px; top: 1265px; }
+  .c1 .ico { background: rgba(155,123,255,.18); }
+  .c2 { left: 2050px; top: 1255px; }
+  .c2 .ico { background: rgba(92,242,176,.16); }
+
+  /* ---- native 1280x640 (2:1) social preview mode ---- */
+  html.social, html.social body {
+    width: 1280px;
+    height: 640px;
+  }
+  html.social .bg {
+    width: 2560px;
+    height: 1440px;
+    transform-origin: top left;
+    transform: scale(0.5);
+  }
+  html.social .canvas-wrap {
+    width: 2560px;
+    height: 1440px;
+    transform-origin: top left;
+    transform: scale(0.472) translate(76px, -42px);
+  }
 </style>
+<script>
+  if (location.hash === '#social') document.documentElement.classList.add('social');
+</script>
 </head>
 <body>
   <div class="bg">
-    <div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div>
+    <div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div><div class="glow g4"></div>
     <div class="grid"></div>
     <div class="ring r1"></div><div class="ring r2"></div>
+    <div class="vignette"></div>
   </div>
 
-  <section class="copy">
-    <div class="tag"><span class="dot"></span>ANDROID · ПУБЛИЧНАЯ БЕТА</div>
-    <div class="logo"><span class="word">neifur</span><span class="badge">365</span></div>
-    <h1 class="headline">Аниме <em>в любимой<br>озвучке</em></h1>
-    <ul class="feats">
-      <li><i style="background:var(--pink)"></i>Озвучка, субтитры или оригинал</li>
-      <li><i style="background:var(--violet)"></i>Списки общие с Anime 365</li>
-      <li><i style="background:var(--mint)"></i>Плеер mpv до 1080p</li>
-      <li><i style="background:var(--amber)"></i>Уведомления о новых сериях</li>
-    </ul>
-  </section>
+  <div class="canvas-wrap">
+    <section class="copy">
+      <div class="tag"><span class="dot"></span>OPEN SOURCE · ANDROID</div>
+      <div class="logo"><span class="word">neifur</span><span class="badge">365</span></div>
+      <h1 class="headline">Современный клиент<br><em>для Anime 365</em></h1>
+      <ul class="feats">
+        <li>
+          <span class="fi v">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="#9B7BFF"><path d="M8 5.14v14l11-7-11-7z"/></svg>
+          </span>
+          Плеер на libmpv и .ass субтитры
+        </li>
+        <li>
+          <span class="fi m">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#5CF2B0" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </span>
+          Офлайн-загрузки и таймер сна
+        </li>
+        <li>
+          <span class="fi p">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#FF6B9A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          </span>
+          Списки аккаунта и расписание
+        </li>
+        <li>
+          <span class="fi a">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#FFC56B" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </span>
+          Без рекламы, аналитики и трекеров
+        </li>
+      </ul>
+    </section>
 
-  <div class="tablet"><img src="shots/player.png" alt=""></div>
+    <div class="stage">
+      <div class="tablet"><img src="shots/player.png" alt=""></div>
 
-  <div class="phone p1"><div class="screen">
-    <div class="cam"></div>
-    <div class="bar"><span>17:38</span><span class="ic"><span class="sig"><b style="height:5px"></b><b style="height:9px"></b><b style="height:13px"></b><b style="height:16px"></b></span><span class="bat"></span></span></div>
-    <img src="shots/home.png" alt="">
-  </div></div>
+      <div class="phone p1"><div class="screen">
+        <div class="cam"></div>
+        <div class="bar"><span>17:38</span><span class="ic"><span class="sig"><b style="height:5px"></b><b style="height:9px"></b><b style="height:12px"></b><b style="height:15px"></b></span><span class="bat"></span></span></div>
+        <img src="shots/home.png" alt="">
+      </div></div>
 
-  <div class="phone p2"><div class="screen">
-    <div class="cam"></div>
-    <div class="bar"><span>17:40</span><span class="ic"><span class="sig"><b style="height:5px"></b><b style="height:9px"></b><b style="height:13px"></b><b style="height:16px"></b></span><span class="bat"></span></span></div>
-    <img src="shots/detail.png" alt="">
-  </div></div>
+      <div class="phone p2"><div class="screen">
+        <div class="cam"></div>
+        <div class="bar"><span>17:40</span><span class="ic"><span class="sig"><b style="height:5px"></b><b style="height:9px"></b><b style="height:12px"></b><b style="height:15px"></b></span><span class="bat"></span></span></div>
+        <img src="shots/detail.png" alt="">
+      </div></div>
 
-  <div class="chip c1">
-    <span class="ico"><svg width="30" height="30" viewBox="0 0 24 24" fill="#FF6B9A"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg></span>
-    <span>КОМНАТА ДИДИ<small>Озвучка · запомнена для тайтла</small></span>
-  </div>
-  <div class="chip c2">
-    <span class="ico"><svg width="30" height="30" viewBox="0 0 24 24" fill="#5CF2B0"><path d="M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6V11c0-3.07-1.63-5.64-4.5-6.32V4a1.5 1.5 0 0 0-3 0v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg></span>
-    <span>Новая серия<small>уже в вашей озвучке</small></span>
+      <div class="chip c1">
+        <span class="ico">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#9B7BFF" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </span>
+        <span>Доступно офлайн<small>Серии и субтитры на телефоне</small></span>
+      </div>
+      <div class="chip c2">
+        <span class="ico">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="#5CF2B0"><path d="M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6V11c0-3.07-1.63-5.64-4.5-6.32V4a1.5 1.5 0 0 0-3 0v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>
+        </span>
+        <span>Новая серия<small>уже в вашей озвучке</small></span>
+      </div>
+    </div>
   </div>
 </body>
 </html>
