@@ -10,10 +10,21 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/kovidoff/Neifur365/releases/latest">
+    <img src="https://img.shields.io/github/v/release/kovidoff/Neifur365?style=flat-square&label=Release&color=8B5CF6" alt="Latest Release" />
+  </a>
+  <a href="https://github.com/kovidoff/Neifur365/actions/workflows/ci.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/kovidoff/Neifur365/ci.yml?branch=main&style=flat-square&label=Android%20CI" alt="Android CI" />
+  </a>
   <img src="https://img.shields.io/badge/Android-8.0%2B%20(arm64--v8a)-3DDC84?style=flat-square&logo=android&logoColor=white" alt="Android 8.0+" />
   <img src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin + Compose" />
-  <img src="https://img.shields.io/badge/Player-libmpv-8B5CF6?style=flat-square" alt="libmpv" />
-  <img src="https://img.shields.io/badge/License-GPL--3.0-blue?style=flat-square" alt="GPL-3.0" />
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-GPL--3.0-blue?style=flat-square" alt="GPL-3.0" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/kovidoff/Neifur365/releases/latest"><strong>Скачать последний APK (Releases)</strong></a>
 </p>
 
 ---
