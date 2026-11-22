@@ -196,8 +196,8 @@ fun PosterCardSkeleton(modifier: Modifier = Modifier, width: Dp? = 128.dp) {
 }
 
 @Composable
-fun SectionTitle(text: String, modifier: Modifier = Modifier, trailing: (@Composable () -> Unit)? = null) {
-    Row(modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+fun SectionTitle(text: String, modifier: Modifier = Modifier, horizontalPadding: Dp = 20.dp, trailing: (@Composable () -> Unit)? = null) {
+    Row(modifier.fillMaxWidth().padding(horizontal = horizontalPadding), verticalAlignment = Alignment.CenterVertically) {
         Text(text, style = Type.Section, color = Nf.Text, modifier = Modifier.weight(1f))
         trailing?.invoke()
     }

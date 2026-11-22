@@ -91,10 +91,11 @@ fun DownloadsScreen(onBack: () -> Unit) {
     var confirmDeleteAnime by remember { mutableStateOf<DownloadedAnime?>(null) }
     var confirmDeleteEp by remember { mutableStateOf<DownloadedEpisode?>(null) }
 
-    LazyColumn(
-        Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding().navigationBarsPadding(),
-        contentPadding = PaddingValues(bottom = 44.dp),
-    ) {
+    Box(Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding().navigationBarsPadding(), contentAlignment = Alignment.TopCenter) {
+        LazyColumn(
+            Modifier.widthIn(max = 760.dp).fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 44.dp),
+        ) {
         item(key = "header") {
             Row(
                 Modifier.fillMaxWidth().padding(start = 16.dp, end = 20.dp, top = 12.dp, bottom = 16.dp),
@@ -179,6 +180,7 @@ fun DownloadsScreen(onBack: () -> Unit) {
                 }
             }
         }
+    }
     }
 
     if (confirmClearAll) AlertDialog(

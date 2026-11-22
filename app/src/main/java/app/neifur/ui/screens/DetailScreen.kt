@@ -10,6 +10,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -551,6 +552,8 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
         label = "detail-corner",
     ) { state -> if (state == EnterExitState.PostExit) exitCornerPx else 0f }
 
+    val layout = rememberScreenLayout()
+
     CompositionLocalProvider(LocalAccent provides accent) {
         Box(
             Modifier.fillMaxSize()
@@ -563,101 +566,77 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                 }
                 .background(Nf.Ink)
         ) {
-            LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 56.dp), modifier = Modifier.fillMaxSize()) {
-                item(key = "hero") { Hero(stub, anime, origin, accent, listState) }
-
-                item(key = "meta") { MetaChips(anime, vm.extrasPending, Modifier.reveal(1)) }
-
-                item(key = "actions") {
-                    Column(Modifier.reveal(2).padding(horizontal = 20.dp).padding(top = 18.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            WatchButton(play, history, anime, isMovie, accent, signedIn, Modifier.weight(1f), { vm.askSignIn = true }) { idx ->
-                                if ((play as? PlayState.Ready)?.started == false) { startFor = idx; sheet = SheetPage.Translations } else vm.play(ctx, idx)
-                            }
-                            // An announcement has nothing to list yet: the button would open an empty sheet.
-                            if (!isMovie && (play as? PlayState.Ready)?.episodes?.isEmpty() != true) {
-                                Spacer(Modifier.width(10.dp))
-                                SquareAction(Icons.AutoMirrored.Rounded.FormatListBulleted, "Серии") { sheet = SheetPage.Episodes }
-                            }
-                            Spacer(Modifier.width(10.dp))
-                            // Signed in, the bookmark is the title's place in the Anime 365 lists; otherwise a local favourite.
-                            if (signedIn) {
-                                val inList = vm.record?.status != null
-                                SquareAction(if (inList) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Список", tint = if (inList) statusColor(vm.record?.status) else Nf.Text) { listSheet = true }
-                            } else {
-                                SquareAction(if (favorite) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Избранное", tint = if (favorite) accent else Nf.Text, onClick = vm::toggleFavorite)
-                            }
-                        }
-                        StudioCard(play, vm.startedHint, vm.record?.status, accent) { startFor = null; sheet = SheetPage.Translations }
-                        // Known up front: the player would only say the same after a tap.
-                        if ((account as? AccountState.SignedIn)?.profile?.subscribed == false) NoSubscriptionHint()
-                    }
-                }
-
-                if (vm.error != null && anime == null) item {
-                    EmptyState("Не получилось загрузить тайтл", vm.error, modifier = Modifier.padding(top = 20.dp), action = "Повторить", onAction = vm::load)
-                }
-
-                if (anime == null && vm.error == null) item(key = "skeleton") { SectionsSkeleton(Modifier.reveal(3)) }
-
-                if (anime != null) {
-                    val desc = cleanDescription(anime.description)
-                    if (desc.isNotBlank()) item(key = "desc") { Description(desc, Modifier.animateItem().reveal(3)) }
-
-                    val genres = anime.genres.filter { it.kind != "theme" || anime.genres.size < 6 }
-                    if (genres.isNotEmpty()) item(key = "genres") {
-                        FlowRow(
-                            Modifier.animateItem().reveal(4).padding(horizontal = 20.dp).padding(top = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) { genres.forEach { Pill(it.label) } }
-                    }
-
-                    item(key = "facts") { Facts(anime, vm.cast, Modifier.animateItem()) }
-
-                    if (anime.scoresStats.sumOf { it.count } > 20) item(key = "scores") { Scores(anime, accent, Modifier.animateItem()) }
-
-                    val chars = vm.cast?.characters.orEmpty()
-                    if (chars.isNotEmpty()) item(key = "chars") { Characters(chars, Modifier.animateItem()) }
-
-                    val videos = anime.videos.filter { it.url != null && it.kind != "episode_preview" }
-                        .sortedBy { listOf("pv", "op", "ed", "op_ed_clip", "character_trailer").indexOf(it.kind).let { i -> if (i < 0) 9 else i } }
-                    if (videos.isNotEmpty()) item(key = "videos") { Videos(videos, Modifier.animateItem()) { url -> openUrl(ctx, url) } }
-
-                    if (anime.screenshots.isNotEmpty()) item(key = "shots") {
-                        Column(Modifier.animateItem()) {
-                            SectionTitle("Кадры", Modifier.padding(top = 30.dp, bottom = 14.dp))
-                            LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                items(anime.screenshots.take(14)) { s ->
-                                    PosterImage(s.x332Url ?: s.originalUrl, Modifier.height(124.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(16.dp)))
-                                }
-                            }
-                        }
-                    }
-
-                    // Related seasons come from Shikimori; opening one finds its Anime 365 page by the shared MyAnimeList id.
-                    val related = anime.related.filter { it.anime != null && it.anime.kind != "music" }
-                        .sortedWith(compareBy({ relationOrder(it.relationKind) }, { it.anime?.airedOn?.year ?: 9999 }))
-                    if (related.isNotEmpty()) item(key = "related") {
-                        Column(Modifier.animateItem()) {
-                            SectionTitle("Связанное", Modifier.padding(top = 30.dp, bottom = 14.dp))
-                            LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                items(related, key = { it.anime!!.id }) { r ->
-                                    val ra = r.anime!!
-                                    val s = AnimeStub("mal:${ra.id}", ra.russian?.takeIf { it.isNotBlank() } ?: ra.name, ra.poster?.card, ra.kind, ra.airedOn?.year, ra.score)
-                                    Column(Modifier.width(118.dp)) {
-                                        PosterCard(s, "rel-$id", { open(s, "rel-$id") }, width = 118.dp)
-                                        r.relationText?.let { Text(it, style = Type.Caption, color = accent, maxLines = 1, modifier = Modifier.padding(top = 3.dp)) }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    item(key = "credit") {
-                        Text(
-                            "Каталог и видео — Anime 365" + if (vm.series?.myAnimeListId?.let { it > 0 } == true) " · Описание и персонажи — Shikimori" else "",
-                            style = Type.Caption, color = Nf.TextMute, modifier = Modifier.animateItem().padding(horizontal = 20.dp).padding(top = 30.dp),
+            if (layout.isExpanded) {
+                // Wide tablet layout: ambient backdrop behind a pinned left action rail + scrollable right details.
+                val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+                DetailBackdrop(stub, anime, 230.dp + top, listState)
+                Row(
+                    Modifier.fillMaxSize().statusBarsPadding().padding(top = 60.dp, start = 28.dp, end = 28.dp),
+                    horizontalArrangement = Arrangement.spacedBy(24.dp),
+                ) {
+                    Column(
+                        Modifier.width(340.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(top = 8.dp, bottom = 40.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        PosterImage(
+                            stub?.poster,
+                            Modifier.sharedPoster("poster/$origin/${stub?.id}", HeroShape).size(172.dp, 246.dp)
+                                .shadow(28.dp, HeroShape, ambientColor = accent, spotColor = accent).clip(HeroShape)
+                                .border(1.dp, Color(0x1FFFFFFF), HeroShape),
                         )
+                        Spacer(Modifier.height(20.dp))
+                        DetailActionsBlock(
+                            play = play, history = history, anime = anime, isMovie = isMovie, accent = accent,
+                            signedIn = signedIn, favorite = favorite, vm = vm, account = account,
+                            onPlay = { idx ->
+                                if ((play as? PlayState.Ready)?.started == false) { startFor = idx; sheet = SheetPage.Translations } else vm.play(ctx, idx)
+                            },
+                            onEpisodes = { sheet = SheetPage.Episodes },
+                            onList = { listSheet = true },
+                            onStudio = { startFor = null; sheet = SheetPage.Translations },
+                            modifier = Modifier.fillMaxWidth().reveal(1),
+                        )
+                    }
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(top = 6.dp, bottom = 56.dp),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                    ) {
+                        item(key = "title") {
+                            DetailTitleBlock(
+                                stub = stub, anime = anime, titleSize = 26.sp,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).reveal(0),
+                            )
+                        }
+                        detailInfoItems(vm, anime, id, accent, open, ctx)
+                    }
+                }
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(bottom = 56.dp),
+                        modifier = (if (layout.isTablet) Modifier.widthIn(max = 720.dp) else Modifier).fillMaxSize(),
+                    ) {
+                        item(key = "hero") { Hero(stub, anime, origin, accent, listState) }
+
+                        item(key = "meta") { MetaChips(anime, vm.extrasPending, Modifier.reveal(1)) }
+
+                        item(key = "actions") {
+                            DetailActionsBlock(
+                                play = play, history = history, anime = anime, isMovie = isMovie, accent = accent,
+                                signedIn = signedIn, favorite = favorite, vm = vm, account = account,
+                                onPlay = { idx ->
+                                    if ((play as? PlayState.Ready)?.started == false) { startFor = idx; sheet = SheetPage.Translations } else vm.play(ctx, idx)
+                                },
+                                onEpisodes = { sheet = SheetPage.Episodes },
+                                onList = { listSheet = true },
+                                onStudio = { startFor = null; sheet = SheetPage.Translations },
+                                modifier = Modifier.reveal(2).padding(horizontal = 20.dp).padding(top = 18.dp),
+                            )
+                        }
+
+                        detailInfoItems(vm, anime, id, accent, open, ctx, includeMeta = false)
                     }
                 }
             }
@@ -717,39 +696,180 @@ private fun openUrl(ctx: Context, url: String) {
 // --- hero ------------------------------------------------------------------------------------------
 
 @Composable
-private fun Hero(stub: AnimeStub?, anime: Anime?, origin: String, accent: Color, listState: LazyListState) {
-    val ctx = LocalContext.current
-    val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    val backdropH = 250.dp + top
-    val shot = anime?.screenshots?.firstOrNull()?.originalUrl
-    Box(Modifier.fillMaxWidth()) {
-        // Backdrop: the blurred poster at once (it's already in memory), a real frame from the show fading in over it.
-        Box(
-            Modifier.fillMaxWidth().height(backdropH).reveal(0).clipToBounds().graphicsLayer {
-                val first = listState.firstVisibleItemIndex == 0
-                translationY = if (first) listState.firstVisibleItemScrollOffset * 0.45f else 0f
+private fun DetailActionsBlock(
+    play: PlayState, history: List<WatchEntry>, anime: Anime?, isMovie: Boolean, accent: Color,
+    signedIn: Boolean, favorite: Boolean, vm: DetailVm, account: AccountState,
+    onPlay: (Int) -> Unit, onEpisodes: () -> Unit, onList: () -> Unit, onStudio: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            WatchButton(play, history, anime, isMovie, accent, signedIn, Modifier.weight(1f), { vm.askSignIn = true }, onPlay)
+            // An announcement has nothing to list yet: the button would open an empty sheet.
+            if (!isMovie && (play as? PlayState.Ready)?.episodes?.isEmpty() != true) {
+                Spacer(Modifier.width(10.dp))
+                SquareAction(Icons.AutoMirrored.Rounded.FormatListBulleted, "Серии", onClick = onEpisodes)
             }
-        ) {
-            PosterImage(stub?.poster, Modifier.fillMaxSize().graphicsLayer { scaleX = 1.3f; scaleY = 1.3f }.blur(40.dp).alpha(0.7f))
-            if (shot != null) {
-                var loaded by remember(shot) { mutableStateOf(false) }
-                val a by animateFloatAsState(if (loaded) 1f else 0f, tween(600), label = "shot")
-                AsyncImage(
-                    model = remember(shot) { ImageRequest.Builder(ctx).data(shot).build() },
-                    contentDescription = null, contentScale = ContentScale.Crop,
-                    onSuccess = { loaded = true },
-                    modifier = Modifier.fillMaxSize().graphicsLayer { alpha = a },
-                )
+            Spacer(Modifier.width(10.dp))
+            // Signed in, the bookmark is the title's place in the Anime 365 lists; otherwise a local favourite.
+            if (signedIn) {
+                val inList = vm.record?.status != null
+                SquareAction(if (inList) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Список", tint = if (inList) statusColor(vm.record?.status) else Nf.Text, onClick = onList)
+            } else {
+                SquareAction(if (favorite) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Избранное", tint = if (favorite) accent else Nf.Text, onClick = vm::toggleFavorite)
             }
-            Box(
-                Modifier.fillMaxSize().background(
-                    Brush.verticalGradient(
-                        0f to Nf.Ink.copy(alpha = 0.55f), 0.3f to Nf.Ink.copy(alpha = 0.1f),
-                        0.62f to Nf.Ink.copy(alpha = 0.55f), 1f to Nf.Ink,
-                    )
-                )
+        }
+        StudioCard(play, vm.startedHint, vm.record?.status, accent, onClick = onStudio)
+        // Known up front: the player would only say the same after a tap.
+        if ((account as? AccountState.SignedIn)?.profile?.subscribed == false) NoSubscriptionHint()
+    }
+}
+
+private fun LazyListScope.detailInfoItems(
+    vm: DetailVm, anime: Anime?, id: String, accent: Color, open: OpenAnime, ctx: Context,
+    includeMeta: Boolean = true,
+) {
+    if (includeMeta) item(key = "meta") { MetaChips(anime, vm.extrasPending, Modifier.reveal(1)) }
+
+    if (vm.error != null && anime == null) item {
+        EmptyState("Не получилось загрузить тайтл", vm.error, modifier = Modifier.padding(top = 20.dp), action = "Повторить", onAction = vm::load)
+    }
+
+    if (anime == null && vm.error == null) item(key = "skeleton") { SectionsSkeleton(Modifier.reveal(3)) }
+
+    if (anime != null) {
+        val desc = cleanDescription(anime.description)
+        if (desc.isNotBlank()) item(key = "desc") { Description(desc, Modifier.animateItem().reveal(3)) }
+
+        val genres = anime.genres.filter { it.kind != "theme" || anime.genres.size < 6 }
+        if (genres.isNotEmpty()) item(key = "genres") {
+            FlowRow(
+                Modifier.animateItem().reveal(4).padding(horizontal = 20.dp).padding(top = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) { genres.forEach { Pill(it.label) } }
+        }
+
+        item(key = "facts") { Facts(anime, vm.cast, Modifier.animateItem()) }
+
+        if (anime.scoresStats.sumOf { it.count } > 20) item(key = "scores") { Scores(anime, accent, Modifier.animateItem()) }
+
+        val chars = vm.cast?.characters.orEmpty()
+        if (chars.isNotEmpty()) item(key = "chars") { Characters(chars, Modifier.animateItem()) }
+
+        val videos = anime.videos.filter { it.url != null && it.kind != "episode_preview" }
+            .sortedBy { listOf("pv", "op", "ed", "op_ed_clip", "character_trailer").indexOf(it.kind).let { i -> if (i < 0) 9 else i } }
+        if (videos.isNotEmpty()) item(key = "videos") { Videos(videos, Modifier.animateItem()) { url -> openUrl(ctx, url) } }
+
+        if (anime.screenshots.isNotEmpty()) item(key = "shots") {
+            Column(Modifier.animateItem()) {
+                SectionTitle("Кадры", Modifier.padding(top = 30.dp, bottom = 14.dp))
+                LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(anime.screenshots.take(14)) { s ->
+                        PosterImage(s.x332Url ?: s.originalUrl, Modifier.height(124.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(16.dp)))
+                    }
+                }
+            }
+        }
+
+        // Related seasons come from Shikimori; opening one finds its Anime 365 page by the shared MyAnimeList id.
+        val related = anime.related.filter { it.anime != null && it.anime.kind != "music" }
+            .sortedWith(compareBy({ relationOrder(it.relationKind) }, { it.anime?.airedOn?.year ?: 9999 }))
+        if (related.isNotEmpty()) item(key = "related") {
+            Column(Modifier.animateItem()) {
+                SectionTitle("Связанное", Modifier.padding(top = 30.dp, bottom = 14.dp))
+                LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(related, key = { it.anime!!.id }) { r ->
+                        val ra = r.anime!!
+                        val s = AnimeStub("mal:${ra.id}", ra.russian?.takeIf { it.isNotBlank() } ?: ra.name, ra.poster?.card, ra.kind, ra.airedOn?.year, ra.score)
+                        Column(Modifier.width(118.dp)) {
+                            PosterCard(s, "rel-$id", { open(s, "rel-$id") }, width = 118.dp)
+                            r.relationText?.let { Text(it, style = Type.Caption, color = accent, maxLines = 1, modifier = Modifier.padding(top = 3.dp)) }
+                        }
+                    }
+                }
+            }
+        }
+
+        item(key = "credit") {
+            Text(
+                "Каталог и видео — Anime 365" + if (vm.series?.myAnimeListId?.let { it > 0 } == true) " · Описание и персонажи — Shikimori" else "",
+                style = Type.Caption, color = Nf.TextMute, modifier = Modifier.animateItem().padding(horizontal = 20.dp).padding(top = 30.dp),
             )
         }
+    }
+}
+
+@Composable
+private fun DetailBackdrop(stub: AnimeStub?, anime: Anime?, height: androidx.compose.ui.unit.Dp, listState: LazyListState) {
+    val ctx = LocalContext.current
+    val shot = anime?.screenshots?.firstOrNull()?.originalUrl
+    Box(
+        Modifier.fillMaxWidth().height(height).reveal(0).clipToBounds().graphicsLayer {
+            val first = listState.firstVisibleItemIndex == 0
+            translationY = if (first) listState.firstVisibleItemScrollOffset * 0.45f else 0f
+        }
+    ) {
+        PosterImage(stub?.poster, Modifier.fillMaxSize().graphicsLayer { scaleX = 1.3f; scaleY = 1.3f }.blur(40.dp).alpha(0.7f))
+        if (shot != null) {
+            var loaded by remember(shot) { mutableStateOf(false) }
+            val a by animateFloatAsState(if (loaded) 1f else 0f, tween(600), label = "shot")
+            AsyncImage(
+                model = remember(shot) { ImageRequest.Builder(ctx).data(shot).build() },
+                contentDescription = null, contentScale = ContentScale.Crop,
+                onSuccess = { loaded = true },
+                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = a },
+            )
+        }
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(
+                    0f to Nf.Ink.copy(alpha = 0.55f), 0.3f to Nf.Ink.copy(alpha = 0.1f),
+                    0.62f to Nf.Ink.copy(alpha = 0.55f), 1f to Nf.Ink,
+                )
+            )
+        )
+    }
+}
+
+@Composable
+private fun DetailTitleBlock(stub: AnimeStub?, anime: Anime?, titleSize: androidx.compose.ui.unit.TextUnit, modifier: Modifier = Modifier) {
+    Column(modifier.animateContentSize(spring(dampingRatio = 0.9f, stiffness = 380f)).padding(bottom = 2.dp)) {
+        anime?.status?.takeIf { it == "ongoing" || it == "anons" }?.let {
+            Text(
+                statusLabel(it).uppercase(), style = Type.Overline, color = if (it == "ongoing") Nf.Mint else Nf.Amber,
+                modifier = Modifier.padding(bottom = 6.dp),
+            )
+        }
+        Text(
+            stub?.title.orEmpty(), style = Type.Display.copy(fontSize = titleSize, lineHeight = titleSize * 1.24f), color = Nf.Text,
+            maxLines = 4, overflow = TextOverflow.Ellipsis,
+        )
+        anime?.name?.takeIf { it != stub?.title }?.let {
+            Text(it, style = Type.Caption, color = Nf.TextMute, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+        }
+        val score = formatScore(anime?.score ?: stub?.score)
+        Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (score != null) {
+                Icon(Icons.Rounded.Star, null, tint = Nf.Amber, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(score, style = Type.Title.copy(fontSize = 15.sp), color = Nf.Text)
+                Spacer(Modifier.width(10.dp))
+            }
+            Text(
+                listOfNotNull((anime?.year ?: stub?.year)?.toString(), kindLabel(anime?.kind ?: stub?.kind).takeIf { it.isNotBlank() }).joinToString(" · "),
+                style = Type.Label, color = Nf.TextDim, maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun Hero(stub: AnimeStub?, anime: Anime?, origin: String, accent: Color, listState: LazyListState) {
+    val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val backdropH = 250.dp + top
+    Box(Modifier.fillMaxWidth()) {
+        // Backdrop: the blurred poster at once (it's already in memory), a real frame from the show fading in over it.
+        DetailBackdrop(stub, anime, backdropH, listState)
 
         Row(
             Modifier.fillMaxWidth().padding(top = backdropH - 104.dp).padding(horizontal = 20.dp),
@@ -763,34 +883,7 @@ private fun Hero(stub: AnimeStub?, anime: Anime?, origin: String, accent: Color,
             )
             Spacer(Modifier.width(16.dp))
             // Late data (status, original name) grows the block smoothly instead of jolting the title upwards.
-            Column(Modifier.weight(1f).reveal(0).animateContentSize(spring(dampingRatio = 0.9f, stiffness = 380f)).padding(bottom = 2.dp)) {
-                anime?.status?.takeIf { it == "ongoing" || it == "anons" }?.let {
-                    Text(
-                        statusLabel(it).uppercase(), style = Type.Overline, color = if (it == "ongoing") Nf.Mint else Nf.Amber,
-                        modifier = Modifier.padding(bottom = 6.dp),
-                    )
-                }
-                Text(
-                    stub?.title.orEmpty(), style = Type.Display.copy(fontSize = 20.sp, lineHeight = 25.sp), color = Nf.Text,
-                    maxLines = 4, overflow = TextOverflow.Ellipsis,
-                )
-                anime?.name?.takeIf { it != stub?.title }?.let {
-                    Text(it, style = Type.Caption, color = Nf.TextMute, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
-                }
-                val score = formatScore(anime?.score ?: stub?.score)
-                Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (score != null) {
-                        Icon(Icons.Rounded.Star, null, tint = Nf.Amber, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(score, style = Type.Title.copy(fontSize = 15.sp), color = Nf.Text)
-                        Spacer(Modifier.width(10.dp))
-                    }
-                    Text(
-                        listOfNotNull((anime?.year ?: stub?.year)?.toString(), kindLabel(anime?.kind ?: stub?.kind).takeIf { it.isNotBlank() }).joinToString(" · "),
-                        style = Type.Label, color = Nf.TextDim, maxLines = 1,
-                    )
-                }
-            }
+            DetailTitleBlock(stub, anime, 20.sp, Modifier.weight(1f).reveal(0))
         }
     }
 }

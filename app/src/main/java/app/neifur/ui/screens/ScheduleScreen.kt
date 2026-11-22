@@ -200,7 +200,8 @@ fun ScheduleScreen(open: OpenAnime, onBack: () -> Unit) {
     }
     val hasAnyMine = remember(schedule) { schedule.values.any { list -> list.any { it.isMine } } }
 
-    Column(Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding().navigationBarsPadding()) {
+    Box(Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding().navigationBarsPadding(), contentAlignment = Alignment.TopCenter) {
+        Column(Modifier.widthIn(max = 760.dp).fillMaxSize()) {
         // Header
         Row(
             Modifier.fillMaxWidth().padding(start = 16.dp, end = 20.dp, top = 12.dp, bottom = 14.dp),
@@ -340,6 +341,7 @@ fun ScheduleScreen(open: OpenAnime, onBack: () -> Unit) {
                 }
             }
         }
+    }
     }
 }
 

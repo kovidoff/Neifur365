@@ -260,10 +260,11 @@ fun SettingsScreen(onOpenSection: (SettingsSection) -> Unit) {
     val (connLine, connWarn) = connectionSummary(activeMirror, anyMirrorWorking, if (signedIn) activeChannel else null)
     val titleCount = remember(history) { history.distinctBy { it.animeId }.size }
 
-    LazyColumn(
-        Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding(),
-        contentPadding = PaddingValues(bottom = 128.dp),
-    ) {
+    Box(Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding(), contentAlignment = Alignment.TopCenter) {
+        LazyColumn(
+            Modifier.widthIn(max = 720.dp).fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 128.dp),
+        ) {
         item(key = "header") {
             Text("Настройки", style = Type.Display, color = Nf.Text, modifier = Modifier.padding(start = 20.dp, top = 14.dp, end = 20.dp, bottom = 4.dp))
         }
@@ -329,6 +330,7 @@ fun SettingsScreen(onOpenSection: (SettingsSection) -> Unit) {
             }
         }
     }
+    }
 
     if (confirmLogout) AlertDialog(
         onDismissRequest = { confirmLogout = false },
@@ -369,10 +371,11 @@ fun SettingsSectionScreen(
     if (section == SettingsSection.Data) LaunchedEffect(Unit) { vm.measureCache(ctx) }
     if (section == SettingsSection.Connection) LaunchedEffect(acc) { if (acc is AccountState.SignedIn) vm.loadChannels() }
 
-    LazyColumn(
-        Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding().navigationBarsPadding().imePadding(),
-        contentPadding = PaddingValues(bottom = 44.dp),
-    ) {
+    Box(Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding().navigationBarsPadding().imePadding(), contentAlignment = Alignment.TopCenter) {
+        LazyColumn(
+            Modifier.widthIn(max = 720.dp).fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 44.dp),
+        ) {
         item(key = "sub-header") {
             Row(
                 Modifier.padding(start = 16.dp, end = 20.dp, top = 12.dp, bottom = 18.dp),
@@ -553,6 +556,7 @@ fun SettingsSectionScreen(
                 }
             }
         }
+    }
     }
 
     if (confirmHistory) AlertDialog(

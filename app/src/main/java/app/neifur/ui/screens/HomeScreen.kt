@@ -29,13 +29,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -129,6 +131,8 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = 
     val marks = remember(lists) { lists.titles.mapValues { it.value.status } }
     LifecycleResumeEffect(Unit) { vm.refreshLists(); onPauseOrDispose {} }
     val listState = rememberLazyListState()
+    val layout = rememberScreenLayout()
+    val padH = layout.horizontalPadding
 
     Box(Modifier.fillMaxSize()) {
         when (val f = feed) {
@@ -137,28 +141,29 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = 
                 "Не получилось загрузить каталог", f.message, Icons.Rounded.WifiOff,
                 Modifier.align(Alignment.Center), action = "Повторить", onAction = vm::load,
             ) else LazyColumn(contentPadding = PaddingValues(bottom = 120.dp), modifier = Modifier.statusBarsPadding().padding(top = 60.dp)) {
-                item(key = "offline") { OfflineCard(f.message, vm::load) }
+                item(key = "offline") { OfflineCard(f.message, padH, vm::load) }
                 if (offlineGroups.isNotEmpty()) item(key = "offline-downloads") {
                     OfflineDownloadsRow(
                         groups = offlineGroups,
+                        padH = padH,
                         onPlay = { playDownloaded(ctx, it, history = history) },
                         onAll = onDownloads,
                     )
                 }
-                if (cont.isNotEmpty()) item(key = "continue") { ContinueRow(cont, lists.titles, open) }
+                if (cont.isNotEmpty()) item(key = "continue") { ContinueRow(cont, lists.titles, padH, open) }
             }
             else -> {
                 val data = (f as? Load.Ready)?.value
                 LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 120.dp)) {
                     item(key = "hero", contentType = "hero") {
                         val heroVisible by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
-                        if (data == null) HeroSkeleton() else Hero(data.ongoing.take(7), visible = heroVisible, open = open)
+                        if (data == null) HeroSkeleton(layout) else Hero(data.ongoing.take(7), visible = heroVisible, layout = layout, open = open)
                     }
                     if (cont.isNotEmpty()) item(key = "continue", contentType = "continue") {
-                        Appear("continue", 0, vm.appeared) { ContinueRow(cont, lists.titles, open) }
+                        Appear("continue", 0, vm.appeared) { ContinueRow(cont, lists.titles, padH, open) }
                     }
                     if (fresh.isNotEmpty()) item(key = "fresh", contentType = "fresh") {
-                        Appear("fresh", 1, vm.appeared) { FreshRow(fresh, open) }
+                        Appear("fresh", 1, vm.appeared) { FreshRow(fresh, layout, open) }
                     }
                     val rows = listOf(
                         "ongoing" to "Сейчас выходит", "year" to "Новинки года", "popular" to "Самое популярное", "movies" to "Полнометражные",
@@ -169,7 +174,7 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = 
                                 "ongoing" -> data?.ongoing?.drop(7); "year" -> data?.thisYear; "popular" -> data?.popular
                                 else -> data?.movies
                             }
-                            Appear(key, i + 2, vm.appeared, ready = list != null) { AnimeRow(title, key, list, marks, open) }
+                            Appear(key, i + 2, vm.appeared, ready = list != null) { AnimeRow(title, key, list, marks, layout, open) }
                         }
                     }
                 }
@@ -188,7 +193,7 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = 
                 .background(Brush.verticalGradient(listOf(Color(0xB3000000), Color.Transparent)))
                 // Read while drawing: the bar's fade follows the scroll without recomposing on every frame.
                 .drawBehind { drawRect(Nf.Ink.copy(alpha = barAlpha * 0.96f)) }
-                .statusBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp)
+                .statusBarsPadding().padding(horizontal = padH, vertical = 10.dp)
         ) {
             Wordmark(Modifier.align(Alignment.CenterStart))
             Box(
@@ -202,9 +207,9 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = 
 
 /** The catalog didn't load, but what's watched here is still below: a compact note instead of a full-screen error. */
 @Composable
-private fun OfflineCard(message: String, retry: () -> Unit) {
+private fun OfflineCard(message: String, padH: androidx.compose.ui.unit.Dp, retry: () -> Unit) {
     Row(
-        Modifier.padding(horizontal = 20.dp).padding(top = 12.dp, bottom = 8.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp))
+        Modifier.padding(horizontal = padH).padding(top = 12.dp, bottom = 8.dp).widthIn(max = 680.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp))
             .background(Nf.Surface).border(1.dp, Nf.Line, RoundedCornerShape(20.dp)).padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -226,9 +231,9 @@ private fun OfflineCard(message: String, retry: () -> Unit) {
 
 /** Shown right under OfflineCard when the network is down: one tap launches any downloaded anime straight in the player. */
 @Composable
-private fun OfflineDownloadsRow(groups: List<DownloadedAnime>, onPlay: (DownloadedAnime) -> Unit, onAll: () -> Unit) {
+private fun OfflineDownloadsRow(groups: List<DownloadedAnime>, padH: androidx.compose.ui.unit.Dp, onPlay: (DownloadedAnime) -> Unit, onAll: () -> Unit) {
     Column(Modifier.padding(top = 18.dp)) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = padH), verticalAlignment = Alignment.CenterVertically) {
             Text("Доступно офлайн", style = Type.Section, color = Nf.Text, modifier = Modifier.weight(1f))
             Text(
                 "Все загрузки", style = Type.Label, color = Nf.Violet,
@@ -236,7 +241,7 @@ private fun OfflineDownloadsRow(groups: List<DownloadedAnime>, onPlay: (Download
             )
         }
         Spacer(Modifier.height(12.dp))
-        LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyRow(contentPadding = PaddingValues(horizontal = padH), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             items(groups, key = { it.animeId }) { anime ->
                 val n = anime.episodes.size
                 Row(
@@ -284,11 +289,18 @@ private fun Appear(key: String, index: Int, played: MutableSet<String>, ready: B
     Box(Modifier.graphicsLayer { alpha = a.value; translationY = (1f - a.value) * 36.dp.toPx() }) { content() }
 }
 
+private fun heroHeight(layout: ScreenLayout) = if (layout.isTablet) {
+    (layout.heightDp * 0.54f).coerceIn(380f, 470f).dp
+} else {
+    (layout.heightDp * 0.66f).dp
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Hero(items: List<Series>, visible: Boolean, open: OpenAnime) {
+private fun Hero(items: List<Series>, visible: Boolean, layout: ScreenLayout, open: OpenAnime) {
     if (items.isEmpty()) return
-    val height = (LocalConfiguration.current.screenHeightDp * 0.66f).dp
+    val height = heroHeight(layout)
+    val padH = layout.horizontalPadding
     val pager = rememberPagerState { items.size }
     val dragged by pager.interactionSource.collectIsDraggedAsState()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -316,56 +328,88 @@ private fun Hero(items: List<Series>, visible: Boolean, open: OpenAnime) {
             val a = items[page]
             val offset = (pager.currentPage - page) + pager.currentPageOffsetFraction
             Box(Modifier.fillMaxSize().clipToBounds().pressable(0.985f) { open(a.stub(), "hero") }) {
-                PosterImage(
-                    a.posterUrl, cacheKey = a.posterUrl,
-                    modifier = Modifier.fillMaxSize().graphicsLayer {
-                        // Parallax: the artwork lags behind the page, the text doesn't.
-                        translationX = offset * size.width * 0.32f
-                        val s = 1.08f + offset.absoluteValue * 0.06f
-                        scaleX = s; scaleY = s
-                    },
-                )
-                Box(
-                    Modifier.fillMaxSize().background(
-                        Brush.verticalGradient(
-                            0f to Color.Transparent, 0.38f to Color.Transparent,
-                            0.72f to Nf.Ink.copy(alpha = 0.78f), 1f to Nf.Ink,
+                if (layout.isTablet) {
+                    // Wide screens: ambient blurred backdrop + crisp full vertical poster on the right, so characters are never brutally cropped.
+                    PosterImage(
+                        a.posterUrl, cacheKey = a.posterUrl,
+                        modifier = Modifier.fillMaxSize().graphicsLayer {
+                            translationX = offset * size.width * 0.24f
+                            scaleX = 1.28f; scaleY = 1.28f
+                        }.blur(38.dp).alpha(0.52f),
+                    )
+                    Box(
+                        Modifier.fillMaxSize().background(
+                            Brush.horizontalGradient(
+                                0f to Nf.Ink.copy(alpha = 0.88f),
+                                0.55f to Nf.Ink.copy(alpha = 0.52f),
+                                1f to Nf.Ink.copy(alpha = 0.22f),
+                            )
                         )
                     )
-                )
-                Column(
-                    Modifier.align(Alignment.BottomStart).padding(horizontal = 20.dp).padding(bottom = 44.dp)
-                        .graphicsLayer { alpha = 1f - (offset.absoluteValue * 1.6f).coerceIn(0f, 1f); translationX = -offset * 60.dp.toPx() },
-                ) {
-                    Text("СЕЙЧАС ВЫХОДИТ", style = Type.Overline, color = Nf.Violet)
-                    Spacer(Modifier.height(8.dp))
-                    Text(a.title, style = Type.Hero, color = Nf.Text, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                    Spacer(Modifier.height(8.dp))
-                    val genres = a.genres.orEmpty().take(3).joinToString(" · ") { it.title }
-                    val eps = if (a.numberOfEpisodes > 0) "${a.numberOfEpisodes} эп." else null
-                    Text(listOfNotNull(genres.takeIf { it.isNotBlank() }, eps).joinToString("  •  "), style = Type.Label, color = Nf.TextDim, maxLines = 1)
-                    Spacer(Modifier.height(16.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Row(
-                            Modifier.clip(CircleShape).background(Nf.Text).pressable { open(a.stub(), "hero") }
-                                .padding(start = 14.dp, end = 20.dp, top = 11.dp, bottom = 11.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(Icons.Rounded.PlayArrow, null, tint = Nf.Ink, modifier = Modifier.size(22.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Смотреть", style = Type.Title.copy(fontSize = 15.sp), color = Nf.Ink)
-                        }
-                        formatScore(a.score)?.let { s ->
-                            Spacer(Modifier.width(14.dp))
-                            Icon(Icons.Rounded.Star, null, tint = Nf.Amber, modifier = Modifier.size(17.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text(s, style = Type.Title, color = Nf.Text)
-                        }
+                    Box(
+                        Modifier.fillMaxSize().background(
+                            Brush.verticalGradient(
+                                0f to Nf.Ink.copy(alpha = 0.45f), 0.35f to Color.Transparent,
+                                0.78f to Nf.Ink.copy(alpha = 0.78f), 1f to Nf.Ink,
+                            )
+                        )
+                    )
+                    val posterShape = RoundedCornerShape(22.dp)
+                    val posterH = (height - 122.dp).coerceIn(220.dp, 320.dp)
+                    Row(
+                        Modifier.fillMaxSize().statusBarsPadding()
+                            .padding(start = padH, end = padH + 8.dp, top = 54.dp, bottom = 46.dp),
+                        verticalAlignment = Alignment.Bottom,
+                    ) {
+                        HeroMeta(
+                            a = a,
+                            open = open,
+                            titleSize = 30.sp,
+                            modifier = Modifier.weight(1f).padding(end = 36.dp).widthIn(max = 560.dp)
+                                .graphicsLayer { alpha = 1f - (offset.absoluteValue * 1.6f).coerceIn(0f, 1f); translationX = -offset * 52.dp.toPx() },
+                        )
+                        PosterImage(
+                            a.posterUrl, cacheKey = a.posterUrl,
+                            modifier = Modifier
+                                .graphicsLayer {
+                                    alpha = 1f - (offset.absoluteValue * 1.2f).coerceIn(0f, 1f)
+                                    translationX = offset * 48.dp.toPx()
+                                }
+                                .sharedPoster("poster/hero/${a.id}", posterShape)
+                                .height(posterH).aspectRatio(0.7f)
+                                .shadow(28.dp, posterShape, ambientColor = Nf.Violet, spotColor = Color.Black)
+                                .clip(posterShape).border(1.dp, Color(0x26FFFFFF), posterShape),
+                        )
                     }
+                } else {
+                    PosterImage(
+                        a.posterUrl, cacheKey = a.posterUrl,
+                        modifier = Modifier.fillMaxSize().graphicsLayer {
+                            // Parallax: the artwork lags behind the page, the text doesn't.
+                            translationX = offset * size.width * 0.32f
+                            val s = 1.08f + offset.absoluteValue * 0.06f
+                            scaleX = s; scaleY = s
+                        },
+                    )
+                    Box(
+                        Modifier.fillMaxSize().background(
+                            Brush.verticalGradient(
+                                0f to Color.Transparent, 0.38f to Color.Transparent,
+                                0.72f to Nf.Ink.copy(alpha = 0.78f), 1f to Nf.Ink,
+                            )
+                        )
+                    )
+                    HeroMeta(
+                        a = a,
+                        open = open,
+                        titleSize = Type.Hero.fontSize,
+                        modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = 20.dp).padding(bottom = 44.dp)
+                            .graphicsLayer { alpha = 1f - (offset.absoluteValue * 1.6f).coerceIn(0f, 1f); translationX = -offset * 60.dp.toPx() },
+                    )
                 }
             }
         }
-        Row(Modifier.align(Alignment.BottomStart).padding(start = 20.dp, bottom = 18.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Row(Modifier.align(Alignment.BottomStart).padding(start = padH, bottom = 18.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             repeat(items.size) { i ->
                 val w by animateDpAsState(if (i == pager.currentPage) 22.dp else 6.dp, label = "dot")
                 Box(Modifier.height(4.dp).width(w).clip(CircleShape).background(if (i == pager.currentPage) Nf.Text else Color(0x4DFFFFFF)))
@@ -375,33 +419,67 @@ private fun Hero(items: List<Series>, visible: Boolean, open: OpenAnime) {
 }
 
 @Composable
-private fun HeroSkeleton() {
-    val height = (LocalConfiguration.current.screenHeightDp * 0.66f).dp
-    Box(Modifier.fillMaxWidth().height(height)) {
+private fun HeroMeta(a: Series, open: OpenAnime, titleSize: androidx.compose.ui.unit.TextUnit, modifier: Modifier) {
+    Column(modifier) {
+        Text("СЕЙЧАС ВЫХОДИТ", style = Type.Overline, color = Nf.Violet)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            a.title,
+            style = Type.Hero.copy(fontSize = titleSize, lineHeight = titleSize * 1.18f),
+            color = Nf.Text, maxLines = 3, overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(8.dp))
+        val genres = a.genres.orEmpty().take(3).joinToString(" · ") { it.title }
+        val eps = if (a.numberOfEpisodes > 0) "${a.numberOfEpisodes} эп." else null
+        Text(listOfNotNull(genres.takeIf { it.isNotBlank() }, eps).joinToString("  •  "), style = Type.Label, color = Nf.TextDim, maxLines = 1)
+        Spacer(Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.clip(CircleShape).background(Nf.Text).pressable { open(a.stub(), "hero") }
+                    .padding(start = 14.dp, end = 20.dp, top = 11.dp, bottom = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.PlayArrow, null, tint = Nf.Ink, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Смотреть", style = Type.Title.copy(fontSize = 15.sp), color = Nf.Ink)
+            }
+            formatScore(a.score)?.let { s ->
+                Spacer(Modifier.width(14.dp))
+                Icon(Icons.Rounded.Star, null, tint = Nf.Amber, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(s, style = Type.Title, color = Nf.Text)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeroSkeleton(layout: ScreenLayout) {
+    Box(Modifier.fillMaxWidth().height(heroHeight(layout))) {
         Box(Modifier.fillMaxSize().shimmer())
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.4f to Color.Transparent, 1f to Nf.Ink)))
     }
 }
 
 @Composable
-private fun AnimeRow(title: String, key: String, list: List<Series>?, marks: Map<Long, ListStatus?>, open: OpenAnime) {
+private fun AnimeRow(title: String, key: String, list: List<Series>?, marks: Map<Long, ListStatus?>, layout: ScreenLayout, open: OpenAnime) {
     if (list != null && list.isEmpty()) return
     Column(Modifier.padding(top = 26.dp)) {
-        SectionTitle(title)
+        SectionTitle(title, horizontalPadding = layout.horizontalPadding)
         Spacer(Modifier.height(14.dp))
-        LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (list == null) items(6) { PosterCardSkeleton() }
-            else items(list, key = { it.id }) { a -> PosterCard(a.stub(), key, { open(a.stub(), key) }, listStatus = marks[a.id]) }
+        LazyRow(contentPadding = PaddingValues(horizontal = layout.horizontalPadding), horizontalArrangement = Arrangement.spacedBy(if (layout.isTablet) 14.dp else 12.dp)) {
+            if (list == null) items(if (layout.isTablet) 8 else 6) { PosterCardSkeleton(width = layout.posterCardWidth) }
+            else items(list, key = { it.id }) { a -> PosterCard(a.stub(), key, { open(a.stub(), key) }, width = layout.posterCardWidth, listStatus = marks[a.id]) }
         }
     }
 }
 
 @Composable
-private fun ContinueRow(entries: List<WatchEntry>, listed: Map<Long, ListedTitle>, open: OpenAnime) {
+private fun ContinueRow(entries: List<WatchEntry>, listed: Map<Long, ListedTitle>, padH: androidx.compose.ui.unit.Dp, open: OpenAnime) {
     Column(Modifier.padding(top = 22.dp)) {
-        SectionTitle("Продолжить просмотр")
+        SectionTitle("Продолжить просмотр", horizontalPadding = padH)
         Spacer(Modifier.height(14.dp))
-        LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyRow(contentPadding = PaddingValues(horizontal = padH), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             items(entries, key = { it.animeId }) { e ->
                 val stub = AnimeStub(e.animeId, e.title, e.poster)
                 Row(
@@ -432,15 +510,15 @@ private fun ContinueRow(entries: List<WatchEntry>, listed: Map<Long, ListedTitle
  * the caption names the one to watch next.
  */
 @Composable
-private fun FreshRow(items: List<ListedTitle>, open: OpenAnime) {
+private fun FreshRow(items: List<ListedTitle>, layout: ScreenLayout, open: OpenAnime) {
     Column(Modifier.padding(top = 22.dp)) {
-        SectionTitle("Новые серии")
+        SectionTitle("Новые серии", horizontalPadding = layout.horizontalPadding)
         Spacer(Modifier.height(14.dp))
-        LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyRow(contentPadding = PaddingValues(horizontal = layout.horizontalPadding), horizontalArrangement = Arrangement.spacedBy(if (layout.isTablet) 14.dp else 12.dp)) {
             items(items, key = { it.entry.seriesId }) { t ->
                 val series = t.series ?: return@items
                 val stub = series.stub()
-                Column(Modifier.width(128.dp).pressable { open(stub, "fresh") }) {
+                Column(Modifier.width(layout.posterCardWidth).pressable { open(stub, "fresh") }) {
                     // The badge lives inside the shared poster, so it travels with it instead of popping in after.
                     Box(Modifier.sharedPoster("poster/fresh/${series.id}").fillMaxWidth().aspectRatio(0.7f).clip(PosterShape)) {
                         PosterImage(series.posterUrl ?: series.posterUrlSmall, Modifier.fillMaxSize())
