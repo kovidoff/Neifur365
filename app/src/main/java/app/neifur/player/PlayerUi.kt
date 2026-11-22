@@ -8,7 +8,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -370,26 +372,36 @@ fun PlayerScreen(
                         )
                     }
                     val sleepBadge = formatSleepBadge(sleep, sleepRemainingMs)
+                    var lastSleepBadge by remember { mutableStateOf("") }
+                    if (sleepBadge != null) lastSleepBadge = sleepBadge
                     val sleepActive = sleep != SleepTimer.Off
                     val sleepLit = sleepActive || menu == QuickMenu.Sleep
+                    val sleepBg by animateColorAsState(if (sleepLit) Nf.Violet.copy(alpha = 0.24f) else Color(0x26FFFFFF), tween(200), label = "sbg")
+                    val sleepBr by animateColorAsState(if (sleepLit) Nf.Violet.copy(alpha = 0.55f) else Color(0x1AFFFFFF), tween(200), label = "sbr")
+                    val sleepIconTint by animateColorAsState(if (sleepActive) Nf.Violet else Color.White, tween(200), label = "sic")
                     Row(
-                        Modifier.height(46.dp).widthIn(min = 46.dp).animateContentSize(spring(dampingRatio = 0.82f, stiffness = 420f))
-                            .clip(CircleShape)
-                            .background(if (sleepLit) Nf.Violet.copy(alpha = 0.24f) else Color(0x26FFFFFF))
-                            .border(1.dp, if (sleepLit) Nf.Violet.copy(alpha = 0.55f) else Color(0x1AFFFFFF), CircleShape)
+                        Modifier.height(46.dp).widthIn(min = 46.dp).clip(CircleShape)
+                            .background(sleepBg).border(1.dp, sleepBr, CircleShape)
                             .pressable(0.88f) { menu = if (menu == QuickMenu.Sleep) null else QuickMenu.Sleep; interaction++ }
-                            .padding(horizontal = if (sleepBadge != null) 14.dp else 13.dp),
+                            .padding(horizontal = 13.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center,
                     ) {
                         Icon(
                             if (sleepActive) Icons.Rounded.Bedtime else Icons.Outlined.Bedtime,
-                            "Таймер сна", tint = if (sleepActive) Nf.Violet else Color.White,
+                            "Таймер сна", tint = sleepIconTint,
                             modifier = Modifier.size(20.dp),
                         )
-                        if (sleepBadge != null) {
-                            Spacer(Modifier.width(6.dp))
-                            Text(sleepBadge, style = Type.Label, color = Color.White, maxLines = 1)
+                        AnimatedVisibility(
+                            sleepBadge != null,
+                            enter = expandHorizontally(spring(dampingRatio = 0.85f, stiffness = 420f), expandFrom = Alignment.Start) + fadeIn(tween(180, 60)),
+                            exit = shrinkHorizontally(spring(dampingRatio = 0.9f, stiffness = 480f), shrinkTowards = Alignment.Start) + fadeOut(tween(100)),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Spacer(Modifier.width(6.dp))
+                                Text(lastSleepBadge, style = Type.Label, color = Color.White, maxLines = 1, softWrap = false)
+                                Spacer(Modifier.width(2.dp))
+                            }
                         }
                     }
                     Spacer(Modifier.width(8.dp))
