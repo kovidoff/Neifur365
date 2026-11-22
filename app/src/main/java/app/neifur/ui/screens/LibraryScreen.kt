@@ -103,10 +103,9 @@ fun LibraryScreen(open: OpenAnime) {
     LaunchedEffect(signedIn) { if (signedIn) vm.refreshIfStale() }
     LaunchedEffect(vm.notice) { if (vm.notice != null) { kotlinx.coroutines.delay(3500); vm.notice = null } }
 
-    val items = remember(lists, vm.status) {
-        val l = lists.of(vm.status)
-        // Watching: titles with new episodes first. Others keep the site's order.
-        if (vm.status == ListStatus.Watching) l.sortedByDescending { it.behind > 0 } else l
+    val items = remember(lists, vm.status, history) {
+        // Watching: by what's watched lately and what's new. Others keep the site's order.
+        if (vm.status == ListStatus.Watching) lists.watching(history) else lists.of(vm.status)
     }
     val wide = vm.status != ListStatus.Planned && vm.status != ListStatus.Completed
 

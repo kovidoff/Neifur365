@@ -36,6 +36,21 @@ data class ListsState(
     val updatedAt: Long = 0,
 ) {
     fun of(status: ListStatus): List<ListedTitle> = titles.values.filter { it.status == status }
+
+    /**
+     * "Смотрю" the way people use it: what they watched last on this phone on top, then titles with new
+     * episodes out, then the ones still airing. The site hands the list out alphabetically, which stays as the
+     * tie-break, so a long list doesn't reshuffle itself on every refresh.
+     */
+    fun watching(history: List<app.neifur.data.WatchEntry>): List<ListedTitle> {
+        val last = HashMap<Long, Long>()
+        history.forEach { e -> e.animeId.toLongOrNull()?.let { id -> if (e.updatedAt > (last[id] ?: 0)) last[id] = e.updatedAt } }
+        return of(ListStatus.Watching).sortedWith(
+            compareByDescending<ListedTitle> { last[it.entry.seriesId] ?: 0L }
+                .thenByDescending { it.behind > 0 }
+                .thenByDescending { it.airing }
+        )
+    }
     fun count(status: ListStatus): Int = titles.values.count { it.status == status }
 }
 

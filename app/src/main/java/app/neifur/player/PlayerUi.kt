@@ -56,6 +56,8 @@ import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.Forward10
+import androidx.compose.material.icons.rounded.Replay5
+import androidx.compose.material.icons.rounded.Forward5
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speed
@@ -114,7 +116,7 @@ internal fun time(sec: Double): String {
 
 internal fun speedLabel(v: Double): String = if (v % 1.0 == 0.0) "${v.toInt()}×" else "${v.toString().trimEnd('0')}×"
 
-/** A double-tap seek burst: taps on the same side within a short window add up (10, 20, 30 s...). */
+/** A double-tap seek burst: taps on the same side within a short window add up (10, 20, 30 s... or by 5). */
 private data class SeekBurst(val side: Int, val seconds: Int, val at: Long)
 
 /** Brightness / volume while a vertical swipe is in progress. */
@@ -151,6 +153,8 @@ fun PlayerScreen(
     var pop by remember { mutableStateOf<Pair<ImageVector, Long>?>(null) }
     var interaction by remember { mutableIntStateOf(0) }
     var autoNextCancelled by remember(index) { mutableStateOf(false) }
+    val stepSec by remember { ctx.container.prefs.seekStep }.collectAsState(10)
+    val holdBoost by remember { ctx.container.prefs.holdBoost }.collectAsState(true)
 
     // Auto-hide: controls go away after a few seconds of playback without touches.
     LaunchedEffect(controls, interaction, player.paused, panel, menu, scrub, locked) {
@@ -182,8 +186,8 @@ fun PlayerScreen(
     fun seekStep(side: Int) {
         val now = System.currentTimeMillis()
         val b = burst
-        val secs = if (b != null && b.side == side && now - b.at < 850) b.seconds + 10 else 10
-        player.seekBy(side * 10.0)
+        val secs = if (b != null && b.side == side && now - b.at < 850) b.seconds + stepSec else stepSec
+        player.seekBy(side * stepSec.toDouble())
         burst = SeekBurst(side, secs, now)
     }
 
@@ -268,7 +272,7 @@ fun PlayerScreen(
                         onPress = {
                             // Hold to watch at 2×; lift to return to the previous speed.
                             val before = player.speed
-                            val job = scope.launch { delay(450); if (player.loaded && !player.paused && panel == null) { boosting = true; player.changeSpeed(2.0) } }
+                            val job = scope.launch { delay(450); if (holdBoost && player.loaded && !player.paused && panel == null) { boosting = true; player.changeSpeed(2.0) } }
                             tryAwaitRelease()
                             job.cancel()
                             if (boosting) { boosting = false; player.changeSpeed(before) }
@@ -359,7 +363,7 @@ fun PlayerScreen(
                 // Center transport
                 Row(Modifier.align(Alignment.Center), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(28.dp)) {
                     RoundButton(Icons.Rounded.SkipPrevious, "Предыдущая серия", enabled = hasPrev, size = 44.dp) { onEpisode(index - 1) }
-                    RoundButton(Icons.Rounded.Replay10, "Назад на 10 секунд", size = 50.dp) { seekStep(-1); interaction++ }
+                    RoundButton(if (stepSec == 5) Icons.Rounded.Replay5 else Icons.Rounded.Replay10, "Назад на $stepSec секунд", size = 50.dp) { seekStep(-1); interaction++ }
                     Box(
                         Modifier.size(78.dp).clip(CircleShape).background(Color(0x38FFFFFF)).border(1.dp, Color(0x1AFFFFFF), CircleShape)
                             .pressable(0.9f) { togglePlay(fromGesture = false) },
@@ -368,7 +372,7 @@ fun PlayerScreen(
                         if (busy) CircularProgressIndicator(Modifier.size(34.dp), color = Color.White, strokeWidth = 3.dp)
                         else PlayPauseIcon(player.paused || player.ended)
                     }
-                    RoundButton(Icons.Rounded.Forward10, "Вперёд на 10 секунд", size = 50.dp) { seekStep(1); interaction++ }
+                    RoundButton(if (stepSec == 5) Icons.Rounded.Forward5 else Icons.Rounded.Forward10, "Вперёд на $stepSec секунд", size = 50.dp) { seekStep(1); interaction++ }
                     RoundButton(Icons.Rounded.SkipNext, "Следующая серия", enabled = hasNext, size = 44.dp) { onEpisode(index + 1) }
                 }
 
@@ -461,6 +465,10 @@ fun PlayerScreen(
             player = player, hasNext = hasNext, controlsShown = showControls, announced = skipAnnounced,
             modifier = Modifier.align(Alignment.BottomEnd),
             onNext = { onEpisode(index + 1) },
+            onJump = { secs ->
+                player.seekBy(secs.toDouble())
+                burst = SeekBurst(1, secs, System.currentTimeMillis()); interaction++
+            },
         )
 
         // ---- next episode card ----
@@ -595,6 +603,7 @@ private fun LevelBar(level: Level?, icon: ImageVector, modifier: Modifier) {
 @Composable
 private fun SkipButton(
     player: MpvPlayer, hasNext: Boolean, controlsShown: Boolean, announced: MutableSet<Double>, modifier: Modifier, onNext: () -> Unit,
+    onJump: (Int) -> Unit,
 ) {
     val now = player.chapterAt(player.position)
     val kind = now?.first?.kind
@@ -645,7 +654,43 @@ private fun SkipButton(
             Icon(Icons.Rounded.SkipNext, null, tint = Color.Black, modifier = Modifier.size(20.dp))
         }
     }
+
+    // No chapters to go by (most Anime 365 files): the site's own "+85 s", offered with the controls during the
+    // first minutes, where openings sit. A glass pill, quieter than the exact white skip above.
+    val jump = shouldOfferOpeningJump(offer != null, controlsShown, player.ended, player.duration, player.position, player.chapters)
+    AnimatedVisibility(
+        jump, modifier.displayCutoutPadding().padding(end = 26.dp, bottom = bottom),
+        enter = fadeIn(tween(200)) + slideInHorizontally(spring(dampingRatio = 0.8f, stiffness = 380f)) { it / 3 },
+        exit = fadeOut(tween(220)) + slideOutHorizontally(tween(280)) { it / 4 },
+    ) {
+        Row(
+            Modifier.clip(RoundedCornerShape(16.dp)).background(Color(0x33FFFFFF)).border(1.dp, Color(0x40FFFFFF), RoundedCornerShape(16.dp))
+                .pressable { onJump(JUMP_SECONDS) }
+                .padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Опенинг", style = Type.Label, color = Color(0xB3FFFFFF))
+            Spacer(Modifier.width(8.dp))
+            Text("+$JUMP_SECONDS с", style = Type.Title.copy(fontSize = 15.sp), color = Color.White)
+            Spacer(Modifier.width(4.dp))
+            Icon(Icons.Rounded.KeyboardDoubleArrowRight, null, tint = Color.White, modifier = Modifier.size(20.dp))
+        }
+    }
 }
+
+/** Anime 365's skip: an opening runs about 85 s. Offered during the first [JUMP_WINDOW] seconds when the file has no opening chapter. */
+internal const val JUMP_SECONDS = 85
+internal const val JUMP_WINDOW = 300.0
+
+internal fun shouldOfferOpeningJump(
+    hasChapterOffer: Boolean,
+    controlsShown: Boolean,
+    ended: Boolean,
+    duration: Double,
+    position: Double,
+    chapters: List<Chapter>,
+): Boolean = !hasChapterOffer && controlsShown && !ended && duration > 600 && position < JUMP_WINDOW &&
+    chapters.none { it.kind == ChapterKind.Opening }
 
 /** Pause and play morph into each other (rotate + scale + fade) instead of two icons sharing the button. */
 @Composable

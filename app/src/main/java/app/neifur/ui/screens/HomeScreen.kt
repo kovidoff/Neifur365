@@ -55,7 +55,6 @@ import app.neifur.ui.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -77,8 +76,7 @@ class HomeVm(private val c: Container) : ViewModel() {
     val appeared = HashSet<String>()
     /** The viewer's Anime 365 lists: what's new in "Смотрю", and which posters are already in a list. */
     val lists = c.lists.state
-    val continueWatching = c.prefs.history
-        .map { h -> h.distinctBy { it.animeId }.take(12) }
+    val history = c.prefs.history
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
@@ -111,10 +109,11 @@ class HomeVm(private val c: Container) : ViewModel() {
 fun HomeScreen(open: OpenAnime, onSearch: () -> Unit) {
     val vm = nfViewModel { HomeVm(it) }
     val feed by vm.feed.collectAsStateWithLifecycle()
-    val cont by vm.continueWatching.collectAsStateWithLifecycle()
+    val history by vm.history.collectAsStateWithLifecycle()
+    val cont = remember(history) { history.distinctBy { it.animeId }.take(12) }
     val lists by vm.lists.collectAsStateWithLifecycle()
     // Only what the viewer is watching: a planned title's new episode isn't news to them.
-    val fresh = remember(lists) { lists.of(ListStatus.Watching).filter { it.behind > 0 && it.series != null } }
+    val fresh = remember(lists, history) { lists.watching(history).filter { it.behind > 0 && it.series != null } }
     val marks = remember(lists) { lists.titles.mapValues { it.value.status } }
     LifecycleResumeEffect(Unit) { vm.refreshLists(); onPauseOrDispose {} }
     val listState = rememberLazyListState()

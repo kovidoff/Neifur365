@@ -54,6 +54,8 @@ class Prefs(private val context: Context) {
     private val KEY_AUDIO_PREF = stringPreferencesKey("audio_pref")
     private val KEY_SUB_PREF = stringPreferencesKey("sub_pref")
     private val KEY_SUB_SCALE = stringPreferencesKey("sub_scale")
+    private val KEY_SEEK_STEP = intPreferencesKey("seek_step")
+    private val KEY_HOLD_BOOST = stringPreferencesKey("hold_boost")
     private val KEY_ONBOARDED = stringPreferencesKey("onboarded")
     private val KEY_ALERTS = stringPreferencesKey("alerts")
     private val KEY_ALERTS_MODE = stringPreferencesKey("alerts_mode")
@@ -276,4 +278,12 @@ class Prefs(private val context: Context) {
 
     suspend fun subScale(): Double = context.store.data.first()[KEY_SUB_SCALE]?.toDoubleOrNull() ?: 1.0
     suspend fun setSubScale(v: Double) = context.store.edit { it[KEY_SUB_SCALE] = v.toString() }
+
+    /** Seconds per skip: the player's buttons, a double tap at the edge, the headphones and PiP. 5 or 10. */
+    val seekStep: Flow<Int> = context.store.data.map { it[KEY_SEEK_STEP] ?: 10 }.distinctUntilChanged()
+    suspend fun setSeekStep(v: Int) = context.store.edit { it[KEY_SEEK_STEP] = v }
+
+    /** Holding a finger on the video plays it at 2×. On unless turned off: some people brush the screen. */
+    val holdBoost: Flow<Boolean> = context.store.data.map { it[KEY_HOLD_BOOST] != "off" }.distinctUntilChanged()
+    suspend fun setHoldBoost(on: Boolean) = context.store.edit { if (on) it.remove(KEY_HOLD_BOOST) else it[KEY_HOLD_BOOST] = "off" }
 }

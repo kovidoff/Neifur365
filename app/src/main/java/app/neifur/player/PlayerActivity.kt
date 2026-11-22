@@ -55,6 +55,7 @@ class PlayerActivity : ComponentActivity() {
     private var error by mutableStateOf<String?>(null)
     private var inPip by mutableStateOf(false)
     private var loadJob: Job? = null
+    private var recoverJob: Job? = null
     private var reconnects = 0
     /** The translation playing, the alternatives for this episode and the qualities, for the panel and title. */
     private var stream by mutableStateOf(StreamUi())
@@ -67,6 +68,19 @@ class PlayerActivity : ComponentActivity() {
     private var pickName: String? = null
     /** Translations already marked watched on Anime 365 in this session. */
     private val marked = HashSet<Long>()
+    /** The episode and translation whose file is actually open: progress and "watched" go to these, not to the
+     *  episode just tapped, which may still be loading. */
+    private var playingIndex = -1
+    private var playingTr: Translation? = null
+    /** Seconds per skip, from the settings. */
+    private var seekStep = 10
+    private lateinit var media: MediaControls
+
+    private val noisyReceiver = object : BroadcastReceiver() {
+        // Headphones pulled out or Bluetooth gone: pause instead of playing out loud.
+        override fun onReceive(c: Context, i: Intent) { if (::player.isInitialized) player.pause(true) }
+    }
+
     /** Where the picture is on screen: PiP animates from exactly this rectangle instead of the whole window. */
     private var videoRect: android.graphics.Rect? = null
 
@@ -74,8 +88,8 @@ class PlayerActivity : ComponentActivity() {
         override fun onReceive(c: Context, i: Intent) {
             when (i.getStringExtra("cmd")) {
                 "toggle" -> player.toggle()
-                "back" -> player.seekBy(-10.0)
-                "fwd" -> player.seekBy(10.0)
+                "back" -> player.seekBy(-seekStep.toDouble())
+                "fwd" -> player.seekBy(seekStep.toDouble())
             }
         }
     }
@@ -99,13 +113,29 @@ class PlayerActivity : ComponentActivity() {
         player.onFileLoaded = { reconnecting = false; lifecycleScope.launch { applyTrackPrefs() } }
         player.onStreamError = ::recover
         lifecycleScope.launch { player.changeSubScale(container.prefs.subScale()) }
+        media = MediaControls(
+            this, player,
+            onNext = { if (index + 1 < session.episodes.size) loadEpisode(index + 1) },
+            onPrevious = { if (index > 0) loadEpisode(index - 1) },
+            step = { seekStep },
+        )
         loadEpisode(index)
 
         ContextCompat.registerReceiver(this, pipReceiver, IntentFilter(PIP_ACTION), ContextCompat.RECEIVER_NOT_EXPORTED)
+        ContextCompat.registerReceiver(this, noisyReceiver, IntentFilter(android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY), ContextCompat.RECEIVER_NOT_EXPORTED)
+        lifecycleScope.launch { container.prefs.seekStep.collect { seekStep = it; updatePipParams() } }
+        // Starting to play takes the audio over (music in another app pauses); headphone buttons and the
+        // system's media controls follow what's on screen.
+        lifecycleScope.launch {
+            snapshotFlow { player.loaded && !player.paused && !player.ended }.collect { if (it) media.takeFocus() }
+        }
+        lifecycleScope.launch {
+            snapshotFlow { listOf(player.paused, player.loaded, player.ended, player.speed, index, player.duration.toInt(), stream.current?.id) }.collect { syncMedia() }
+        }
 
         // Progress is saved on a timer so a crash or a swipe-away never loses more than a few seconds.
         lifecycleScope.launch {
-            while (isActive) { delay(5000); if (!player.paused) { saveProgress(); markIfWatched() } }
+            while (isActive) { delay(5000); syncMedia(); if (!player.paused) { saveProgress(); markIfWatched() } }
         }
         // Stall watchdog: Anime 365's video servers sometimes drop the extra connection a seek opens, and the
         // picture freezes for good. After 8 s stuck, reopen the episode at the same spot with fresh links.
@@ -159,7 +189,9 @@ class PlayerActivity : ComponentActivity() {
     private fun loadEpisode(i: Int, resumeAt: Double? = null, height: Int? = null, keep: Boolean = false) {
         val ep = session.episodes.getOrNull(i) ?: return
         if (resumeAt == null && player.loaded) saveProgress()
-        if (resumeAt == null) reconnects = 0
+        // Another episode (or a fresh start): close the old file now. Left playing while the new links load, it
+        // would be saved and marked on the site under the new episode's number.
+        if (resumeAt == null) { recoverJob?.cancel(); player.stop(); playingIndex = -1; playingTr = null; reconnects = 0 }
         index = i; resolving = resumeAt == null; error = null
         loadJob?.cancel()
         loadJob = lifecycleScope.launch {
@@ -198,10 +230,12 @@ class PlayerActivity : ComponentActivity() {
                     ?.takeIf { !it.finished && it.positionSec > 15 }?.positionSec ?: 0.0
                 player.preferAudio(if (tr.kind == TranslationKind.VoiceRu) "ru,rus" else if (tr.kind == TranslationKind.VoiceEn) "en,eng" else "ja,jpn,jp")
                 val subLang = if (tr.kind == TranslationKind.SubEn) "en" else if (tr.typeLang.isNotBlank()) tr.typeLang else "ru"
+                playingIndex = i; playingTr = tr
                 player.load(s.urls.first(), start, subs?.let { Triple(it, tr.author, subLang) }, c.a365.baseUrl() + "/")
                 watchOpening(start)
             }.onFailure {
-                if (it !is kotlinx.coroutines.CancellationException) { error = it.userMessage(); reconnecting = false }
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                error = it.userMessage(); reconnecting = false
             }
             resolving = false
         }
@@ -218,8 +252,8 @@ class PlayerActivity : ComponentActivity() {
 
     /** Past 85% the episode counts as watched on Anime 365 too (the site moves the list counter itself). */
     private fun markIfWatched() {
-        val tr = stream.current ?: return
-        if (player.duration <= 0 || player.position / player.duration < 0.85 || tr.id in marked) return
+        val tr = playingTr ?: return
+        if (!player.loaded || player.duration <= 0 || player.position / player.duration < 0.85 || tr.id in marked) return
         if (container.account.profile == null) return
         marked += tr.id
         container.scope.launch {
@@ -261,7 +295,8 @@ class PlayerActivity : ComponentActivity() {
         reconnects++
         reconnecting = true
         val at = player.position
-        lifecycleScope.launch {
+        recoverJob?.cancel()
+        recoverJob = lifecycleScope.launch {
             delay(600L * reconnects)
             loadEpisode(index, resumeAt = at, height = stream.height.takeIf { it > 0 }, keep = true)
         }
@@ -301,7 +336,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun saveProgress() {
         if (!::player.isInitialized || !player.loaded || player.duration <= 0) return
-        val ep = session.episodes.getOrNull(index) ?: return
+        val ep = session.episodes.getOrNull(playingIndex) ?: return
         markIfWatched()
         val entry = WatchEntry(
             session.anime.id, session.anime.title, session.anime.poster, ep.number,
@@ -324,10 +359,10 @@ class PlayerActivity : ComponentActivity() {
         .apply { videoRect?.let { r -> setSourceRectHint(visible(r)) } }
         .setActions(
             listOf(
-                action("back", android.R.drawable.ic_media_rew, "−10 секунд", 1),
+                action("back", android.R.drawable.ic_media_rew, "−$seekStep секунд", 1),
                 if (player.paused) action("toggle", android.R.drawable.ic_media_play, "Играть", 2)
                 else action("toggle", android.R.drawable.ic_media_pause, "Пауза", 2),
-                action("fwd", android.R.drawable.ic_media_ff, "+10 секунд", 3),
+                action("fwd", android.R.drawable.ic_media_ff, "+$seekStep секунд", 3),
             )
         )
         .apply { if (Build.VERSION.SDK_INT >= 31) setAutoEnterEnabled(player.loaded && !player.paused).setSeamlessResizeEnabled(false) }
@@ -347,7 +382,20 @@ class PlayerActivity : ComponentActivity() {
         return android.graphics.Rect(maxOf(r.left, 0), maxOf(r.top, 0), minOf(r.right, wm.width), minOf(r.bottom, wm.height))
     }
 
-    private fun updatePipParams() { runCatching { setPictureInPictureParams(pipParams()) } }
+    private fun updatePipParams() { if (::player.isInitialized) runCatching { setPictureInPictureParams(pipParams()) } }
+
+    /** What the system's media controls and headphone buttons see: this title, this episode, playing or not. */
+    private fun syncMedia() {
+        if (!::media.isInitialized) return
+        val ep = session.episodes.getOrNull(index)
+        media.update(
+            title = session.anime.title,
+            subtitle = listOfNotNull(ep?.takeIf { session.episodes.size > 1 }?.label, stream.current?.author).joinToString(" · "),
+            playing = player.loaded && !player.paused && !player.ended,
+            position = player.position, duration = player.duration,
+            hasNext = index + 1 < session.episodes.size, hasPrevious = index > 0,
+        )
+    }
 
     private fun enterPip() { runCatching { enterPictureInPictureMode(pipParams()) } }
 
@@ -362,9 +410,15 @@ class PlayerActivity : ComponentActivity() {
         inPip = isInPictureInPictureMode
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (::media.isInitialized) { media.activate(); syncMedia() }
+    }
+
     override fun onStop() {
         super.onStop()
         if (::player.isInitialized) { saveProgress(); player.pause(true) }
+        if (::media.isInitialized) media.deactivate()
         // onStop while in PiP means the user dismissed the floating window.
         if (inPip) finish()
     }
@@ -410,6 +464,8 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(pipReceiver) }
+        runCatching { unregisterReceiver(noisyReceiver) }
+        if (::media.isInitialized) media.release()
         if (::player.isInitialized) player.release()
         super.onDestroy()
     }

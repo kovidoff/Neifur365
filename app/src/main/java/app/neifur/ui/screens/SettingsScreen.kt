@@ -37,6 +37,12 @@ import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Translate
+import androidx.compose.material.icons.rounded.Replay5
+import androidx.compose.material.icons.rounded.Replay10
+import androidx.compose.material.icons.rounded.FastForward
+import androidx.compose.material.icons.rounded.KeyboardDoubleArrowRight
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
@@ -163,6 +169,10 @@ class SettingsVm(private val c: Container) : ViewModel() {
     fun setQuality(q: Int) = viewModelScope.launch { c.prefs.setQuality(q) }
     fun setKind(k: String) = viewModelScope.launch { c.prefs.setPreferredKind(k) }
     fun setSubScale(v: Double) = viewModelScope.launch { c.prefs.setSubScale(v) }
+    val seekStep = c.prefs.seekStep
+    val holdBoost = c.prefs.holdBoost
+    fun setSeekStep(v: Int) = viewModelScope.launch { c.prefs.setSeekStep(v) }
+    fun setHoldBoost(on: Boolean) = viewModelScope.launch { c.prefs.setHoldBoost(on) }
     fun clearHistory() = viewModelScope.launch { c.prefs.clearHistory() }
     fun showWelcome() = viewModelScope.launch { c.prefs.beginOnboarding() }
 
@@ -188,6 +198,8 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
     val kind by vm.preferredKind.collectAsStateWithLifecycle("VoiceRu")
     val history by vm.history.collectAsStateWithLifecycle(emptyList())
     val subScale by vm.subScale.collectAsStateWithLifecycle(1.0)
+    val seekStep by vm.seekStep.collectAsStateWithLifecycle(10)
+    val holdBoost by vm.holdBoost.collectAsStateWithLifecycle(true)
     val studios by vm.studios.collectAsStateWithLifecycle(emptyList())
     val pickCount by vm.pickCount.collectAsStateWithLifecycle(0)
     var confirmHistory by remember { mutableStateOf(false) }
@@ -261,6 +273,31 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
                         contentAlignment = Alignment.Center,
                     ) { Text("Аа", style = Type.Title.copy(fontSize = (13 + i * 3).sp), color = if (on) Nf.Violet else Nf.Text) }
                 }
+            }
+        }
+        // How the player answers fingers and buttons: its own card, apart from how the picture looks.
+        Spacer(Modifier.height(12.dp))
+        Card {
+            SettingTitle("Перемотка", "Кнопки в плеере, двойной тап по краю экрана и наушники")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StepTile(5, Icons.Rounded.Replay5, "Точнее", seekStep) { vm.setSeekStep(it) }
+                StepTile(10, Icons.Rounded.Replay10, "Быстрее", seekStep) { vm.setSeekStep(it) }
+            }
+            Divider()
+            ToggleRow(
+                Icons.Rounded.FastForward, "Ускорение при удержании",
+                "Держите палец на видео — серия идёт в 2×", holdBoost,
+            ) { vm.setHoldBoost(it) }
+            Divider()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(Nf.Ink), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.KeyboardDoubleArrowRight, null, tint = Nf.TextDim, modifier = Modifier.size(20.dp))
+                }
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    "В первые 5 минут серии рядом с полосой перемотки есть кнопка «+85 с», чтобы пропустить опенинг",
+                    style = Type.Caption, color = Nf.TextMute,
+                )
             }
         } }
 
@@ -662,6 +699,57 @@ private fun RowScope.QualityTile(height: Int, caption: String, bars: Int, select
             Text("${height}p", style = Type.Title.copy(fontSize = 17.sp), color = if (on) Nf.Text else Nf.TextDim)
             Text(caption, style = Type.Caption, color = if (on) Nf.Violet else Nf.TextMute, maxLines = 1)
         }
+    }
+}
+
+/** One skip length: the matching rewind icon in a small square, the length, and what it's good for. */
+@Composable
+private fun RowScope.StepTile(sec: Int, icon: ImageVector, caption: String, selected: Int, onPick: (Int) -> Unit) {
+    val on = sec == selected
+    val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.16f) else Nf.Ink, label = "st")
+    val br by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.6f) else Nf.Line, label = "stb")
+    val box by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.22f) else Nf.Surface, label = "sti")
+    Row(
+        Modifier.weight(1f).height(68.dp).clip(RoundedCornerShape(18.dp)).background(bg).border(1.dp, br, RoundedCornerShape(18.dp))
+            .pressable(0.95f) { onPick(sec) }.padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(box), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = if (on) Nf.Violet else Nf.TextDim, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Text("$sec секунд", style = Type.Title.copy(fontSize = 15.sp), color = if (on) Nf.Text else Nf.TextDim, maxLines = 1)
+            Text(caption, style = Type.Caption, color = if (on) Nf.Violet else Nf.TextMute, maxLines = 1)
+        }
+    }
+}
+
+/** A setting that is either on or off: icon, what it does, and a switch. The whole row toggles it. */
+@Composable
+private fun ToggleRow(icon: ImageVector, title: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    val tint by animateColorAsState(if (checked) Nf.Mint else Nf.TextDim, label = "tg")
+    val box by animateColorAsState(if (checked) Nf.Mint.copy(alpha = 0.14f) else Nf.Ink, label = "tgb")
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable { onChange(!checked) },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(box), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = Type.Title.copy(fontSize = 15.sp), color = Nf.Text)
+            Text(hint, style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 2.dp))
+        }
+        Spacer(Modifier.width(10.dp))
+        Switch(
+            checked = checked, onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Nf.Ink, checkedTrackColor = Nf.Mint, checkedBorderColor = Nf.Mint,
+                uncheckedThumbColor = Nf.TextMute, uncheckedTrackColor = Nf.Ink, uncheckedBorderColor = Nf.Line,
+            ),
+        )
     }
 }
 

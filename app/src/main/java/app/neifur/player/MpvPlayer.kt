@@ -185,6 +185,19 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         mpv.setPropertyBoolean("pause", false)
     }
 
+    /**
+     * Drops the open file while the next one is being looked up: the old episode must not keep playing (and
+     * counting as watched) under the new episode's number.
+     */
+    fun stop() {
+        if (released || !active) return
+        skipEndFile++
+        active = false
+        loaded = false; ended = false; failed = false; buffering = true; position = 0.0; duration = 0.0; buffered = 0.0
+        tracks = emptyList(); chapters = emptyList()
+        mpv.command(arrayOf("stop"))
+    }
+
     /** Voice-overs are Russian tracks; subtitle and raw releases keep the Japanese audio first. */
     fun preferAudio(langs: String) { if (!released) mpv.setPropertyString("alang", langs) }
 
@@ -303,8 +316,8 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
                     if (!seeking) position = value
                 }
             }
-            "duration" -> main.post { duration = value }
-            "demuxer-cache-time" -> main.post { buffered = value }
+            "duration" -> main.post { if (active) duration = value }
+            "demuxer-cache-time" -> main.post { if (active) buffered = value }
             "speed" -> main.post { speed = value }
         }
     }
@@ -326,13 +339,14 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     override fun event(eventId: Int) {
         when (eventId) {
             MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> main.post {
+                if (!active || released) return@post
                 loaded = true; buffering = false; failed = false
                 pendingSub?.let { (file, title, lang) -> runCatching { mpv.command(arrayOf("sub-add", file, "select", title, lang)) } }
                 pendingSub = null
                 readTracks(); readChapters()
                 onFileLoaded?.invoke()
             }
-            MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> main.post { seeking = false; buffering = cacheWait }
+            MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> main.post { if (active && !released) { seeking = false; buffering = cacheWait } }
             // With keep-open a normal ending never unloads the file: END_FILE means the open failed or the stream broke.
             MPVLib.MpvEvent.MPV_EVENT_END_FILE -> main.post {
                 when {
