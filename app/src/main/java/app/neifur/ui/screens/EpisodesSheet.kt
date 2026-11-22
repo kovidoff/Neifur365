@@ -34,11 +34,13 @@ import androidx.compose.material.icons.rounded.MovieFilter
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -216,6 +218,7 @@ private fun Episodes(
         if (pos > 2) list.scrollToItem(pos - 2)
     }
     val studio = state.studio
+    var confirmDelete by remember { mutableStateOf<DownloadedEpisode?>(null) }
 
     Column(Modifier.fillMaxSize()) {
         if (state.started) StudioSummary(state, accent, Modifier.padding(horizontal = 20.dp), onTranslations)
@@ -249,10 +252,21 @@ private fun Episodes(
                     onDownload = { onDownload(ep) },
                     onCancelDownload = { onCancelDownload(ep.id) },
                     onRetryDownload = { onRetryDownload(ep.id) },
-                    onDeleteDownload = { onDeleteDownload(ep.id) },
+                    onDeleteDownload = { downloads.find(ep.id)?.let { confirmDelete = it } },
                 ) { onPlay(i) }
             }
         }
+    }
+
+    confirmDelete?.let { dl ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            containerColor = Nf.SurfaceHi, titleContentColor = Nf.Text, textContentColor = Nf.TextDim,
+            title = { Text("Удалить загрузку?", style = Type.Section) },
+            text = { Text("${dl.episodeLabel} (${formatBytes(dl.sizeBytes)}) будет удалена с телефона.", style = Type.Body) },
+            confirmButton = { TextButton({ onDeleteDownload(dl.episodeId); confirmDelete = null }) { Text("Удалить", color = Nf.Red, style = Type.Label) } },
+            dismissButton = { TextButton({ confirmDelete = null }) { Text("Отмена", color = Nf.Text, style = Type.Label) } },
+        )
     }
 }
 

@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import app.neifur.MainActivity
 import app.neifur.R
@@ -21,7 +22,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Keeps active episode downloads alive when the app is minimized or the screen turns off,
- * posting a quiet progress notification in the system shade. Stops itself once the queue empties.
+ * posting a quiet, throttled progress notification in the system shade. Stops itself once the queue empties.
  */
 class DownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -45,11 +46,29 @@ class DownloadService : Service() {
         if (observer == null) {
             observer = scope.launch {
                 val nm = getSystemService(NotificationManager::class.java)
+                var lastId = -1L
+                var lastPct = -1
+                var lastQueue = -1
+                var lastPostAt = SystemClock.elapsedRealtime()
                 applicationContext.container.downloads.state.collect { st ->
                     if (st.runningCount == 0) {
                         stopForeground(STOP_FOREGROUND_REMOVE)
                         stopSelf()
-                    } else {
+                        return@collect
+                    }
+                    val run = st.currentRunning
+                    val id = run?.episodeId ?: -1L
+                    val pct = run?.let { (it.progress * 100).toInt().coerceIn(0, 100) } ?: -1
+                    val now = SystemClock.elapsedRealtime()
+                    val changedItem = id != lastId || st.runningCount != lastQueue
+                    // Throttle notifications to <= 1 update/sec and only when percentage advances:
+                    // avoids HyperOS / MIUI notification row flickering.
+                    val changedPct = pct != lastPct && now - lastPostAt >= 1000L
+                    if (changedItem || changedPct) {
+                        lastId = id
+                        lastPct = pct
+                        lastQueue = st.runningCount
+                        lastPostAt = now
                         nm.notify(NOTIF_ID, buildNotification(st))
                     }
                 }
@@ -70,21 +89,29 @@ class DownloadService : Service() {
             NotificationChannel(CHANNEL, "Загрузки серий", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Прогресс скачивания серий для офлайн-просмотра"
                 setShowBadge(false)
+                setSound(null, null)
+                enableVibration(false)
             }
         )
     }
 
     private fun buildNotification(st: DownloadsState): android.app.Notification {
         val run = st.currentRunning
-        val title = run?.let { "${it.animeTitle} · ${it.episodeLabel}" } ?: "Подготовка загрузки…"
+        val title = run?.animeTitle ?: "Подготовка загрузки…"
         val pct = run?.let { (it.progress * 100).toInt().coerceIn(0, 100) } ?: 0
         val extraQueue = (st.runningCount - 1).coerceAtLeast(0)
-        val detail = when {
-            run == null -> "В очереди: ${st.runningCount}"
-            run.totalBytes > 0L -> "$pct% · ${formatBytes(run.bytes)} из ${formatBytes(run.totalBytes)}" +
+        // Compact text for HyperOS/MIUI collapsed progress row (which shares one line with the title).
+        val shortText = when {
+            run == null -> "Очередь: ${st.runningCount}"
+            run.totalBytes > 0L -> "${run.episodeLabel} · $pct%"
+            run.bytes > 0L -> "${run.episodeLabel} · ${formatBytes(run.bytes)}"
+            else -> run.episodeLabel
+        }
+        val subText = when {
+            run != null && run.totalBytes > 0L -> "${formatBytes(run.bytes)} / ${formatBytes(run.totalBytes)}" +
                 if (extraQueue > 0) " · ещё $extraQueue" else ""
-            run.bytes > 0L -> formatBytes(run.bytes) + if (extraQueue > 0) " · ещё $extraQueue" else ""
-            else -> "Получаю ссылку…"
+            extraQueue > 0 -> "Ещё в очереди: $extraQueue"
+            else -> null
         }
         val open = PendingIntent.getActivity(
             this, 1,
@@ -99,12 +126,15 @@ class DownloadService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         return NotificationCompat.Builder(this, CHANNEL)
-            .setSmallIcon(R.drawable.ic_stat_new_episode)
+            .setSmallIcon(R.drawable.ic_stat_download)
             .setColor(0xFF9E7BFF.toInt())
             .setContentTitle(title)
-            .setContentText(detail)
+            .setContentText(shortText)
+            .apply { if (subText != null) setSubText(subText) }
+            .setSilent(true)
             .setOnlyAlertOnce(true)
             .setOngoing(true)
+            .setShowWhen(false)
             .setProgress(100, pct, run == null || run.totalBytes <= 0L)
             .setContentIntent(open)
             .addAction(0, "Отменить", cancel)

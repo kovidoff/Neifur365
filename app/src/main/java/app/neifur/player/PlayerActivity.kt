@@ -473,7 +473,10 @@ class PlayerActivity : ComponentActivity() {
         val ep = session.episodes.getOrNull(index)
         media.update(
             title = session.anime.title,
-            subtitle = listOfNotNull(ep?.takeIf { session.episodes.size > 1 }?.label, stream.current?.author).joinToString(" · "),
+            subtitle = listOfNotNull(
+                ep?.takeIf { session.episodes.size > 1 || (ep.number > 0 && ep.episodeFull.contains("сери", ignoreCase = true)) }?.label,
+                stream.current?.author,
+            ).joinToString(" · "),
             playing = player.loaded && !player.paused && !player.ended,
             position = player.position, duration = player.duration,
             hasNext = index + 1 < session.episodes.size, hasPrevious = index > 0,

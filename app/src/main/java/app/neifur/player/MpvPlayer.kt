@@ -135,14 +135,32 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     }
 
     // --- surface -------------------------------------------------------------------------------------
+    private var surfaceAttached = false
+    private var surfaceSized = false
+    /** Local files open faster than SurfaceView creates its buffer; wait until both surface and size exist. */
+    private var pendingLoad: (() -> Unit)? = null
+
     fun attach(surface: Surface) {
         if (released) return
         mpv.attachSurface(surface)
         mpv.setOptionString("force-window", "yes")
         mpv.setPropertyString("vo", "gpu")
+        surfaceAttached = true
+        if (surfaceSized) flushPendingLoad()
     }
 
-    fun resize(w: Int, h: Int) { if (!released) mpv.setPropertyString("android-surface-size", "${w}x$h") }
+    fun resize(w: Int, h: Int) {
+        if (released || w <= 0 || h <= 0) return
+        mpv.setPropertyString("android-surface-size", "${w}x$h")
+        surfaceSized = true
+        if (surfaceAttached) flushPendingLoad()
+    }
+
+    private fun flushPendingLoad() {
+        val run = pendingLoad ?: return
+        pendingLoad = null
+        run()
+    }
 
     /** Rebuilds the video output on the same surface: the cure for a stale picture after PiP. */
     fun reattach(surface: Surface, w: Int, h: Int) {
@@ -157,6 +175,8 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
 
     fun detach() {
         if (released) return
+        surfaceAttached = false
+        surfaceSized = false
         mpv.setPropertyString("vo", "null")
         mpv.setOptionString("force-window", "no")
         mpv.detachSurface()
@@ -174,15 +194,23 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
 
     /** [subtitles] is (file, title, language): the title and language name the track in the subtitle list. */
     fun load(url: String, startAt: Double, subtitles: Triple<String, String, String>? = null, referrer: String? = null) {
+        if (released) return
         pendingSub = subtitles
-        referrer?.let { mpv.setPropertyString("referrer", it) }
-        if (active) skipEndFile++
+        pendingLoad = null
+        val wasActive = active
         active = true
         loaded = false; ended = false; failed = false; buffering = true; position = startAt; duration = 0.0; buffered = 0.0
         tracks = emptyList(); chapters = emptyList()
-        mpv.setOptionString("start", if (startAt > 1) String.format(java.util.Locale.US, "%.2f", startAt) else "none")
-        mpv.command(arrayOf("loadfile", url, "replace"))
-        mpv.setPropertyBoolean("pause", false)
+        val startNow = {
+            if (!released && active) {
+                if (wasActive) skipEndFile++
+                referrer?.let { mpv.setPropertyString("referrer", it) }
+                mpv.setOptionString("start", if (startAt > 1) String.format(java.util.Locale.US, "%.2f", startAt) else "none")
+                mpv.command(arrayOf("loadfile", url, "replace"))
+                mpv.setPropertyBoolean("pause", false)
+            }
+        }
+        if (surfaceAttached && surfaceSized) startNow() else pendingLoad = startNow
     }
 
     /**
@@ -190,12 +218,15 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
      * counting as watched) under the new episode's number.
      */
     fun stop() {
-        if (released || !active) return
-        skipEndFile++
+        if (released) return
+        val deferred = pendingLoad != null
+        pendingLoad = null
+        if (!active) return
+        if (!deferred) skipEndFile++
         active = false
         loaded = false; ended = false; failed = false; buffering = true; position = 0.0; duration = 0.0; buffered = 0.0
         tracks = emptyList(); chapters = emptyList()
-        mpv.command(arrayOf("stop"))
+        if (!deferred) mpv.command(arrayOf("stop"))
     }
 
     /** Voice-overs are Russian tracks; subtitle and raw releases keep the Japanese audio first. */

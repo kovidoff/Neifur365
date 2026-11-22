@@ -17,15 +17,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -206,16 +207,18 @@ class DownloadManager(
 
     private val queue = ArrayDeque<PendingDownload>()
     private val requests = HashMap<Long, PendingDownload>()
-    private var currentId: Long? = null
+    @Volatile private var currentId: Long? = null
+    @Volatile private var activeCall: Call? = null
     private var currentJob: Job? = null
     private var pumpJob: Job? = null
 
     init {
         scope.launch(Dispatchers.IO) {
-            val loaded = readIndex().filter { File(dir, it.videoFile).exists() }
+            val raw = readIndex()
+            val loaded = raw.filter { File(dir, it.videoFile).exists() }
             // Clean leftover temp files from an interrupted process kill.
             dir.listFiles()?.filter { it.name.endsWith(".part") }?.forEach { runCatching { it.delete() } }
-            if (loaded.size != readIndex().size) writeIndex(loaded)
+            if (loaded.size != raw.size) writeIndex(loaded)
             _state.update { it.copy(items = loaded) }
         }
     }
@@ -262,7 +265,10 @@ class DownloadManager(
             queue.removeAll { it.episode.id == episodeId }
             requests.remove(episodeId)
         }
-        if (currentId == episodeId) currentJob?.cancel()
+        if (currentId == episodeId) {
+            activeCall?.cancel()
+            currentJob?.cancel()
+        }
         _state.update { it.copy(active = it.active - episodeId) }
         File(dir, "ep_$episodeId.mp4.part").delete()
         File(dir, "ep_$episodeId.ass.part").delete()
@@ -270,6 +276,7 @@ class DownloadManager(
 
     fun cancelAll() {
         synchronized(queue) { queue.clear(); requests.clear() }
+        activeCall?.cancel()
         currentJob?.cancel()
         _state.update { it.copy(active = emptyMap()) }
     }
@@ -377,6 +384,8 @@ class DownloadManager(
                 }
             }
 
+            if (dir.usableSpace < 120L shl 20) throw ApiError("Недостаточно свободного места на телефоне")
+
             val referer = a365.baseUrl() + "/"
             val httpReq = Request.Builder()
                 .url(chosenStream.urls.first())
@@ -384,33 +393,42 @@ class DownloadManager(
                 .header("User-Agent", a365.userAgent)
                 .build()
 
-            http.newCall(httpReq).execute().use { resp ->
-                if (!resp.isSuccessful) throw ApiError("Сервер видео ответил ${resp.code}")
-                val body = resp.body ?: throw ApiError("Пустой ответ видеосервера")
-                val total = body.contentLength().coerceAtLeast(0L)
-                var written = 0L
-                var lastEmit = 0L
-
-                body.byteStream().use { input ->
-                    videoPart.outputStream().use { out ->
-                        val buf = ByteArray(64 * 1024)
-                        while (true) {
-                            if (!scope.isActive || currentJob?.isActive != true) throw CancellationException()
-                            val n = input.read(buf)
-                            if (n < 0) break
-                            out.write(buf, 0, n)
-                            written += n
-                            val now = System.currentTimeMillis()
-                            if (now - lastEmit >= 250L) {
-                                lastEmit = now
-                                val p = if (total > 0L) (written.toFloat() / total).coerceIn(0f, 1f) else 0f
-                                setRunning(p, written, total)
-                            }
-                        }
-                        out.flush()
+            val call = http.newCall(httpReq)
+            activeCall = call
+            try {
+                call.execute().use { resp ->
+                    if (!resp.isSuccessful) throw ApiError("Сервер видео ответил ${resp.code}")
+                    val body = resp.body ?: throw ApiError("Пустой ответ видеосервера")
+                    val total = body.contentLength().coerceAtLeast(0L)
+                    if (total > 0L && dir.usableSpace < total + (40L shl 20)) {
+                        throw ApiError("Не хватает места: нужно ${formatBytes(total)}")
                     }
+                    var written = 0L
+                    var lastEmit = 0L
+
+                    body.byteStream().use { input ->
+                        videoPart.outputStream().use { out ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                if (!currentCoroutineContext().isActive) throw CancellationException()
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                                written += n
+                                val now = System.currentTimeMillis()
+                                if (now - lastEmit >= 350L) {
+                                    lastEmit = now
+                                    val p = if (total > 0L) (written.toFloat() / total).coerceIn(0f, 1f) else 0f
+                                    setRunning(p, written, total)
+                                }
+                            }
+                            out.flush()
+                        }
+                    }
+                    if (written <= 0L) throw ApiError("Скачан пустой файл")
                 }
-                if (written <= 0L) throw ApiError("Скачан пустой файл")
+            } finally {
+                if (activeCall === call) activeCall = null
             }
 
             if (videoFinal.exists()) videoFinal.delete()

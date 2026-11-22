@@ -89,6 +89,7 @@ fun DownloadsScreen(onBack: () -> Unit) {
     }
     var confirmClearAll by remember { mutableStateOf(false) }
     var confirmDeleteAnime by remember { mutableStateOf<DownloadedAnime?>(null) }
+    var confirmDeleteEp by remember { mutableStateOf<DownloadedEpisode?>(null) }
 
     LazyColumn(
         Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding().navigationBarsPadding(),
@@ -156,7 +157,7 @@ fun DownloadsScreen(onBack: () -> Unit) {
                     history = history,
                     modifier = Modifier.animateItem(),
                     onPlay = { ep -> playDownloaded(ctx, anime, ep.episodeId, history) },
-                    onDeleteEpisode = { ep -> c.downloads.delete(ep.episodeId) },
+                    onDeleteEpisode = { ep -> confirmDeleteEp = ep },
                     onDeleteAnime = { confirmDeleteAnime = anime },
                 )
             }
@@ -197,6 +198,17 @@ fun DownloadsScreen(onBack: () -> Unit) {
             text = { Text("Будут удалены все скачанные серии этого тайтла (${formatBytes(anime.totalBytes)}).", style = Type.Body) },
             confirmButton = { TextButton({ c.downloads.deleteAnime(anime.animeId); confirmDeleteAnime = null }) { Text("Удалить", color = Nf.Red, style = Type.Label) } },
             dismissButton = { TextButton({ confirmDeleteAnime = null }) { Text("Отмена", color = Nf.Text, style = Type.Label) } },
+        )
+    }
+
+    confirmDeleteEp?.let { ep ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteEp = null },
+            containerColor = Nf.SurfaceHi, titleContentColor = Nf.Text, textContentColor = Nf.TextDim,
+            title = { Text("Удалить ${ep.episodeLabel.lowercase()}?", style = Type.Section) },
+            text = { Text("Освободится ${formatBytes(ep.sizeBytes)}.", style = Type.Body) },
+            confirmButton = { TextButton({ c.downloads.delete(ep.episodeId); confirmDeleteEp = null }) { Text("Удалить", color = Nf.Red, style = Type.Label) } },
+            dismissButton = { TextButton({ confirmDeleteEp = null }) { Text("Отмена", color = Nf.Text, style = Type.Label) } },
         )
     }
 }

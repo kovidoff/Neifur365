@@ -365,7 +365,8 @@ fun PlayerScreen(
                         Text(session.anime.title, style = Type.Title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
                             listOfNotNull(
-                                ep?.takeIf { episodes.size > 1 }?.label, stream.current?.author,
+                                ep?.takeIf { episodes.size > 1 || (ep.number > 0 && ep.episodeFull.contains("сери", ignoreCase = true)) }?.label,
+                                stream.current?.author,
                                 stream.height.takeIf { it > 0 }?.let { "${it}p" },
                                 if (stream.offline) "Офлайн" else null,
                             ).joinToString(" · "),

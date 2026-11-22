@@ -260,7 +260,26 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
                 pickKey = c.prefs.pick(s.id.toString())
                 loadRecord()
                 setupEpisodes(s)
-            }.onFailure { error = it.userMessage(); play = PlayState.Error(it.userMessage()) }
+            }.onFailure { err ->
+                val sid = seriesId
+                val local = sid?.let { id -> c.downloads.state.value.items.filter { it.animeId == id }.sortedBy { it.episodeNumber } }.orEmpty()
+                if (local.isNotEmpty()) {
+                    val eps = local.map { it.toEpisode() }
+                    val studios = Studios.grouped(Studios.build(local.map { it.toTranslation() }), eps)
+                    extrasPending = false
+                    play = PlayState.Ready(
+                        episodes = eps,
+                        target = targetIndex(eps),
+                        watchedOnSite = 0,
+                        studios = studios,
+                        studio = studios.values.flatten().firstOrNull(),
+                        scope = eps,
+                        started = true,
+                    )
+                } else {
+                    error = err.userMessage(); play = PlayState.Error(err.userMessage())
+                }
+            }
         }
     }
 
