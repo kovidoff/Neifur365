@@ -12,6 +12,9 @@ captures/
 *.keystore
 keystore.properties
 
+# Local promo drafts & banner builder (README uses assets/)
+promo/
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="promo/banner.png" alt="Neifur 365" width="100%" />
+  <img src="assets/banner.png" alt="Neifur 365" width="100%" />
 </p>
 
 <h1 align="center">Neifur 365</h1>
@@ -46,15 +46,15 @@
 <table>
   <tr>
     <td align="center" width="33%">
-      <img src="promo/banner/shots/home.png" alt="Главная" />
+      <img src="assets/shots/home.png" alt="Главная" />
       <br/><sub>Главная</sub>
     </td>
     <td align="center" width="33%">
-      <img src="promo/banner/shots/detail.png" alt="Карточка тайтла" />
+      <img src="assets/shots/detail.png" alt="Карточка тайтла" />
       <br/><sub>Карточка аниме</sub>
     </td>
     <td align="center" width="33%">
-      <img src="promo/banner/shots/player.png" alt="Плеер" />
+      <img src="assets/shots/player.png" alt="Плеер" />
       <br/><sub>Плеер на libmpv</sub>
     </td>
   </tr>
