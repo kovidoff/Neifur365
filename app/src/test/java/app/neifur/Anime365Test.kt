@@ -104,7 +104,14 @@ class Anime365Test {
         val none = SitePages.profile(page("<p>Не оплачена.<br>ID аккаунта: 307957</p>"), "https://anime365.ru")!!
         assertEquals(307957L, none.id)
         assertEquals(false, none.subscribed)
-        assertEquals(true, SitePages.profile(page("<p>Оплачена до 01.03.2027.<br>ID аккаунта: 307957</p>"), "https://anime365.ru")!!.subscribed)
+        assertNull(none.subscribedUntil)
+
+        val paid = SitePages.profile(page("<p>Оплачена до 01.03.2027.<br>ID аккаунта: 307957</p>"), "https://anime365.ru")!!
+        assertEquals(true, paid.subscribed)
+        assertEquals("2027-03-01", paid.subscribedUntil)
+
+        assertEquals("2027-04-05", SitePages.parseSubscriptionUntil("Активна до 5 апреля 2027 года"))
+        assertEquals("2027-05-12", SitePages.parseSubscriptionUntil("Действует до 2027-05-12 23:59"))
         assertNull(SitePages.profile("<p>ID аккаунта: 307957</p>", "https://anime365.ru")!!.subscribed)
     }
 

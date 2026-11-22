@@ -57,6 +57,7 @@ import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -92,6 +93,7 @@ import app.neifur.Container
 import app.neifur.alerts.EpisodeAlerts
 import app.neifur.data.a365.AccountState
 import app.neifur.data.a365.ChannelSpeed
+import app.neifur.data.a365.ListStatus
 import app.neifur.data.a365.MirrorHealth
 import app.neifur.data.a365.MirrorOrigin
 import app.neifur.data.a365.MirrorStatus
@@ -121,6 +123,7 @@ enum class SettingsSection(val route: String, val title: String, val subtitle: S
 
 class SettingsVm(private val c: Container) : ViewModel() {
     val account = c.account.state
+    val lists = c.lists.state
     var mirrors by mutableStateOf<List<MirrorStatus>?>(null)
         private set
     var mirrorsBusy by mutableStateOf(false)
@@ -749,9 +752,49 @@ private fun RowDivider() =
 
 // --- account -------------------------------------------------------------------------------------------
 
+internal data class SubscriptionBadge(val title: String, val detail: String?, val warning: Boolean)
+
+private val SUB_DATE_FMT = java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy", java.util.Locale.forLanguageTag("ru"))
+
+/** Formats the subscription status bar on the profile card, highlighting when ≤ 7 days remain. */
+internal fun formatSubscriptionBadge(
+    subscribed: Boolean?,
+    untilIso: String?,
+    today: java.time.LocalDate = java.time.LocalDate.now(),
+): SubscriptionBadge? = when (subscribed) {
+    false -> SubscriptionBadge("Подписка не активна", null, warning = true)
+    true -> {
+        val date = untilIso?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() }
+        if (date == null) SubscriptionBadge("Подписка активна", null, warning = false)
+        else {
+            val daysLeft = java.time.temporal.ChronoUnit.DAYS.between(today, date)
+            val niceDate = "до ${date.format(SUB_DATE_FMT).replace(".", "")}"
+            when {
+                daysLeft < 0L -> SubscriptionBadge("Подписка истекла", niceDate, warning = true)
+                daysLeft == 0L -> SubscriptionBadge("Истекает сегодня", niceDate, warning = true)
+                daysLeft <= 7L -> SubscriptionBadge("Осталось $daysLeft дн.", niceDate, warning = true)
+                else -> SubscriptionBadge("Подписка активна", niceDate, warning = false)
+            }
+        }
+    }
+    null -> null
+}
+
+private fun formatCount(n: Int): String {
+    val s = n.toString()
+    if (s.length <= 3) return s
+    return buildString {
+        s.forEachIndexed { i, ch ->
+            if (i > 0 && (s.length - i) % 3 == 0) append(' ')
+            append(ch)
+        }
+    }
+}
+
 @Composable
 private fun AccountCard(vm: SettingsVm, onLogout: () -> Unit) {
     val state by vm.account.collectAsStateWithLifecycle()
+    val lists by vm.lists.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     var signIn by remember { mutableStateOf(false) }
     // The account sits on a soft violet wash: it's the first thing on the page and the heart of Neifur 365.
@@ -772,32 +815,85 @@ private fun AccountCard(vm: SettingsVm, onLogout: () -> Unit) {
                 }
                 is AccountState.SignedIn -> Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(64.dp).clip(CircleShape).background(Brush.linearGradient(listOf(Nf.Violet, Nf.Pink))).padding(2.5.dp)) {
+                        Box(Modifier.size(62.dp).clip(CircleShape).background(Brush.linearGradient(listOf(Nf.Violet, Nf.Pink))).padding(2.5.dp)) {
                             PosterImage(s.profile.avatarUrl, Modifier.fillMaxSize().clip(CircleShape))
                         }
-                        Spacer(Modifier.width(16.dp))
+                        Spacer(Modifier.width(14.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(s.profile.name, style = Type.Display.copy(fontSize = 19.sp), color = Nf.Text, maxLines = 1)
+                            Text(s.profile.name, style = Type.Display.copy(fontSize = 19.sp), color = Nf.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Box(Modifier.size(7.dp).clip(CircleShape).background(Nf.Mint))
+                                Box(Modifier.size(7.dp).clip(CircleShape).background(if (s.profile.subscribed == false) Nf.Amber else Nf.Mint))
                                 Spacer(Modifier.width(6.dp))
                                 Text("Anime 365 · ID ${s.profile.id}", style = Type.Caption, color = Nf.TextDim, maxLines = 1)
                             }
-                            when (s.profile.subscribed) {
-                                true -> Text("Подписка активна", style = Type.Caption, color = Nf.Mint, modifier = Modifier.padding(top = 2.dp))
-                                false -> Text("Без подписки: видео не запустится", style = Type.Caption, color = Nf.Amber, modifier = Modifier.padding(top = 2.dp))
-                                null -> {}
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Box(
+                            Modifier.size(38.dp).clip(CircleShape).background(Nf.Ink.copy(alpha = 0.6f))
+                                .border(1.dp, Nf.Line, CircleShape).pressable(0.88f, onClick = onLogout),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.Logout, "Выйти", tint = Nf.TextDim, modifier = Modifier.size(18.dp))
+                        }
+                    }
+
+                    // Dedicated subscription status bar (with end date or quick subscribe button).
+                    val badge = remember(s.profile.subscribed, s.profile.subscribedUntil) {
+                        formatSubscriptionBadge(s.profile.subscribed, s.profile.subscribedUntil)
+                    }
+                    if (badge != null) {
+                        val tint = if (badge.warning) Nf.Amber else Nf.Mint
+                        Row(
+                            Modifier.padding(top = 14.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                                .background(tint.copy(alpha = 0.11f)).border(1.dp, tint.copy(alpha = 0.28f), RoundedCornerShape(16.dp))
+                                .padding(horizontal = 13.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                if (s.profile.subscribed == false) Icons.Rounded.Lock else Icons.Rounded.Verified,
+                                null, tint = tint, modifier = Modifier.size(17.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(badge.title, style = Type.Label, color = tint, maxLines = 1, modifier = Modifier.weight(1f))
+                            when {
+                                s.profile.subscribed == false && vm.base != null -> Text(
+                                    "Оформить", style = Type.Label, color = Nf.Ink,
+                                    modifier = Modifier.clip(CircleShape).background(Nf.Amber)
+                                        .pressable(0.92f) { vm.base?.let { b -> openUrl(ctx, "$b/support/index") } }
+                                        .padding(horizontal = 11.dp, vertical = 5.dp),
+                                )
+                                badge.detail != null -> Text(
+                                    badge.detail, style = Type.Caption.copy(fontSize = 12.5.sp),
+                                    color = Nf.Text.copy(alpha = 0.9f), maxLines = 1,
+                                )
                             }
                         }
                     }
-                    Text(
-                        "Списки и отметки о просмотре синхронизируются с сайтом",
-                        style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 14.dp),
-                    )
-                    FlowRow(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        vm.base?.let { b -> PillButton("Профиль на сайте", Icons.AutoMirrored.Rounded.OpenInNew) { openUrl(ctx, "$b/users/profile") } }
-                        if (s.profile.subscribed == false) vm.base?.let { b -> PillButton("Оформить подписку", Icons.Rounded.Lock) { openUrl(ctx, "$b/support/index") } }
-                        PillButton("Выйти", Icons.AutoMirrored.Rounded.Logout, tint = Nf.Red, onClick = onLogout)
+
+                    // Live collection snapshot from already-loaded lists (zero extra network requests).
+                    if (lists.loaded && lists.titles.isNotEmpty()) {
+                        val watching = remember(lists) { lists.count(ListStatus.Watching) }
+                        val completed = remember(lists) { lists.count(ListStatus.Completed) }
+                        val episodes = remember(lists) { lists.titles.values.sumOf { it.entry.watched } }
+                        Row(Modifier.padding(top = 10.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ProfileStatTile(formatCount(watching), "Смотрю", Nf.Mint, Modifier.weight(1f))
+                            ProfileStatTile(formatCount(completed), "Просмотрено", statusColor(ListStatus.Completed), Modifier.weight(1f))
+                            ProfileStatTile(formatCount(episodes), "Серий", Nf.Violet, Modifier.weight(1f))
+                        }
+                    }
+
+                    vm.base?.let { b ->
+                        Row(
+                            Modifier.padding(top = 12.dp).fillMaxWidth().height(42.dp).clip(RoundedCornerShape(14.dp))
+                                .background(Nf.Ink.copy(alpha = 0.55f)).border(1.dp, Nf.Line, RoundedCornerShape(14.dp))
+                                .pressable(0.97f) { openUrl(ctx, "$b/users/profile") }.padding(horizontal = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, tint = Nf.TextDim, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(7.dp))
+                            Text("Профиль на сайте", style = Type.Label, color = Nf.Text)
+                        }
                     }
                 }
                 AccountState.SignedOut -> Column {
@@ -813,6 +909,22 @@ private fun AccountCard(vm: SettingsVm, onLogout: () -> Unit) {
         }
     }
     if (signIn) SignInSheet(onDismiss = { signIn = false }, onDone = { signIn = false })
+}
+
+@Composable
+private fun ProfileStatTile(value: String, label: String, accent: Color, modifier: Modifier = Modifier) {
+    Column(
+        modifier.clip(RoundedCornerShape(14.dp)).background(Nf.Ink.copy(alpha = 0.48f))
+            .border(1.dp, Color(0x0DFFFFFF), RoundedCornerShape(14.dp)).padding(vertical = 9.dp, horizontal = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(value, style = Type.Title.copy(fontSize = 16.sp), color = Nf.Text, maxLines = 1)
+        Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(5.dp).clip(CircleShape).background(accent))
+            Spacer(Modifier.width(4.dp))
+            Text(label, style = Type.Caption.copy(fontSize = 11.sp), color = Nf.TextMute, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
 }
 
 // --- mirrors -------------------------------------------------------------------------------------------
@@ -1241,17 +1353,5 @@ private fun ActionRow(icon: ImageVector, title: String, value: String, action: S
             Spacer(Modifier.width(4.dp))
             Text(action, style = Type.Label, color = if (enabled) Nf.Red else Nf.TextMute)
         }
-    }
-}
-
-@Composable
-private fun PillButton(text: String, icon: ImageVector?, tint: Color = Nf.Text, onClick: () -> Unit) {
-    Row(
-        Modifier.height(44.dp).clip(CircleShape).background(Nf.Ink).border(1.dp, Nf.Line, CircleShape).pressable(0.95f, onClick = onClick)
-            .padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (icon != null) { Icon(icon, null, tint = tint, modifier = Modifier.size(17.dp)); Spacer(Modifier.width(7.dp)) }
-        Text(text, style = Type.Label, color = tint, maxLines = 1)
     }
 }

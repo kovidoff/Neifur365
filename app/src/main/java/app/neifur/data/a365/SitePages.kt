@@ -23,10 +23,33 @@ internal object SitePages {
             ?: "Профиль"
         val avatar = (doc.selectFirst("content .card-image.hide-on-small-and-down img") ?: doc.selectFirst(".card-image img"))
             ?.absUrl("src")?.takeIf { it.isNotEmpty() }
-        // The "Подписка" card: "Не оплачена." without one, the paid period otherwise.
-        val subscribed = doc.select("h2").firstOrNull { it.text().trim() == "Подписка" }?.parent()?.text()
-            ?.let { !it.contains("Не оплачена", ignoreCase = true) }
-        return Profile(id, name, avatar, subscribed)
+        // The "Подписка" card: "Не оплачена." without one, the paid period ("Оплачена до 01.03.2027.") otherwise.
+        val subCard = doc.select("h2").firstOrNull { it.text().trim() == "Подписка" }?.parent()?.text()
+        val subscribed = subCard?.let { !it.contains("Не оплачена", ignoreCase = true) }
+        val subscribedUntil = if (subscribed == true) parseSubscriptionUntil(subCard) else null
+        return Profile(id, name, avatar, subscribed, subscribedUntil)
+    }
+
+    private val RU_MONTHS = mapOf(
+        "янв" to 1, "фев" to 2, "мар" to 3, "апр" to 4, "май" to 5, "мая" to 5, "июн" to 6,
+        "июл" to 7, "авг" to 8, "сен" to 9, "окт" to 10, "ноя" to 11, "дек" to 12,
+    )
+
+    /** Extracts a subscription end date from the profile card text and normalises it to ISO `yyyy-MM-dd`. */
+    internal fun parseSubscriptionUntil(text: String): String? {
+        Regex("""(\d{1,2})\.(\d{1,2})\.(\d{4})""").find(text)?.let { m ->
+            val (d, mo, y) = m.destructured
+            return runCatching { java.time.LocalDate.of(y.toInt(), mo.toInt(), d.toInt()).toString() }.getOrNull()
+        }
+        Regex("""(\d{4})-(\d{2})-(\d{2})""").find(text)?.let { m ->
+            return runCatching { java.time.LocalDate.parse(m.value).toString() }.getOrNull()
+        }
+        Regex("""(\d{1,2})\s+([а-яА-ЯёЁ]{3,})\.?\s+(\d{4})""").find(text)?.let { m ->
+            val (d, mon, y) = m.destructured
+            val month = RU_MONTHS[mon.lowercase().take(3)] ?: return null
+            return runCatching { java.time.LocalDate.of(y.toInt(), month, d.toInt()).toString() }.getOrNull()
+        }
+        return null
     }
 
     /** `/catalog/<slug>-<seriesId>` (with or without an episode segment) → the series id. */

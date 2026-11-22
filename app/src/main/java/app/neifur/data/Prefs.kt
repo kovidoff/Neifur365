@@ -130,14 +130,22 @@ class Prefs(private val context: Context) {
      * The account last seen signed in. Started without a connection, the app shows it instead of "sign in"
      * and confirms it with the site once the network is back.
      */
-    suspend fun savedProfile(): app.neifur.data.a365.Profile? = context.store.data.first()[KEY_PROFILE]?.split('	')?.let { f ->
+    suspend fun savedProfile(): app.neifur.data.a365.Profile? = context.store.data.first()[KEY_PROFILE]?.split('\t')?.let { f ->
         val id = f.getOrNull(0)?.toLongOrNull() ?: return@let null
-        app.neifur.data.a365.Profile(id, f.getOrNull(1).orEmpty(), f.getOrNull(2)?.ifBlank { null })
+        val sub = when (f.getOrNull(3)) { "1" -> true; "0" -> false; else -> null }
+        val until = f.getOrNull(4)?.ifBlank { null }
+        app.neifur.data.a365.Profile(id, f.getOrNull(1).orEmpty(), f.getOrNull(2)?.ifBlank { null }, sub, until)
     }
 
     suspend fun saveProfile(p: app.neifur.data.a365.Profile?) = context.store.edit {
         if (p == null) it.remove(KEY_PROFILE)
-        else it[KEY_PROFILE] = listOf(p.id.toString(), p.name.replace('	', ' '), p.avatarUrl.orEmpty()).joinToString("	")
+        else it[KEY_PROFILE] = listOf(
+            p.id.toString(),
+            p.name.replace('\t', ' '),
+            p.avatarUrl.orEmpty(),
+            when (p.subscribed) { true -> "1"; false -> "0"; null -> "" },
+            p.subscribedUntil.orEmpty(),
+        ).joinToString("\t")
     }
 
     // --- onboarding ----------------------------------------------------------------------------------

@@ -4,11 +4,15 @@ import app.neifur.ui.screens.SettingsSection
 import app.neifur.ui.screens.alertsSummary
 import app.neifur.ui.screens.connectionSummary
 import app.neifur.ui.screens.dataSummary
+import app.neifur.ui.screens.formatSubscriptionBadge
 import app.neifur.ui.screens.playerSummary
 import app.neifur.ui.screens.translationSummary
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.LocalDate
 
 /** Live category summaries on the Settings hub and route lookup for subpages. */
 class SettingsSummaryTest {
@@ -44,5 +48,33 @@ class SettingsSummaryTest {
         assertEquals("Кэш < 1 МБ", dataSummary(cacheBytes = 500_000L, titleCount = 0))
         assertEquals("Кэш 12 МБ · 5 тайтлов", dataSummary(cacheBytes = 12L shl 20, titleCount = 5))
         assertEquals("Загрузки 450 МБ · кэш 12 МБ · 2 тайтла", dataSummary(cacheBytes = 12L shl 20, titleCount = 2, downloadBytes = 450L shl 20))
+    }
+
+    @Test fun subscriptionBadgeFormatsDateAndWarnsWhenExpiringSoon() {
+        val today = LocalDate.of(2026, 11, 23)
+
+        val active = formatSubscriptionBadge(true, "2027-03-01", today)!!
+        assertEquals("Подписка активна", active.title)
+        assertTrue(active.detail!!.startsWith("до 1 ") && active.detail!!.endsWith("2027"))
+        assertFalse(active.warning)
+
+        val soon = formatSubscriptionBadge(true, "2026-11-27", today)!!
+        assertEquals("Осталось 4 дн.", soon.title)
+        assertTrue(soon.warning)
+
+        val todayEnd = formatSubscriptionBadge(true, "2026-11-23", today)!!
+        assertEquals("Истекает сегодня", todayEnd.title)
+        assertTrue(todayEnd.warning)
+
+        val noDate = formatSubscriptionBadge(true, null, today)!!
+        assertEquals("Подписка активна", noDate.title)
+        assertNull(noDate.detail)
+        assertFalse(noDate.warning)
+
+        val unpaid = formatSubscriptionBadge(false, null, today)!!
+        assertEquals("Подписка не активна", unpaid.title)
+        assertTrue(unpaid.warning)
+
+        assertNull(formatSubscriptionBadge(null, null, today))
     }
 }
