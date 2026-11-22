@@ -56,6 +56,7 @@ class Prefs(private val context: Context) {
     private val KEY_SUB_SCALE = stringPreferencesKey("sub_scale")
     private val KEY_SEEK_STEP = intPreferencesKey("seek_step")
     private val KEY_HOLD_BOOST = stringPreferencesKey("hold_boost")
+    private val KEY_DOWNLOAD_QUALITY = intPreferencesKey("download_quality")
     private val KEY_ONBOARDED = stringPreferencesKey("onboarded")
     private val KEY_ALERTS = stringPreferencesKey("alerts")
     private val KEY_ALERTS_MODE = stringPreferencesKey("alerts_mode")
@@ -286,4 +287,8 @@ class Prefs(private val context: Context) {
     /** Holding a finger on the video plays it at 2×. On unless turned off: some people brush the screen. */
     val holdBoost: Flow<Boolean> = context.store.data.map { it[KEY_HOLD_BOOST] != "off" }.distinctUntilChanged()
     suspend fun setHoldBoost(on: Boolean) = context.store.edit { if (on) it.remove(KEY_HOLD_BOOST) else it[KEY_HOLD_BOOST] = "off" }
+
+    /** Quality for offline downloads: 0 follows the player's quality setting, otherwise 1080/720/480. */
+    val downloadQuality: Flow<Int> = context.store.data.map { it[KEY_DOWNLOAD_QUALITY] ?: 0 }.distinctUntilChanged()
+    suspend fun setDownloadQuality(q: Int) = context.store.edit { if (q <= 0) it.remove(KEY_DOWNLOAD_QUALITY) else it[KEY_DOWNLOAD_QUALITY] = q }
 }

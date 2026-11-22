@@ -405,10 +405,31 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
 
     fun play(context: Context, index: Int) {
         val r = play as? PlayState.Ready ?: return
-        if (!signedIn) { askSignIn = true; return }
+        val ep = r.episodes.getOrNull(index)
+        // Locally downloaded episode can play right away even if signed out or offline.
+        if (!signedIn && (ep == null || c.downloads.localFile(ep.id) == null)) { askSignIn = true; return }
         val s = series?.stub() ?: stub ?: return
         c.session = PlaySession(s, r.episodes, index, pickKey ?: r.studio?.key, r.studio?.author)
         context.startActivity(Intent(context, PlayerActivity::class.java))
+    }
+
+    val downloads = c.downloads.state
+
+    fun download(ep: Episode) {
+        if (!signedIn) { askSignIn = true; return }
+        val r = play as? PlayState.Ready ?: return
+        val s = series?.stub() ?: stub ?: return
+        c.downloads.enqueue(s, ep, pickKey ?: r.studio?.key, r.studio?.author)
+        notice = "Загрузка: ${ep.label}"
+    }
+
+    fun cancelDownload(episodeId: Long) = c.downloads.cancel(episodeId)
+
+    fun retryDownload(episodeId: Long) = c.downloads.retry(episodeId)
+
+    fun deleteDownload(episodeId: Long) {
+        c.downloads.delete(episodeId)
+        notice = "Загрузка удалена"
     }
 }
 
@@ -609,6 +630,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
         }
 
         sheet?.let { page ->
+            val downloads by vm.downloads.collectAsStateWithLifecycle()
             EpisodesSheet(
                 state = play, history = history, isMovie = isMovie, accent = accent, startPage = page,
                 onDismiss = { sheet = null; startFor = null }, onPlay = { idx -> vm.play(ctx, idx) },
@@ -616,6 +638,11 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                 startFor = startFor,
                 preferred = runCatching { TranslationKind.valueOf(preferred) }.getOrDefault(TranslationKind.VoiceRu),
                 onStart = { s, i -> sheet = null; startFor = null; vm.start(ctx, s, i) },
+                downloads = downloads,
+                onDownload = vm::download,
+                onCancelDownload = vm::cancelDownload,
+                onRetryDownload = vm::retryDownload,
+                onDeleteDownload = vm::deleteDownload,
             )
         }
         if (listSheet) ListEditor(

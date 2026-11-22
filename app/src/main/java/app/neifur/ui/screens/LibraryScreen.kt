@@ -28,10 +28,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.WifiOff
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -66,6 +68,7 @@ import app.neifur.data.a365.ListRecord
 import app.neifur.data.a365.ListSort
 import app.neifur.data.a365.ListStatus
 import app.neifur.data.a365.ListedTitle
+import app.neifur.downloads.DownloadsState
 import app.neifur.nfViewModel
 import app.neifur.stub
 import app.neifur.ui.*
@@ -75,6 +78,7 @@ class LibraryVm(private val c: Container) : ViewModel() {
     val account = c.account.state
     val expired = c.account.expired
     val lists = c.lists.state
+    val downloads = c.downloads.state
     val history = c.prefs.history
     val favorites = c.prefs.favorites
     val alertsAsked = c.prefs.alertsAsked
@@ -104,11 +108,12 @@ class LibraryVm(private val c: Container) : ViewModel() {
  * show here at once; a long press edits an entry in place.
  */
 @Composable
-fun LibraryScreen(open: OpenAnime) {
+fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
     val vm = nfViewModel { LibraryVm(it) }
     val account by vm.account.collectAsStateWithLifecycle()
     val expired by vm.expired.collectAsStateWithLifecycle()
     val lists by vm.lists.collectAsStateWithLifecycle()
+    val downloads by vm.downloads.collectAsStateWithLifecycle()
     val history by vm.history.collectAsStateWithLifecycle(emptyList())
     val favorites by vm.favorites.collectAsStateWithLifecycle(emptyList())
     val alertsAsked by vm.alertsAsked.collectAsStateWithLifecycle(true)
@@ -141,7 +146,7 @@ fun LibraryScreen(open: OpenAnime) {
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 120.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                item(span = { GridItemSpan(3) }, key = "head") { Header(account) }
+                item(span = { GridItemSpan(3) }, key = "head") { Header(account, downloads, onDownloads) }
 
                 if (recent.isNotEmpty() && vm.query.isBlank()) item(span = { GridItemSpan(3) }, key = "continue") {
                     ContinueStrip(recent, lists.titles, open, onForget = { vm.forget(it) })
@@ -333,17 +338,50 @@ private fun EmptySearch(
 private fun stubOf(t: ListedTitle): AnimeStub = t.series?.stub() ?: AnimeStub(t.entry.seriesId.toString(), t.entry.title, null)
 
 @Composable
-private fun Header(account: AccountState) {
+private fun Header(account: AccountState, downloads: DownloadsState, onDownloads: () -> Unit) {
     Row(Modifier.padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("Списки", style = Type.Display, color = Nf.Text, modifier = Modifier.weight(1f))
+        val running = downloads.runningCount
+        val count = downloads.items.size
+        val active = running > 0
+        val hasSaved = count > 0
+        val pillBg by animateColorAsState(
+            when { active -> Nf.Violet.copy(alpha = 0.16f); hasSaved -> Nf.Mint.copy(alpha = 0.12f); else -> Nf.Surface },
+            label = "dlbg",
+        )
+        val pillBorder by animateColorAsState(
+            when { active -> Nf.Violet.copy(alpha = 0.45f); hasSaved -> Nf.Mint.copy(alpha = 0.32f); else -> Nf.Line },
+            label = "dlbr",
+        )
+        Row(
+            Modifier.height(36.dp).clip(CircleShape).background(pillBg).border(1.dp, pillBorder, CircleShape)
+                .pressable(0.92f, onClick = onDownloads).padding(horizontal = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (active) {
+                CircularProgressIndicator(Modifier.size(15.dp), color = Nf.Violet, strokeWidth = 2.dp)
+            } else {
+                Icon(Icons.Rounded.Download, "Загрузки", tint = if (hasSaved) Nf.Mint else Nf.TextDim, modifier = Modifier.size(17.dp))
+            }
+            if (active || hasSaved) {
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    if (active) "$running" else "$count",
+                    style = Type.Label,
+                    color = if (active) Nf.Violet else Nf.Mint,
+                    maxLines = 1,
+                )
+            }
+        }
         (account as? AccountState.SignedIn)?.profile?.let { p ->
+            Spacer(Modifier.width(8.dp))
             Row(
-                Modifier.clip(CircleShape).background(Nf.Surface).padding(start = 4.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+                Modifier.height(36.dp).clip(CircleShape).background(Nf.Surface).padding(start = 4.dp, end = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 PosterImage(p.avatarUrl, Modifier.size(28.dp).clip(CircleShape))
                 Spacer(Modifier.width(8.dp))
-                Text(p.name, style = Type.Label, color = Nf.TextDim, maxLines = 1, modifier = Modifier.widthIn(max = 140.dp), overflow = TextOverflow.Ellipsis)
+                Text(p.name, style = Type.Label, color = Nf.TextDim, maxLines = 1, modifier = Modifier.widthIn(max = 110.dp), overflow = TextOverflow.Ellipsis)
             }
         }
     }

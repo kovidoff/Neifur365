@@ -26,6 +26,7 @@ import app.neifur.data.a365.ChannelPilot
 import app.neifur.data.a365.Anime365
 import app.neifur.data.a365.Episode
 import app.neifur.data.a365.Series
+import app.neifur.downloads.DownloadManager
 import app.neifur.data.shikimori.ShikimoriApi
 import coil3.ImageLoader
 import coil3.PlatformContext
@@ -72,6 +73,7 @@ class Container(app: Application) {
         }
     }
     val lists = Lists(a365, account, scope)
+    val downloads = DownloadManager(app, a365, prefs, http, scope)
     val channels = ChannelPilot(a365, prefs, account, scope) {
         app.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered ?: false
     }
@@ -112,6 +114,9 @@ class Container(app: Application) {
 
     /** A title to open once the app is on screen (tapped in a new-episode notification). */
     val pendingOpen = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    /** Opens the Downloads screen once the app is on screen (tapped on the download notification). */
+    val pendingDownloads = kotlinx.coroutines.flow.MutableStateFlow(false)
 }
 
 class NeifurApp : Application(), SingletonImageLoader.Factory {

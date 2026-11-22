@@ -43,5 +43,6 @@ class SettingsSummaryTest {
         assertEquals("История пуста", dataSummary(cacheBytes = null, titleCount = 0))
         assertEquals("Кэш < 1 МБ", dataSummary(cacheBytes = 500_000L, titleCount = 0))
         assertEquals("Кэш 12 МБ · 5 тайтлов", dataSummary(cacheBytes = 12L shl 20, titleCount = 5))
+        assertEquals("Загрузки 450 МБ · кэш 12 МБ · 2 тайтла", dataSummary(cacheBytes = 12L shl 20, titleCount = 2, downloadBytes = 450L shl 20))
     }
 }

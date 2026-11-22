@@ -367,6 +367,7 @@ fun PlayerScreen(
                             listOfNotNull(
                                 ep?.takeIf { episodes.size > 1 }?.label, stream.current?.author,
                                 stream.height.takeIf { it > 0 }?.let { "${it}p" },
+                                if (stream.offline) "Офлайн" else null,
                             ).joinToString(" · "),
                             style = Type.Caption, color = Color(0xB3FFFFFF), maxLines = 1,
                         )

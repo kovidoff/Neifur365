@@ -56,6 +56,7 @@ import androidx.navigation.navArgument
 import app.neifur.ui.*
 import app.neifur.ui.screens.CatalogScreen
 import app.neifur.ui.screens.DetailScreen
+import app.neifur.ui.screens.DownloadsScreen
 import app.neifur.ui.screens.HomeScreen
 import app.neifur.ui.screens.LibraryScreen
 import app.neifur.ui.screens.SettingsScreen
@@ -94,8 +95,13 @@ class MainActivity : ComponentActivity() {
         takeOpenRequest(intent)
     }
 
-    /** A tapped new-episode notification or an Anime 365 link names the title to open. */
+    /** A tapped new-episode notification, download notification, or an Anime 365 link names where to go. */
     private fun takeOpenRequest(intent: android.content.Intent?) {
+        if (intent?.getBooleanExtra(app.neifur.downloads.DownloadService.EXTRA_OPEN_DOWNLOADS, false) == true) {
+            container.pendingDownloads.value = true
+            intent.removeExtra(app.neifur.downloads.DownloadService.EXTRA_OPEN_DOWNLOADS)
+            return
+        }
         val fromAlert = intent?.getStringExtra(app.neifur.alerts.EpisodeAlerts.EXTRA_SERIES)
         if (fromAlert != null) {
             container.pendingOpen.value = fromAlert
@@ -138,13 +144,19 @@ private fun AppRoot() {
         nav.navigate("detail/${stub.id}?origin=${Uri.encode(origin)}") { launchSingleTop = true }
     }
 
-    // Opening a title from a notification: wait for the welcome flow to be out of the way, then go there.
+    // Opening a title from a notification or link: wait for the welcome flow to be out of the way, then go there.
     val pending by container.pendingOpen.collectAsStateWithLifecycle()
     LaunchedEffect(pending, onboarded) {
         val id = pending ?: return@LaunchedEffect
         if (onboarded != true) return@LaunchedEffect
         container.pendingOpen.value = null
         nav.navigate("detail/$id?origin=notification") { launchSingleTop = true }
+    }
+    val openDownloads by container.pendingDownloads.collectAsStateWithLifecycle()
+    LaunchedEffect(openDownloads, onboarded) {
+        if (!openDownloads || onboarded != true) return@LaunchedEffect
+        container.pendingDownloads.value = false
+        nav.navigate("downloads") { launchSingleTop = true }
     }
 
     SharedTransitionLayout {
@@ -178,7 +190,11 @@ private fun AppRoot() {
                 ) {
                     composable("home") {
                         CompositionLocalProvider(LocalNavAnimScope provides this) {
-                            HomeScreen(open, onSearch = { nav.switchTab("catalog") })
+                            HomeScreen(
+                                open,
+                                onSearch = { nav.switchTab("catalog") },
+                                onDownloads = { nav.navigate("downloads") { launchSingleTop = true } },
+                            )
                         }
                     }
                     composable("catalog") {
@@ -186,7 +202,7 @@ private fun AppRoot() {
                     }
                     composable("library") {
                         CompositionLocalProvider(LocalNavAnimScope provides this) {
-                            LibraryScreen(open)
+                            LibraryScreen(open, onDownloads = { nav.navigate("downloads") { launchSingleTop = true } })
                         }
                     }
                     composable("settings") {
@@ -202,8 +218,22 @@ private fun AppRoot() {
                     ) { e ->
                         val section = SettingsSection.of(e.arguments?.getString("section"))
                         val owner = remember(e) { runCatching { nav.getBackStackEntry("settings") }.getOrElse { e } }
-                        if (section != null) SettingsSectionScreen(section, owner = owner, onBack = { nav.popBackStack() })
+                        if (section != null) SettingsSectionScreen(
+                            section,
+                            owner = owner,
+                            onDownloads = { nav.navigate("downloads") { launchSingleTop = true } },
+                            onBack = { nav.popBackStack() },
+                        )
                         else LaunchedEffect(Unit) { nav.popBackStack() }
+                    }
+                    composable(
+                        "downloads",
+                        enterTransition = { slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { it / 5 } + fadeIn(tween(240)) },
+                        exitTransition = { slideOutHorizontally(tween(260, easing = FastOutLinearInEasing)) { -it / 8 } + fadeOut(tween(180)) },
+                        popEnterTransition = { slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 8 } + fadeIn(tween(200)) },
+                        popExitTransition = { slideOutHorizontally(tween(280, easing = FastOutLinearInEasing)) { it / 5 } + fadeOut(tween(200)) },
+                    ) {
+                        DownloadsScreen(onBack = { nav.popBackStack() })
                     }
                     composable(
                         "detail/{id}?origin={origin}",

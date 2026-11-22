@@ -123,6 +123,8 @@ data class StreamUi(
     val height: Int = 0,
     /** Subtitles came as a separate file (they can be turned off and restyled), not burned into the picture. */
     val externalSubs: Boolean = false,
+    /** Playing from a locally downloaded file (zero network traffic). */
+    val offline: Boolean = false,
 ) {
     val isSubs: Boolean get() = current?.kind?.isSubs == true
 }

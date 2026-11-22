@@ -18,6 +18,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Star
@@ -34,6 +35,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,6 +51,8 @@ import app.neifur.data.WatchEntry
 import app.neifur.data.a365.ListStatus
 import app.neifur.data.a365.ListedTitle
 import app.neifur.data.a365.Series
+import app.neifur.downloads.DownloadedAnime
+import app.neifur.downloads.formatBytes
 import app.neifur.nfViewModel
 import app.neifur.stub
 import app.neifur.ui.*
@@ -76,6 +80,7 @@ class HomeVm(private val c: Container) : ViewModel() {
     val appeared = HashSet<String>()
     /** The viewer's Anime 365 lists: what's new in "Смотрю", and which posters are already in a list. */
     val lists = c.lists.state
+    val downloads = c.downloads.state
     val history = c.prefs.history
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -106,12 +111,15 @@ class HomeVm(private val c: Container) : ViewModel() {
 }
 
 @Composable
-fun HomeScreen(open: OpenAnime, onSearch: () -> Unit) {
+fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = {}) {
     val vm = nfViewModel { HomeVm(it) }
+    val ctx = LocalContext.current
     val feed by vm.feed.collectAsStateWithLifecycle()
     val history by vm.history.collectAsStateWithLifecycle()
     val cont = remember(history) { history.distinctBy { it.animeId }.take(12) }
     val lists by vm.lists.collectAsStateWithLifecycle()
+    val downloads by vm.downloads.collectAsStateWithLifecycle()
+    val offlineGroups = remember(downloads.items) { downloads.byAnime() }
     // Only what the viewer is watching: a planned title's new episode isn't news to them.
     val fresh = remember(lists, history) { lists.watching(history).filter { it.behind > 0 && it.series != null } }
     val marks = remember(lists) { lists.titles.mapValues { it.value.status } }
@@ -120,13 +128,20 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit) {
 
     Box(Modifier.fillMaxSize()) {
         when (val f = feed) {
-            // Nothing to show at all: the full message. With something watched on this phone, it stays reachable.
-            is Load.Error -> if (cont.isEmpty()) EmptyState(
+            // Nothing to show at all: the full message. With downloaded episodes or watch history, keep them reachable.
+            is Load.Error -> if (cont.isEmpty() && offlineGroups.isEmpty()) EmptyState(
                 "Не получилось загрузить каталог", f.message, Icons.Rounded.WifiOff,
                 Modifier.align(Alignment.Center), action = "Повторить", onAction = vm::load,
             ) else LazyColumn(contentPadding = PaddingValues(bottom = 120.dp), modifier = Modifier.statusBarsPadding().padding(top = 60.dp)) {
                 item(key = "offline") { OfflineCard(f.message, vm::load) }
-                item(key = "continue") { ContinueRow(cont, lists.titles, open) }
+                if (offlineGroups.isNotEmpty()) item(key = "offline-downloads") {
+                    OfflineDownloadsRow(
+                        groups = offlineGroups,
+                        onPlay = { playDownloaded(ctx, it, history = history) },
+                        onAll = onDownloads,
+                    )
+                }
+                if (cont.isNotEmpty()) item(key = "continue") { ContinueRow(cont, lists.titles, open) }
             }
             else -> {
                 val data = (f as? Load.Ready)?.value
@@ -201,6 +216,50 @@ private fun OfflineCard(message: String, retry: () -> Unit) {
             "Повторить", style = Type.Label, color = Nf.Text,
             modifier = Modifier.clip(CircleShape).background(Nf.SurfaceHi).pressable(0.95f, onClick = retry).padding(horizontal = 14.dp, vertical = 9.dp),
         )
+    }
+}
+
+/** Shown right under OfflineCard when the network is down: one tap launches any downloaded anime straight in the player. */
+@Composable
+private fun OfflineDownloadsRow(groups: List<DownloadedAnime>, onPlay: (DownloadedAnime) -> Unit, onAll: () -> Unit) {
+    Column(Modifier.padding(top = 18.dp)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Доступно офлайн", style = Type.Section, color = Nf.Text, modifier = Modifier.weight(1f))
+            Text(
+                "Все загрузки", style = Type.Label, color = Nf.Violet,
+                modifier = Modifier.clip(CircleShape).pressable(0.94f, onClick = onAll).padding(horizontal = 10.dp, vertical = 5.dp),
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(groups, key = { it.animeId }) { anime ->
+                val n = anime.episodes.size
+                Row(
+                    Modifier.width(268.dp).clip(RoundedCornerShape(20.dp)).background(Nf.Surface)
+                        .border(1.dp, Nf.Mint.copy(alpha = 0.22f), RoundedCornerShape(20.dp))
+                        .pressable { onPlay(anime) }.padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    PosterImage(anime.poster, Modifier.width(54.dp).aspectRatio(0.7f).clip(RoundedCornerShape(12.dp)))
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(anime.title, style = Type.Label, color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Row(Modifier.padding(top = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.DownloadDone, null, tint = Nf.Mint, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                "$n ${plural(n, "серия", "серии", "серий")} · ${formatBytes(anime.totalBytes)}",
+                                style = Type.Caption, color = Nf.Mint, maxLines = 1,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Box(Modifier.size(34.dp).clip(CircleShape).background(Nf.Mint.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.PlayArrow, "Смотреть офлайн", tint = Nf.Mint, modifier = Modifier.size(19.dp))
+                    }
+                }
+            }
+        }
     }
 }
 

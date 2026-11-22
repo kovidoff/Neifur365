@@ -36,6 +36,7 @@ import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.History
@@ -92,6 +93,7 @@ import app.neifur.data.a365.MirrorHealth
 import app.neifur.data.a365.MirrorOrigin
 import app.neifur.data.a365.MirrorStatus
 import app.neifur.data.a365.VideoChannel
+import app.neifur.downloads.formatBytes
 import app.neifur.nfViewModel
 import app.neifur.ui.*
 import coil3.SingletonImageLoader
@@ -106,7 +108,7 @@ enum class SettingsSection(val route: String, val title: String, val subtitle: S
     Translation("translation", "Перевод и студии", "Язык по умолчанию и любимые студии"),
     Alerts("alerts", "Уведомления", "Выход новых серий из ваших списков"),
     Connection("connection", "Подключение и ссылки", "Адреса сайта, каналы видео и открытие ссылок"),
-    Data("data", "Память и данные", "История просмотра и кэш обложек"),
+    Data("data", "Память и данные", "Скачанные серии, история и кэш обложек"),
     ;
 
     companion object {
@@ -192,10 +194,13 @@ class SettingsVm(private val c: Container) : ViewModel() {
     fun setSubScale(v: Double) = viewModelScope.launch { c.prefs.setSubScale(v) }
     val seekStep = c.prefs.seekStep
     val holdBoost = c.prefs.holdBoost
+    val downloadQuality = c.prefs.downloadQuality
+    val downloads = c.downloads.state
     val alerts = c.prefs.alerts
     val alertsMyStudio = c.prefs.alertsMyStudio
     fun setSeekStep(v: Int) = viewModelScope.launch { c.prefs.setSeekStep(v) }
     fun setHoldBoost(on: Boolean) = viewModelScope.launch { c.prefs.setHoldBoost(on) }
+    fun setDownloadQuality(q: Int) = viewModelScope.launch { c.prefs.setDownloadQuality(q) }
     fun clearHistory() = viewModelScope.launch { c.prefs.clearHistory() }
     fun showWelcome() = viewModelScope.launch { c.prefs.beginOnboarding() }
 
@@ -229,6 +234,7 @@ fun SettingsScreen(onOpenSection: (SettingsSection) -> Unit) {
     val studios by vm.studios.collectAsStateWithLifecycle(emptyList())
     val alertsOn by vm.alerts.collectAsStateWithLifecycle(false)
     val alertsMyStudio by vm.alertsMyStudio.collectAsStateWithLifecycle(true)
+    val downloads by vm.downloads.collectAsStateWithLifecycle()
     val channel by vm.channel.collectAsStateWithLifecycle()
     var alertsPermitted by remember { mutableStateOf(EpisodeAlerts.permitted(ctx)) }
     var confirmLogout by remember { mutableStateOf(false) }
@@ -290,7 +296,7 @@ fun SettingsScreen(onOpenSection: (SettingsSection) -> Unit) {
                 RowDivider()
                 NavRow(
                     icon = Icons.Rounded.FolderOpen, tint = Nf.Amber, title = SettingsSection.Data.title,
-                    summary = dataSummary(vm.cacheBytes, titleCount),
+                    summary = dataSummary(vm.cacheBytes, titleCount, downloads.totalBytes),
                 ) { onOpenSection(SettingsSection.Data) }
             }
         }
@@ -330,11 +336,18 @@ fun SettingsScreen(onOpenSection: (SettingsSection) -> Unit) {
 
 /** Focused subpage for one category of settings, sharing [SettingsVm] with the hub. */
 @Composable
-fun SettingsSectionScreen(section: SettingsSection, owner: ViewModelStoreOwner, onBack: () -> Unit) {
+fun SettingsSectionScreen(
+    section: SettingsSection,
+    owner: ViewModelStoreOwner,
+    onDownloads: () -> Unit = {},
+    onBack: () -> Unit,
+) {
     val vm = nfViewModel(owner = owner) { SettingsVm(it) }
     val ctx = LocalContext.current
     val acc by vm.account.collectAsStateWithLifecycle()
     val quality by vm.quality.collectAsStateWithLifecycle(1080)
+    val downloadQuality by vm.downloadQuality.collectAsStateWithLifecycle(0)
+    val downloads by vm.downloads.collectAsStateWithLifecycle()
     val kind by vm.preferredKind.collectAsStateWithLifecycle("VoiceRu")
     val history by vm.history.collectAsStateWithLifecycle(emptyList())
     val subScale by vm.subScale.collectAsStateWithLifecycle(1.0)
@@ -475,6 +488,36 @@ fun SettingsSectionScreen(section: SettingsSection, owner: ViewModelStoreOwner, 
             }
 
             SettingsSection.Data -> {
+                item(key = "downloads") {
+                    Card(padding = 6.dp) {
+                        val n = downloads.items.size
+                        val dlText = when {
+                            downloads.runningCount > 0 -> "Скачивается: ${downloads.runningCount}" + if (n > 0) " · готово $n" else ""
+                            n > 0 -> "$n ${plural(n, "серия", "серии", "серий")} · ${formatBytes(downloads.totalBytes)}"
+                            else -> "Пусто · серии для офлайн-просмотра"
+                        }
+                        NavRow(
+                            icon = Icons.Rounded.Download, tint = Nf.Mint, title = "Скачанные серии",
+                            summary = dlText,
+                            summaryColor = if (downloads.runningCount > 0) Nf.Violet else Nf.TextMute,
+                            onClick = onDownloads,
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Card {
+                        SettingTitle(
+                            "Качество загрузки",
+                            if (downloadQuality == 0) "Сейчас берётся из настроек плеера (${quality}p)"
+                            else "Скачивать серии в ${downloadQuality}p (или ближайшем ниже)",
+                        )
+                        Segmented(
+                            options = listOf(0 to "Плеер", 1080 to "1080p", 720 to "720p", 480 to "480p"),
+                            selected = downloadQuality,
+                            onPick = { vm.setDownloadQuality(it) },
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
                 item(key = "data") {
                     Card(padding = 6.dp) {
                         ActionRow(
@@ -537,8 +580,9 @@ internal fun connectionSummary(activeMirror: String?, anyMirrorWorking: Boolean?
     else -> "Адреса, каналы и ссылки" to false
 }
 
-internal fun dataSummary(cacheBytes: Long?, titleCount: Int): String {
+internal fun dataSummary(cacheBytes: Long?, titleCount: Int, downloadBytes: Long = 0L): String {
     val parts = buildList {
+        if (downloadBytes > 0L) add("загрузки ${formatBytes(downloadBytes)}")
         cacheBytes?.let { b -> add("кэш " + if (b < 1L shl 20) "< 1 МБ" else "${b / (1L shl 20)} МБ") }
         if (titleCount > 0) add("$titleCount ${plural(titleCount, "тайтл", "тайтла", "тайтлов")}")
     }

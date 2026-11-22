@@ -259,6 +259,27 @@ class PlayerActivity : ComponentActivity() {
         loadJob = lifecycleScope.launch {
             runCatching {
                 val c = container
+                // Prefer a locally downloaded copy on normal playback: works without internet and saves mobile data.
+                val local = if (!keep && height == null) c.downloads.localFile(ep.id) else null
+                if (local != null) {
+                    val tr = local.meta.toTranslation()
+                    val sub = local.sub?.let { Triple(it.absolutePath, local.meta.studioName, local.meta.subLang) }
+                    stream = StreamUi(
+                        options = mapOf(tr.kind to listOf(tr)),
+                        current = tr,
+                        heights = listOf(local.meta.height),
+                        height = local.meta.height,
+                        externalSubs = sub != null,
+                        offline = true,
+                    )
+                    val start = resumeAt ?: c.prefs.history.first()
+                        .firstOrNull { it.animeId == session.anime.id && it.episode == ep.number }
+                        ?.takeIf { !it.finished && it.positionSec > 15 }?.positionSec ?: 0.0
+                    player.preferAudio(if (tr.kind == TranslationKind.VoiceRu) "ru,rus" else if (tr.kind == TranslationKind.VoiceEn) "en,eng" else "ja,jpn,jp")
+                    playingIndex = i; playingTr = tr
+                    player.load(local.video.absolutePath, start, sub, null)
+                    return@runCatching
+                }
                 val quality = c.prefs.quality.first()
                 val reuse = stream.current?.takeIf { keep && it.episodeId == ep.id }
                 val tr = reuse ?: run {

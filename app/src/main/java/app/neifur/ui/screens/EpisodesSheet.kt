@@ -25,11 +25,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ClosedCaption
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MovieFilter
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
@@ -53,6 +58,10 @@ import app.neifur.data.a365.Episode
 import app.neifur.data.a365.Studio
 import app.neifur.data.a365.Studios
 import app.neifur.data.a365.TranslationKind
+import app.neifur.downloads.DownloadStatus
+import app.neifur.downloads.DownloadedEpisode
+import app.neifur.downloads.DownloadsState
+import app.neifur.downloads.formatBytes
 import app.neifur.ui.EmptyState
 import app.neifur.ui.FavouriteDot
 import app.neifur.ui.FavouriteStar
@@ -111,6 +120,11 @@ fun EpisodesSheet(
     /** Opened by the first play of a title: the picker starts this episode in the studio chosen. */
     startFor: Int? = null, preferred: TranslationKind = TranslationKind.VoiceRu,
     onStart: (Studio, Int) -> Unit = { _, _ -> },
+    downloads: DownloadsState = DownloadsState(),
+    onDownload: (Episode) -> Unit = {},
+    onCancelDownload: (Long) -> Unit = {},
+    onRetryDownload: (Long) -> Unit = {},
+    onDeleteDownload: (Long) -> Unit = {},
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var page by remember { mutableStateOf(startPage) }
@@ -132,11 +146,13 @@ fun EpisodesSheet(
             ) { p ->
                 when (p) {
                     SheetPage.Episodes -> EpisodesPage(
-                        state, history, isMovie, accent,
+                        state, history, isMovie, accent, downloads,
                         onPlay = { i ->
                             if ((state as? PlayState.Ready)?.started == false) { choosingFor = i; page = SheetPage.Translations } else onPlay(i)
                         },
                         onRetry = onRetry, onRange = onRange,
+                        onDownload = onDownload, onCancelDownload = onCancelDownload,
+                        onRetryDownload = onRetryDownload, onDeleteDownload = onDeleteDownload,
                     ) { choosingFor = null; page = SheetPage.Translations }
                     SheetPage.Translations -> TranslationsPage(
                         state as? PlayState.Ready, accent, choosingFor, preferred,
@@ -155,8 +171,10 @@ fun EpisodesSheet(
 
 @Composable
 private fun EpisodesPage(
-    state: PlayState, history: List<WatchEntry>, isMovie: Boolean, accent: Color,
-    onPlay: (Int) -> Unit, onRetry: () -> Unit, onRange: (List<Episode>) -> Unit, onTranslations: () -> Unit,
+    state: PlayState, history: List<WatchEntry>, isMovie: Boolean, accent: Color, downloads: DownloadsState,
+    onPlay: (Int) -> Unit, onRetry: () -> Unit, onRange: (List<Episode>) -> Unit,
+    onDownload: (Episode) -> Unit, onCancelDownload: (Long) -> Unit, onRetryDownload: (Long) -> Unit, onDeleteDownload: (Long) -> Unit,
+    onTranslations: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(horizontal = 22.dp).padding(top = 4.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -171,15 +189,19 @@ private fun EpisodesPage(
             is PlayState.Error -> EmptyState("Не получилось загрузить серии", state.message, action = "Повторить", onAction = onRetry)
             is PlayState.Ready ->
                 if (state.episodes.isEmpty()) EmptyState("Серий пока нет", "На Anime 365 ещё не загрузили ни одной серии этого тайтла")
-                else Episodes(state, history, isMovie, accent, onPlay, onRange, onTranslations)
+                else Episodes(
+                    state, history, isMovie, accent, downloads,
+                    onPlay, onRange, onTranslations, onDownload, onCancelDownload, onRetryDownload, onDeleteDownload,
+                )
         }
     }
 }
 
 @Composable
 private fun Episodes(
-    state: PlayState.Ready, history: List<WatchEntry>, isMovie: Boolean, accent: Color,
+    state: PlayState.Ready, history: List<WatchEntry>, isMovie: Boolean, accent: Color, downloads: DownloadsState,
     onPlay: (Int) -> Unit, onRange: (List<Episode>) -> Unit, onTranslations: () -> Unit,
+    onDownload: (Episode) -> Unit, onCancelDownload: (Long) -> Unit, onRetryDownload: (Long) -> Unit, onDeleteDownload: (Long) -> Unit,
 ) {
     val eps = state.episodes
     // Long shows are split into ranges of 50; the sheet opens on the range you're watching.
@@ -222,6 +244,12 @@ private fun Episodes(
                 EpisodeRow(
                     ep, isMovie, history.firstOrNull { it.episode == ep.number }, i < state.watchedOnSite, accent, i == resume,
                     missingNote = if (missing) "Нет у ${studio!!.author}" + (state.fallbackFor(ep)?.let { " · включится ${it.author}" } ?: "") else null,
+                    downloaded = downloads.find(ep.id),
+                    downloadStatus = downloads.active[ep.id],
+                    onDownload = { onDownload(ep) },
+                    onCancelDownload = { onCancelDownload(ep.id) },
+                    onRetryDownload = { onRetryDownload(ep.id) },
+                    onDeleteDownload = { onDeleteDownload(ep.id) },
                 ) { onPlay(i) }
             }
         }
@@ -296,7 +324,9 @@ fun StudioSummary(state: PlayState.Ready, accent: Color, modifier: Modifier = Mo
 @Composable
 private fun EpisodeRow(
     ep: Episode, isMovie: Boolean, entry: WatchEntry?, siteWatched: Boolean, accent: Color, current: Boolean,
-    missingNote: String?, onClick: () -> Unit,
+    missingNote: String?, downloaded: DownloadedEpisode?, downloadStatus: DownloadStatus?,
+    onDownload: () -> Unit, onCancelDownload: () -> Unit, onRetryDownload: () -> Unit, onDeleteDownload: () -> Unit,
+    onClick: () -> Unit,
 ) {
     val watched = entry?.finished == true || (siteWatched && entry == null)
     val dim = missingNote != null
@@ -322,17 +352,24 @@ private fun EpisodeRow(
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(if (isMovie) "Фильм" else ep.label, style = Type.Title.copy(fontSize = 15.sp), color = if (dim) Nf.TextDim else Nf.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                val sub = when {
-                    missingNote != null -> missingNote
-                    entry != null && !entry.finished && entry.positionSec > 30 -> remaining(entry)
-                    watched -> "Просмотрено"
-                    else -> ep.episodeTitle?.takeIf { it.isNotBlank() } ?: uploaded(ep.firstUploadedDateTime)
+                val (sub, subColor) = when {
+                    downloadStatus is DownloadStatus.Running -> {
+                        val pct = (downloadStatus.progress * 100).toInt().coerceIn(0, 100)
+                        (if (downloadStatus.totalBytes > 0L) "Загрузка $pct%" else "Загрузка…") to Nf.Violet
+                    }
+                    downloadStatus is DownloadStatus.Queued -> "В очереди на загрузку" to Nf.Violet
+                    downloadStatus is DownloadStatus.Failed -> "Ошибка загрузки" to Nf.Red
+                    downloaded != null -> ("Офлайн · ${formatBytes(downloaded.sizeBytes)}") to Nf.Mint
+                    missingNote != null -> missingNote to Nf.Amber.copy(alpha = 0.85f)
+                    entry != null && !entry.finished && entry.positionSec > 30 -> remaining(entry) to (if (current && !watched) accent else Nf.TextMute)
+                    watched -> "Просмотрено" to Nf.TextMute
+                    else -> (ep.episodeTitle?.takeIf { it.isNotBlank() } ?: uploaded(ep.firstUploadedDateTime)) to (if (current && !watched) accent else Nf.TextMute)
                 }
-                if (sub != null) Text(
-                    sub, style = Type.Caption, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    color = when { dim -> Nf.Amber.copy(alpha = 0.85f); current && !watched -> accent; else -> Nf.TextMute },
-                )
+                if (sub != null) Text(sub, style = Type.Caption, maxLines = 1, overflow = TextOverflow.Ellipsis, color = subColor)
             }
+            Spacer(Modifier.width(8.dp))
+            EpisodeDownloadButton(downloaded, downloadStatus, onDownload, onCancelDownload, onRetryDownload, onDeleteDownload)
+            Spacer(Modifier.width(8.dp))
             Box(
                 Modifier.size(34.dp).clip(CircleShape)
                     .background(if (dim) Color.Transparent else accent.copy(alpha = if (current) 0.9f else 0.16f))
@@ -345,6 +382,48 @@ private fun EpisodeRow(
         if (entry != null && !watched && entry.progress > 0.01f) Box(Modifier.padding(horizontal = 14.dp).fillMaxWidth().height(3.dp).clip(CircleShape).background(Nf.Line)) {
             Box(Modifier.fillMaxWidth(entry.progress).fillMaxHeight().background(accent))
         }
+    }
+}
+
+@Composable
+private fun EpisodeDownloadButton(
+    downloaded: DownloadedEpisode?,
+    status: DownloadStatus?,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit,
+    onRetry: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    when {
+        status is DownloadStatus.Running -> Box(
+            Modifier.size(34.dp).clip(CircleShape).background(Nf.Violet.copy(alpha = 0.14f)).pressable(0.88f, onClick = onCancel),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (status.totalBytes > 0L) CircularProgressIndicator(
+                progress = { status.progress.coerceIn(0.05f, 1f) },
+                modifier = Modifier.size(32.dp), color = Nf.Violet, trackColor = Nf.Line, strokeWidth = 2.5.dp,
+            ) else CircularProgressIndicator(modifier = Modifier.size(28.dp), color = Nf.Violet, strokeWidth = 2.5.dp)
+            Icon(Icons.Rounded.Close, "Отменить загрузку", tint = Nf.Violet, modifier = Modifier.size(14.dp))
+        }
+        status is DownloadStatus.Queued -> Box(
+            Modifier.size(34.dp).clip(CircleShape).background(Nf.Violet.copy(alpha = 0.14f)).pressable(0.88f, onClick = onCancel),
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(28.dp), color = Nf.Violet.copy(alpha = 0.7f), strokeWidth = 2.dp)
+            Icon(Icons.Rounded.Close, "Отменить загрузку", tint = Nf.Violet, modifier = Modifier.size(14.dp))
+        }
+        status is DownloadStatus.Failed -> Box(
+            Modifier.size(34.dp).clip(CircleShape).background(Nf.Red.copy(alpha = 0.14f)).pressable(0.88f, onClick = onRetry),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Rounded.Refresh, "Повторить загрузку", tint = Nf.Red, modifier = Modifier.size(18.dp)) }
+        downloaded != null -> Box(
+            Modifier.size(34.dp).clip(CircleShape).background(Nf.Mint.copy(alpha = 0.14f)).pressable(0.88f, onClick = onDelete),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Rounded.DownloadDone, "Удалить загрузку", tint = Nf.Mint, modifier = Modifier.size(18.dp)) }
+        else -> Box(
+            Modifier.size(34.dp).clip(CircleShape).background(Nf.SurfaceHi).pressable(0.88f, onClick = onDownload),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Rounded.Download, "Скачать серию", tint = Nf.TextDim, modifier = Modifier.size(18.dp)) }
     }
 }
 
