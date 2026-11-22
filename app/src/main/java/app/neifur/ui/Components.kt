@@ -5,6 +5,7 @@ package app.neifur.ui
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -78,6 +79,12 @@ val LocalNavAnimScope = compositionLocalOf<AnimatedVisibilityScope?> { null }
 
 val PosterShape = RoundedCornerShape(18.dp)
 
+/**
+ * Responsive start under the finger with a long, velvety settle at the tail. Unlike a stiff spring,
+ * it doesn't eat 75% of the travel in the first few frames of a quick HyperOS back swipe.
+ */
+val FluidEasing = CubicBezierEasing(0.22f, 0.68f, 0.18f, 1.0f)
+
 /** Shared-element hook for posters; a no-op outside a navigation transition. */
 @Composable
 fun Modifier.sharedPoster(key: String, shape: Shape = PosterShape): Modifier {
@@ -86,7 +93,7 @@ fun Modifier.sharedPoster(key: String, shape: Shape = PosterShape): Modifier {
     return with(shared) {
         this@sharedPoster.sharedElement(
             rememberSharedContentState(key), anim,
-            boundsTransform = { _, _ -> spring(dampingRatio = 0.86f, stiffness = 320f) },
+            boundsTransform = { _, _ -> tween(420, easing = FluidEasing) },
             clipInOverlayDuringTransition = OverlayClip(shape),
         )
     }

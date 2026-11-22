@@ -513,8 +513,9 @@ private fun Modifier.reveal(order: Int): Modifier {
     return with(scope) {
         this@reveal.animateEnterExit(
             enter = fadeIn(tween(340, delayMs, LinearOutSlowInEasing)) +
-                slideInVertically(tween(480, delayMs, FastOutSlowInEasing)) { rise },
-            exit = fadeOut(tween(120)),
+                slideInVertically(tween(480, delayMs, FluidEasing)) { rise },
+            exit = fadeOut(tween(280, easing = FluidEasing)) +
+                slideOutVertically(tween(320, easing = FluidEasing)) { rise / 2 },
         )
     }
 }
@@ -542,8 +543,26 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
 
     LaunchedEffect(vm.notice) { if (vm.notice != null) { delay(3800); vm.notice = null } }
 
+    // Rounds the card corners in sync with the predictive-back scaleOut; stays unclipped at rest.
+    val navAnim = LocalNavAnimScope.current
+    val exitCornerPx = with(LocalDensity.current) { 28.dp.toPx() }
+    val exitCorner = navAnim?.transition?.animateFloat(
+        transitionSpec = { tween(400, easing = FluidEasing) },
+        label = "detail-corner",
+    ) { state -> if (state == EnterExitState.PostExit) exitCornerPx else 0f }
+
     CompositionLocalProvider(LocalAccent provides accent) {
-        Box(Modifier.fillMaxSize().background(Nf.Ink)) {
+        Box(
+            Modifier.fillMaxSize()
+                .graphicsLayer {
+                    val r = exitCorner?.value ?: 0f
+                    if (r > 0.5f) {
+                        shape = RoundedCornerShape(r)
+                        clip = true
+                    }
+                }
+                .background(Nf.Ink)
+        ) {
             LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 56.dp), modifier = Modifier.fillMaxSize()) {
                 item(key = "hero") { Hero(stub, anime, origin, accent, listState) }
 

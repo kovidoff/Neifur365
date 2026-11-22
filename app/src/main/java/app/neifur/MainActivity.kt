@@ -11,8 +11,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.*
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.FastOutLinearInEasing
-import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
@@ -165,28 +163,33 @@ private fun AppRoot() {
             Box(Modifier.fillMaxSize().background(Nf.Ink)) {
                 NavHost(
                     nav, startDestination = "home",
-                    // Plain cross-fades of equal length: the shared poster carries the motion, and scaling whole
-                    // screens under it fought the poster and read as a stutter.
-                    // Between tabs the screens glide in the direction of the tab you picked, like the pill below.
+                    // Tabs glide sideways; push screens (Settings/Downloads/Schedule) slide with parallax;
+                    // title detail pages keep the screen beneath still so the shared poster lands pixel-exact.
                     enterTransition = {
                         val dir = tabDirection(initialState.destination.route, targetState.destination.route)
-                        if (dir != 0) slideInHorizontally(tween(340, easing = FastOutSlowInEasing)) { dir * it / 7 } + fadeIn(tween(240, 60))
-                        else fadeIn(tween(300, easing = LinearOutSlowInEasing))
+                        if (dir != 0) slideInHorizontally(tween(360, easing = FluidEasing)) { dir * it / 7 } + fadeIn(tween(260, 50))
+                        else fadeIn(tween(340, easing = FluidEasing))
                     },
                     exitTransition = {
                         val dir = tabDirection(initialState.destination.route, targetState.destination.route)
-                        if (dir != 0) slideOutHorizontally(tween(340, easing = FastOutSlowInEasing)) { -dir * it / 7 } + fadeOut(tween(160))
-                        else fadeOut(tween(300, easing = FastOutLinearInEasing))
+                        when {
+                            dir != 0 -> slideOutHorizontally(tween(360, easing = FluidEasing)) { -dir * it / 7 } + fadeOut(tween(180))
+                            isPushScreen(targetState.destination.route) -> slideOutHorizontally(tween(380, easing = FluidEasing)) { -it / 7 } + fadeOut(tween(300, easing = FluidEasing))
+                            else -> fadeOut(tween(320, easing = FluidEasing))
+                        }
                     },
                     popEnterTransition = {
                         val dir = tabDirection(initialState.destination.route, targetState.destination.route)
-                        if (dir != 0) slideInHorizontally(tween(340, easing = FastOutSlowInEasing)) { dir * it / 7 } + fadeIn(tween(240, 60))
-                        else fadeIn(tween(200, easing = LinearOutSlowInEasing))
+                        when {
+                            dir != 0 -> slideInHorizontally(tween(360, easing = FluidEasing)) { dir * it / 7 } + fadeIn(tween(260, 50))
+                            isPushScreen(initialState.destination.route) -> slideInHorizontally(tween(400, easing = FluidEasing)) { -it / 7 } + fadeIn(tween(340, easing = FluidEasing))
+                            else -> fadeIn(tween(380, easing = FluidEasing))
+                        }
                     },
                     popExitTransition = {
                         val dir = tabDirection(initialState.destination.route, targetState.destination.route)
-                        if (dir != 0) slideOutHorizontally(tween(340, easing = FastOutSlowInEasing)) { -dir * it / 7 } + fadeOut(tween(160))
-                        else fadeOut(tween(200, easing = FastOutLinearInEasing))
+                        if (dir != 0) slideOutHorizontally(tween(360, easing = FluidEasing)) { -dir * it / 7 } + fadeOut(tween(180))
+                        else fadeOut(tween(360, easing = FluidEasing))
                     },
                 ) {
                     composable("home") {
@@ -214,10 +217,10 @@ private fun AppRoot() {
                     composable(
                         "settings/{section}",
                         arguments = listOf(navArgument("section") { type = NavType.StringType }),
-                        enterTransition = { slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { it / 5 } + fadeIn(tween(240)) },
-                        exitTransition = { slideOutHorizontally(tween(260, easing = FastOutLinearInEasing)) { -it / 8 } + fadeOut(tween(180)) },
-                        popEnterTransition = { slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 8 } + fadeIn(tween(200)) },
-                        popExitTransition = { slideOutHorizontally(tween(280, easing = FastOutLinearInEasing)) { it / 5 } + fadeOut(tween(200)) },
+                        enterTransition = { pushEnter() },
+                        exitTransition = { pushExit(targetState.destination.route) },
+                        popEnterTransition = { pushPopEnter(initialState.destination.route) },
+                        popExitTransition = { pushPopExit() },
                     ) { e ->
                         val section = SettingsSection.of(e.arguments?.getString("section"))
                         val owner = remember(e) { runCatching { nav.getBackStackEntry("settings") }.getOrElse { e } }
@@ -231,19 +234,19 @@ private fun AppRoot() {
                     }
                     composable(
                         "downloads",
-                        enterTransition = { slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { it / 5 } + fadeIn(tween(240)) },
-                        exitTransition = { slideOutHorizontally(tween(260, easing = FastOutLinearInEasing)) { -it / 8 } + fadeOut(tween(180)) },
-                        popEnterTransition = { slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 8 } + fadeIn(tween(200)) },
-                        popExitTransition = { slideOutHorizontally(tween(280, easing = FastOutLinearInEasing)) { it / 5 } + fadeOut(tween(200)) },
+                        enterTransition = { pushEnter() },
+                        exitTransition = { pushExit(targetState.destination.route) },
+                        popEnterTransition = { pushPopEnter(initialState.destination.route) },
+                        popExitTransition = { pushPopExit() },
                     ) {
                         DownloadsScreen(onBack = { nav.popBackStack() })
                     }
                     composable(
                         "schedule",
-                        enterTransition = { slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { it / 5 } + fadeIn(tween(240)) },
-                        exitTransition = { slideOutHorizontally(tween(260, easing = FastOutLinearInEasing)) { -it / 8 } + fadeOut(tween(180)) },
-                        popEnterTransition = { slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 8 } + fadeIn(tween(200)) },
-                        popExitTransition = { slideOutHorizontally(tween(280, easing = FastOutLinearInEasing)) { it / 5 } + fadeOut(tween(200)) },
+                        enterTransition = { pushEnter() },
+                        exitTransition = { pushExit(targetState.destination.route) },
+                        popEnterTransition = { pushPopEnter(initialState.destination.route) },
+                        popExitTransition = { pushPopExit() },
                     ) {
                         ScheduleScreen(open, onBack = { nav.popBackStack() })
                     }
@@ -253,6 +256,13 @@ private fun AppRoot() {
                             navArgument("id") { type = NavType.StringType },
                             navArgument("origin") { type = NavType.StringType; defaultValue = "" },
                         ),
+                        enterTransition = { fadeIn(tween(340, easing = FluidEasing)) },
+                        exitTransition = { fadeOut(tween(320, easing = FluidEasing)) },
+                        popEnterTransition = { fadeIn(tween(380, easing = FluidEasing)) },
+                        popExitTransition = {
+                            scaleOut(tween(420, easing = FluidEasing), targetScale = 0.91f) +
+                                fadeOut(tween(360, easing = FluidEasing))
+                        },
                     ) { e ->
                         CompositionLocalProvider(LocalNavAnimScope provides this) {
                             DetailScreen(
@@ -305,6 +315,23 @@ private fun tabDirection(from: String?, to: String?): Int {
     val b = tabIndex(to)
     return if (a < 0 || b < 0 || a == b) 0 else if (b > a) 1 else -1
 }
+
+private fun isPushScreen(route: String?): Boolean =
+    route == "downloads" || route == "schedule" || route?.startsWith("settings/") == true
+
+private fun pushEnter(): EnterTransition =
+    slideInHorizontally(tween(380, easing = FluidEasing)) { it / 3 } + fadeIn(tween(280, easing = FluidEasing))
+
+private fun pushExit(targetRoute: String?): ExitTransition =
+    if (isPushScreen(targetRoute)) slideOutHorizontally(tween(380, easing = FluidEasing)) { -it / 7 } + fadeOut(tween(300, easing = FluidEasing))
+    else fadeOut(tween(320, easing = FluidEasing))
+
+private fun pushPopEnter(fromRoute: String?): EnterTransition =
+    if (isPushScreen(fromRoute)) slideInHorizontally(tween(400, easing = FluidEasing)) { -it / 7 } + fadeIn(tween(340, easing = FluidEasing))
+    else fadeIn(tween(380, easing = FluidEasing))
+
+private fun pushPopExit(): ExitTransition =
+    slideOutHorizontally(tween(400, easing = FluidEasing)) { it / 2 } + fadeOut(tween(300, 50, FluidEasing))
 
 /**
  * Fixed-width pill. The selected slot grows to fit its label (weights animate), and a single highlight slides
