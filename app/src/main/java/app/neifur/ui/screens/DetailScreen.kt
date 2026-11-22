@@ -567,48 +567,63 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                 .background(Nf.Ink)
         ) {
             if (layout.isExpanded) {
-                // Wide tablet layout: ambient backdrop behind a pinned left action rail + scrollable right details.
-                val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-                DetailBackdrop(stub, anime, 230.dp + top, listState)
-                Row(
-                    Modifier.fillMaxSize().statusBarsPadding().padding(top = 60.dp, start = 28.dp, end = 28.dp),
-                    horizontalArrangement = Arrangement.spacedBy(24.dp),
+                // Wide tablet layout: full-width cinematic Hero, balanced 2-column Bento body, full-width media carousels.
+                val padH = 36.dp
+                LazyColumn(
+                    state = listState,
+                    contentPadding = PaddingValues(bottom = 56.dp),
+                    modifier = Modifier.fillMaxSize(),
                 ) {
-                    Column(
-                        Modifier.width(340.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(top = 8.dp, bottom = 40.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        PosterImage(
-                            stub?.poster,
-                            Modifier.sharedPoster("poster/$origin/${stub?.id}", HeroShape).size(172.dp, 246.dp)
-                                .shadow(28.dp, HeroShape, ambientColor = accent, spotColor = accent).clip(HeroShape)
-                                .border(1.dp, Color(0x1FFFFFFF), HeroShape),
-                        )
-                        Spacer(Modifier.height(20.dp))
-                        DetailActionsBlock(
-                            play = play, history = history, anime = anime, isMovie = isMovie, accent = accent,
-                            signedIn = signedIn, favorite = favorite, vm = vm, account = account,
+                    item(key = "hero") {
+                        TabletHero(
+                            stub = stub, anime = anime, origin = origin, accent = accent,
+                            listState = listState, pending = vm.extrasPending,
+                            play = play, history = history, isMovie = isMovie, signedIn = signedIn,
+                            favorite = favorite, vm = vm, padH = padH,
                             onPlay = { idx ->
                                 if ((play as? PlayState.Ready)?.started == false) { startFor = idx; sheet = SheetPage.Translations } else vm.play(ctx, idx)
                             },
                             onEpisodes = { sheet = SheetPage.Episodes },
                             onList = { listSheet = true },
-                            onStudio = { startFor = null; sheet = SheetPage.Translations },
-                            modifier = Modifier.fillMaxWidth().reveal(1),
                         )
                     }
-                    LazyColumn(
-                        state = listState,
-                        contentPadding = PaddingValues(top = 6.dp, bottom = 56.dp),
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                    ) {
-                        item(key = "title") {
-                            DetailTitleBlock(
-                                stub = stub, anime = anime, titleSize = 26.sp,
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).reveal(0),
-                            )
+
+                    if (vm.error != null && anime == null) item(key = "error") {
+                        EmptyState("Не получилось загрузить тайтл", vm.error, modifier = Modifier.padding(top = 24.dp), action = "Повторить", onAction = vm::load)
+                    }
+
+                    if (anime == null && vm.error == null) item(key = "skeleton") {
+                        SectionsSkeleton(Modifier.reveal(2), padH = padH)
+                    }
+
+                    if (anime != null) {
+                        item(key = "bento") {
+                            val desc = cleanDescription(anime.description)
+                            val genres = anime.genres.filter { it.kind != "theme" || anime.genres.size < 6 }
+                            val hasScores = anime.scoresStats.sumOf { it.count } > 20
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = padH).padding(top = 22.dp),
+                                horizontalArrangement = Arrangement.spacedBy(28.dp),
+                                verticalAlignment = Alignment.Top,
+                            ) {
+                                Column(Modifier.weight(1.18f)) {
+                                    StudioCard(play, vm.startedHint, vm.record?.status, accent) { startFor = null; sheet = SheetPage.Translations }
+                                    if ((account as? AccountState.SignedIn)?.profile?.subscribed == false) NoSubscriptionHint()
+                                    if (desc.isNotBlank()) Description(desc, Modifier.reveal(2), padH = 0.dp, topPad = 18.dp)
+                                    if (genres.isNotEmpty()) FlowRow(
+                                        Modifier.reveal(3).padding(top = 18.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) { genres.forEach { Pill(it.label) } }
+                                    if (hasScores) Scores(anime, accent, Modifier, padH = 0.dp, topPad = 26.dp)
+                                }
+                                Column(Modifier.weight(0.82f)) {
+                                    Facts(anime, vm.cast, Modifier.reveal(2), padH = 0.dp, topPad = 0.dp)
+                                }
+                            }
                         }
-                        detailInfoItems(vm, anime, id, accent, open, ctx)
+
+                        detailMediaItems(vm, anime, id, accent, open, ctx, padH = padH, shotHeight = 148.dp, relatedWidth = 136.dp)
                     }
                 }
             } else {
@@ -753,54 +768,115 @@ private fun LazyListScope.detailInfoItems(
 
         if (anime.scoresStats.sumOf { it.count } > 20) item(key = "scores") { Scores(anime, accent, Modifier.animateItem()) }
 
-        val chars = vm.cast?.characters.orEmpty()
-        if (chars.isNotEmpty()) item(key = "chars") { Characters(chars, Modifier.animateItem()) }
+        detailMediaItems(vm, anime, id, accent, open, ctx)
+    }
+}
 
-        val videos = anime.videos.filter { it.url != null && it.kind != "episode_preview" }
-            .sortedBy { listOf("pv", "op", "ed", "op_ed_clip", "character_trailer").indexOf(it.kind).let { i -> if (i < 0) 9 else i } }
-        if (videos.isNotEmpty()) item(key = "videos") { Videos(videos, Modifier.animateItem()) { url -> openUrl(ctx, url) } }
+private fun LazyListScope.detailMediaItems(
+    vm: DetailVm, anime: Anime, id: String, accent: Color, open: OpenAnime, ctx: Context,
+    padH: androidx.compose.ui.unit.Dp = 20.dp,
+    shotHeight: androidx.compose.ui.unit.Dp = 124.dp,
+    relatedWidth: androidx.compose.ui.unit.Dp = 118.dp,
+) {
+    val chars = vm.cast?.characters.orEmpty()
+    if (chars.isNotEmpty()) item(key = "chars") { Characters(chars, Modifier.animateItem(), padH = padH) }
 
-        if (anime.screenshots.isNotEmpty()) item(key = "shots") {
-            Column(Modifier.animateItem()) {
-                SectionTitle("Кадры", Modifier.padding(top = 30.dp, bottom = 14.dp))
-                LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(anime.screenshots.take(14)) { s ->
-                        PosterImage(s.x332Url ?: s.originalUrl, Modifier.height(124.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(16.dp)))
+    val videos = anime.videos.filter { it.url != null && it.kind != "episode_preview" }
+        .sortedBy { listOf("pv", "op", "ed", "op_ed_clip", "character_trailer").indexOf(it.kind).let { i -> if (i < 0) 9 else i } }
+    if (videos.isNotEmpty()) item(key = "videos") { Videos(videos, Modifier.animateItem(), padH = padH) { url -> openUrl(ctx, url) } }
+
+    if (anime.screenshots.isNotEmpty()) item(key = "shots") {
+        Column(Modifier.animateItem()) {
+            SectionTitle("Кадры", Modifier.padding(top = 30.dp, bottom = 14.dp), horizontalPadding = padH)
+            LazyRow(contentPadding = PaddingValues(horizontal = padH), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(anime.screenshots.take(14)) { s ->
+                    PosterImage(s.x332Url ?: s.originalUrl, Modifier.height(shotHeight).aspectRatio(16f / 9f).clip(RoundedCornerShape(16.dp)))
+                }
+            }
+        }
+    }
+
+    // Related seasons come from Shikimori; opening one finds its Anime 365 page by the shared MyAnimeList id.
+    val related = anime.related.filter { it.anime != null && it.anime.kind != "music" }
+        .sortedWith(compareBy({ relationOrder(it.relationKind) }, { it.anime?.airedOn?.year ?: 9999 }))
+    if (related.isNotEmpty()) item(key = "related") {
+        Column(Modifier.animateItem()) {
+            SectionTitle("Связанное", Modifier.padding(top = 30.dp, bottom = 14.dp), horizontalPadding = padH)
+            LazyRow(contentPadding = PaddingValues(horizontal = padH), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                items(related, key = { it.anime!!.id }) { r ->
+                    val ra = r.anime!!
+                    val s = AnimeStub("mal:${ra.id}", ra.russian?.takeIf { it.isNotBlank() } ?: ra.name, ra.poster?.card, ra.kind, ra.airedOn?.year, ra.score)
+                    Column(Modifier.width(relatedWidth)) {
+                        PosterCard(s, "rel-$id", { open(s, "rel-$id") }, width = relatedWidth)
+                        r.relationText?.let { Text(it, style = Type.Caption, color = accent, maxLines = 1, modifier = Modifier.padding(top = 3.dp)) }
                     }
                 }
             }
         }
+    }
 
-        // Related seasons come from Shikimori; opening one finds its Anime 365 page by the shared MyAnimeList id.
-        val related = anime.related.filter { it.anime != null && it.anime.kind != "music" }
-            .sortedWith(compareBy({ relationOrder(it.relationKind) }, { it.anime?.airedOn?.year ?: 9999 }))
-        if (related.isNotEmpty()) item(key = "related") {
-            Column(Modifier.animateItem()) {
-                SectionTitle("Связанное", Modifier.padding(top = 30.dp, bottom = 14.dp))
-                LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(related, key = { it.anime!!.id }) { r ->
-                        val ra = r.anime!!
-                        val s = AnimeStub("mal:${ra.id}", ra.russian?.takeIf { it.isNotBlank() } ?: ra.name, ra.poster?.card, ra.kind, ra.airedOn?.year, ra.score)
-                        Column(Modifier.width(118.dp)) {
-                            PosterCard(s, "rel-$id", { open(s, "rel-$id") }, width = 118.dp)
-                            r.relationText?.let { Text(it, style = Type.Caption, color = accent, maxLines = 1, modifier = Modifier.padding(top = 3.dp)) }
-                        }
-                    }
-                }
-            }
-        }
+    item(key = "credit") {
+        Text(
+            "Каталог и видео — Anime 365" + if (vm.series?.myAnimeListId?.let { it > 0 } == true) " · Описание и персонажи — Shikimori" else "",
+            style = Type.Caption, color = Nf.TextMute, modifier = Modifier.animateItem().padding(horizontal = padH).padding(top = 30.dp),
+        )
+    }
+}
 
-        item(key = "credit") {
-            Text(
-                "Каталог и видео — Anime 365" + if (vm.series?.myAnimeListId?.let { it > 0 } == true) " · Описание и персонажи — Shikimori" else "",
-                style = Type.Caption, color = Nf.TextMute, modifier = Modifier.animateItem().padding(horizontal = 20.dp).padding(top = 30.dp),
+@Composable
+private fun TabletHero(
+    stub: AnimeStub?, anime: Anime?, origin: String, accent: Color,
+    listState: LazyListState, pending: Boolean,
+    play: PlayState, history: List<WatchEntry>, isMovie: Boolean, signedIn: Boolean,
+    favorite: Boolean, vm: DetailVm, padH: androidx.compose.ui.unit.Dp,
+    onPlay: (Int) -> Unit, onEpisodes: () -> Unit, onList: () -> Unit,
+) {
+    val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val backdropH = 290.dp + top
+    Box(Modifier.fillMaxWidth()) {
+        DetailBackdrop(stub, anime, backdropH, listState, strongerScrim = true)
+        Row(
+            Modifier.fillMaxWidth().padding(top = backdropH - 156.dp).padding(horizontal = padH),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            PosterImage(
+                stub?.poster,
+                Modifier.sharedPoster("poster/$origin/${stub?.id}", HeroShape).size(164.dp, 234.dp)
+                    .shadow(28.dp, HeroShape, ambientColor = accent, spotColor = accent).clip(HeroShape)
+                    .border(1.dp, Color(0x26FFFFFF), HeroShape),
             )
+            Spacer(Modifier.width(26.dp))
+            Column(Modifier.weight(1f)) {
+                DetailTitleBlock(stub, anime, 28.sp, Modifier.fillMaxWidth().reveal(0))
+                MetaChips(anime, pending, Modifier.reveal(1), padH = 0.dp, topPad = 14.dp)
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    Modifier.widthIn(max = 460.dp).fillMaxWidth().reveal(1),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    WatchButton(play, history, anime, isMovie, accent, signedIn, Modifier.weight(1f), { vm.askSignIn = true }, onPlay)
+                    if (!isMovie && (play as? PlayState.Ready)?.episodes?.isEmpty() != true) {
+                        Spacer(Modifier.width(10.dp))
+                        SquareAction(Icons.AutoMirrored.Rounded.FormatListBulleted, "Серии", onClick = onEpisodes)
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    if (signedIn) {
+                        val inList = vm.record?.status != null
+                        SquareAction(if (inList) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Список", tint = if (inList) statusColor(vm.record?.status) else Nf.Text, onClick = onList)
+                    } else {
+                        SquareAction(if (favorite) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Избранное", tint = if (favorite) accent else Nf.Text, onClick = vm::toggleFavorite)
+                    }
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun DetailBackdrop(stub: AnimeStub?, anime: Anime?, height: androidx.compose.ui.unit.Dp, listState: LazyListState) {
+private fun DetailBackdrop(
+    stub: AnimeStub?, anime: Anime?, height: androidx.compose.ui.unit.Dp, listState: LazyListState,
+    strongerScrim: Boolean = false,
+) {
     val ctx = LocalContext.current
     val shot = anime?.screenshots?.firstOrNull()?.originalUrl
     Box(
@@ -822,7 +898,13 @@ private fun DetailBackdrop(stub: AnimeStub?, anime: Anime?, height: androidx.com
         }
         Box(
             Modifier.fillMaxSize().background(
-                Brush.verticalGradient(
+                if (strongerScrim) Brush.verticalGradient(
+                    0f to Nf.Ink.copy(alpha = 0.58f),
+                    0.28f to Nf.Ink.copy(alpha = 0.28f),
+                    0.56f to Nf.Ink.copy(alpha = 0.72f),
+                    0.82f to Nf.Ink.copy(alpha = 0.94f),
+                    1f to Nf.Ink,
+                ) else Brush.verticalGradient(
                     0f to Nf.Ink.copy(alpha = 0.55f), 0.3f to Nf.Ink.copy(alpha = 0.1f),
                     0.62f to Nf.Ink.copy(alpha = 0.55f), 1f to Nf.Ink,
                 )
@@ -889,7 +971,11 @@ private fun Hero(stub: AnimeStub?, anime: Anime?, origin: String, accent: Color,
 }
 
 @Composable
-private fun MetaChips(anime: Anime?, pending: Boolean, modifier: Modifier) {
+private fun MetaChips(
+    anime: Anime?, pending: Boolean, modifier: Modifier,
+    padH: androidx.compose.ui.unit.Dp = 20.dp,
+    topPad: androidx.compose.ui.unit.Dp = 18.dp,
+) {
     // Same height as the chip row, so the buttons below don't jump when the data arrives.
     if (anime == null) { Spacer(modifier.height(52.dp)); return }
     val chips = buildList {
@@ -901,9 +987,9 @@ private fun MetaChips(anime: Anime?, pending: Boolean, modifier: Modifier) {
         durationLabel(anime)?.let { add(Triple(Icons.Rounded.Timer, it, null)) }
         ageLabel(anime.rating)?.let { add(Triple(null, it, null)) }
     }
-    if (chips.isEmpty()) { Spacer(modifier.height(if (pending) 52.dp else 18.dp)); return }
+    if (chips.isEmpty()) { Spacer(modifier.height(if (pending) 52.dp else topPad)); return }
     LazyRow(
-        modifier.padding(top = 18.dp), contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier.padding(top = topPad), contentPadding = PaddingValues(horizontal = padH), horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         items(chips) { (icon, text, tint) ->
             Row(
@@ -1103,8 +1189,8 @@ private fun StudioCard(state: PlayState, startedHint: Boolean?, status: ListStat
 // --- sections --------------------------------------------------------------------------------------
 
 @Composable
-private fun SectionsSkeleton(modifier: Modifier) {
-    Column(modifier.padding(horizontal = 20.dp).padding(top = 26.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+private fun SectionsSkeleton(modifier: Modifier, padH: androidx.compose.ui.unit.Dp = 20.dp) {
+    Column(modifier.padding(horizontal = padH).padding(top = 26.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         repeat(4) { i -> Box(Modifier.fillMaxWidth(if (i == 3) 0.6f else 1f).height(12.dp).clip(CircleShape).shimmer()) }
         Spacer(Modifier.height(10.dp))
         Box(Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(22.dp)).shimmer())
@@ -1112,11 +1198,15 @@ private fun SectionsSkeleton(modifier: Modifier) {
 }
 
 @Composable
-private fun Description(text: String, modifier: Modifier) {
+private fun Description(
+    text: String, modifier: Modifier,
+    padH: androidx.compose.ui.unit.Dp = 20.dp,
+    topPad: androidx.compose.ui.unit.Dp = 22.dp,
+) {
     var expanded by remember { mutableStateOf(false) }
     val long = text.length > 240
     Column(
-        modifier.padding(horizontal = 20.dp).padding(top = 22.dp).animateContentSize(spring(dampingRatio = 0.9f, stiffness = 300f))
+        modifier.padding(horizontal = padH).padding(top = topPad).animateContentSize(spring(dampingRatio = 0.9f, stiffness = 300f))
             .clickable(remember { MutableInteractionSource() }, null, enabled = long) { expanded = !expanded }
     ) {
         Box {
@@ -1133,7 +1223,11 @@ private fun Description(text: String, modifier: Modifier) {
 }
 
 @Composable
-private fun Facts(anime: Anime, cast: AnimeCast?, modifier: Modifier) {
+private fun Facts(
+    anime: Anime, cast: AnimeCast?, modifier: Modifier,
+    padH: androidx.compose.ui.unit.Dp = 20.dp,
+    topPad: androidx.compose.ui.unit.Dp = 30.dp,
+) {
     fun staff(vararg roles: String) = cast?.staff.orEmpty()
         .filter { p -> p.rolesRu.any { it in roles } }.mapNotNull { it.person?.label }.distinct().take(2).joinToString(", ").ifBlank { null }
     val aired = anime.airedOn?.format()
@@ -1161,7 +1255,7 @@ private fun Facts(anime: Anime, cast: AnimeCast?, modifier: Modifier) {
         "Музыка" to staff("Композитор", "Музыка"),
         "Возраст" to ageLabel(anime.rating),
     ).filter { it.second != null }
-    Column(modifier.padding(horizontal = 20.dp).padding(top = 30.dp)) {
+    Column(modifier.padding(horizontal = padH).padding(top = topPad)) {
         Text("О тайтле", style = Type.Section, color = Nf.Text, modifier = Modifier.padding(bottom = 14.dp))
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Nf.Surface).padding(vertical = 6.dp)) {
             rows.forEachIndexed { i, (k, v) ->
@@ -1186,12 +1280,16 @@ private fun compact(n: Int): String {
 }
 
 @Composable
-private fun Scores(anime: Anime, accent: Color, modifier: Modifier) {
+private fun Scores(
+    anime: Anime, accent: Color, modifier: Modifier,
+    padH: androidx.compose.ui.unit.Dp = 20.dp,
+    topPad: androidx.compose.ui.unit.Dp = 30.dp,
+) {
     val stats = anime.scoresStats.sortedByDescending { it.score }
     val total = stats.sumOf { it.count }
     val max = stats.maxOf { it.count }.coerceAtLeast(1)
     val st = anime.statusesStats.associate { it.status to it.count }
-    Column(modifier.padding(horizontal = 20.dp).padding(top = 30.dp)) {
+    Column(modifier.padding(horizontal = padH).padding(top = topPad)) {
         Text("Оценки", style = Type.Section, color = Nf.Text, modifier = Modifier.padding(bottom = 14.dp))
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Nf.Surface).padding(18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1238,10 +1336,10 @@ private fun Scores(anime: Anime, accent: Color, modifier: Modifier) {
 }
 
 @Composable
-private fun Characters(chars: List<CharacterRole>, modifier: Modifier) {
+private fun Characters(chars: List<CharacterRole>, modifier: Modifier, padH: androidx.compose.ui.unit.Dp = 20.dp) {
     Column(modifier) {
-        SectionTitle("Персонажи", Modifier.padding(top = 30.dp, bottom = 14.dp))
-        LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        SectionTitle("Персонажи", Modifier.padding(top = 30.dp, bottom = 14.dp), horizontalPadding = padH)
+        LazyRow(contentPadding = PaddingValues(horizontal = padH), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             items(chars, key = { it.character!!.id }) { r ->
                 val c = r.character!!
                 Column(Modifier.width(76.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1256,10 +1354,10 @@ private fun Characters(chars: List<CharacterRole>, modifier: Modifier) {
 }
 
 @Composable
-private fun Videos(videos: List<Video>, modifier: Modifier, onOpen: (String) -> Unit) {
+private fun Videos(videos: List<Video>, modifier: Modifier, padH: androidx.compose.ui.unit.Dp = 20.dp, onOpen: (String) -> Unit) {
     Column(modifier) {
-        SectionTitle("Трейлеры и музыка", Modifier.padding(top = 30.dp, bottom = 14.dp))
-        LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        SectionTitle("Трейлеры и музыка", Modifier.padding(top = 30.dp, bottom = 14.dp), horizontalPadding = padH)
+        LazyRow(contentPadding = PaddingValues(horizontal = padH), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             items(videos.take(12)) { v ->
                 Column(Modifier.width(212.dp).pressable(0.97f) { v.url?.let(onOpen) }) {
                     Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(16.dp)).background(Nf.Surface), contentAlignment = Alignment.Center) {
