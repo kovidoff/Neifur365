@@ -15,9 +15,11 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -58,8 +60,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -100,15 +104,27 @@ fun Modifier.sharedPoster(key: String, shape: Shape = PosterShape): Modifier {
 }
 
 /** Tactile press feedback: the element sinks slightly under the finger and springs back. */
-fun Modifier.pressable(scale: Float = 0.96f, enabled: Boolean = true, onClick: () -> Unit): Modifier = composed {
+@OptIn(ExperimentalFoundationApi::class)
+fun Modifier.pressable(
+    scale: Float = 0.96f,
+    enabled: Boolean = true,
+    onLongClick: (() -> Unit)? = null,
+    onClick: () -> Unit,
+): Modifier = composed {
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
+    val haptic = LocalHapticFeedback.current
     val s by animateFloatAsState(
         if (pressed) scale else 1f,
         spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow), label = "press",
     )
-    graphicsLayer { scaleX = s; scaleY = s }
-        .clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
+    graphicsLayer { scaleX = s; scaleY = s }.then(
+        if (onLongClick != null) Modifier.combinedClickable(
+            interactionSource = source, indication = null, enabled = enabled,
+            onClick = onClick,
+            onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onLongClick() },
+        ) else Modifier.clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
+    )
 }
 
 /** Loading placeholder. The sweep is read only while drawing, so a screen full of skeletons never recomposes. */
@@ -156,10 +172,10 @@ fun ScoreBadge(score: Double?, modifier: Modifier = Modifier) {
 @Composable
 fun PosterCard(
     stub: AnimeStub, origin: String, onClick: () -> Unit, modifier: Modifier = Modifier, width: Dp? = 128.dp,
-    listStatus: ListStatus? = null,
+    listStatus: ListStatus? = null, onLongClick: (() -> Unit)? = null,
 ) {
     Column(
-        (if (width != null) modifier.width(width) else modifier).pressable(onClick = onClick)
+        (if (width != null) modifier.width(width) else modifier).pressable(onLongClick = onLongClick, onClick = onClick)
     ) {
         // Badges sit inside the shared poster: they fly with it to and from the title page instead of being
         // covered by it and popping back in when the transition ends.

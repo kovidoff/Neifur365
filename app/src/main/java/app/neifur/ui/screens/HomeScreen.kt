@@ -1,6 +1,9 @@
 package app.neifur.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -99,6 +102,8 @@ class HomeVm(private val c: Container) : ViewModel() {
     /** New episodes come out while the app sits in the background: reread the lists when Home shows up again. */
     fun refreshLists() = c.lists.refreshIfStale()
 
+    fun forgetHistory(animeId: String) = viewModelScope.launch { c.prefs.removeFromHistory(animeId) }
+
     fun load() {
         feed.value = Load.Loading
         viewModelScope.launch {
@@ -133,6 +138,14 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = 
     val listState = rememberLazyListState()
     val layout = rememberScreenLayout()
     val padH = layout.horizontalPadding
+    var quick by remember { mutableStateOf<Triple<AnimeStub, Series?, Boolean>?>(null) }
+    var quickOrigin by remember { mutableStateOf("home") }
+    var notice by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(notice) { if (notice != null) { delay(2800); notice = null } }
+    val showQuick: (AnimeStub, Series?, String, Boolean) -> Unit = { stub, series, origin, fromHistory ->
+        quickOrigin = origin
+        quick = Triple(stub, series, fromHistory)
+    }
 
     Box(Modifier.fillMaxSize()) {
         when (val f = feed) {
@@ -150,20 +163,20 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = 
                         onAll = onDownloads,
                     )
                 }
-                if (cont.isNotEmpty()) item(key = "continue") { ContinueRow(cont, lists.titles, padH, open) }
+                if (cont.isNotEmpty()) item(key = "continue") { ContinueRow(cont, lists.titles, padH, open) { s -> showQuick(s, null, "continue", true) } }
             }
             else -> {
                 val data = (f as? Load.Ready)?.value
                 LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 120.dp)) {
                     item(key = "hero", contentType = "hero") {
                         val heroVisible by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
-                        if (data == null) HeroSkeleton(layout) else Hero(data.ongoing.take(7), visible = heroVisible, layout = layout, open = open)
+                        if (data == null) HeroSkeleton(layout) else Hero(data.ongoing.take(7), visible = heroVisible, layout = layout, open = open) { a -> showQuick(a.stub(), a, "hero", false) }
                     }
                     if (cont.isNotEmpty()) item(key = "continue", contentType = "continue") {
-                        Appear("continue", 0, vm.appeared) { ContinueRow(cont, lists.titles, padH, open) }
+                        Appear("continue", 0, vm.appeared) { ContinueRow(cont, lists.titles, padH, open) { s -> showQuick(s, null, "continue", true) } }
                     }
                     if (fresh.isNotEmpty()) item(key = "fresh", contentType = "fresh") {
-                        Appear("fresh", 1, vm.appeared) { FreshRow(fresh, layout, open) }
+                        Appear("fresh", 1, vm.appeared) { FreshRow(fresh, layout, open) { s -> showQuick(s.stub(), s, "fresh", false) } }
                     }
                     val rows = listOf(
                         "ongoing" to "Сейчас выходит", "year" to "Новинки года", "popular" to "Самое популярное", "movies" to "Полнометражные",
@@ -174,7 +187,7 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = 
                                 "ongoing" -> data?.ongoing?.drop(7); "year" -> data?.thisYear; "popular" -> data?.popular
                                 else -> data?.movies
                             }
-                            Appear(key, i + 2, vm.appeared, ready = list != null) { AnimeRow(title, key, list, marks, layout, open) }
+                            Appear(key, i + 2, vm.appeared, ready = list != null) { AnimeRow(title, key, list, marks, layout, open) { a -> showQuick(a.stub(), a, key, false) } }
                         }
                     }
                 }
@@ -202,6 +215,30 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = 
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.Rounded.Search, "Поиск", tint = Nf.Text, modifier = Modifier.size(22.dp)) }
         }
+
+        var lastNotice by remember { mutableStateOf("") }
+        if (notice != null) lastNotice = notice!!
+        AnimatedVisibility(
+            notice != null, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 96.dp),
+            enter = fadeIn(), exit = fadeOut(),
+        ) {
+            Text(
+                lastNotice, style = Type.Label, color = Nf.Text, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(Nf.SurfaceHi).border(1.dp, Nf.Line, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            )
+        }
+    }
+
+    quick?.let { (stub, series, fromHistory) ->
+        QuickAnimeSheet(
+            stub = stub,
+            series = series,
+            onDismiss = { quick = null },
+            onOpen = { open(stub, quickOrigin) },
+            onNotice = { notice = it },
+            onForgetHistory = if (fromHistory) ({ vm.forgetHistory(stub.id) }) else null,
+        )
     }
 }
 
@@ -297,7 +334,7 @@ private fun heroHeight(layout: ScreenLayout) = if (layout.isTablet) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Hero(items: List<Series>, visible: Boolean, layout: ScreenLayout, open: OpenAnime) {
+private fun Hero(items: List<Series>, visible: Boolean, layout: ScreenLayout, open: OpenAnime, onLongPress: (Series) -> Unit = {}) {
     if (items.isEmpty()) return
     val height = heroHeight(layout)
     val padH = layout.horizontalPadding
@@ -327,7 +364,7 @@ private fun Hero(items: List<Series>, visible: Boolean, layout: ScreenLayout, op
         HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
             val a = items[page]
             val offset = (pager.currentPage - page) + pager.currentPageOffsetFraction
-            Box(Modifier.fillMaxSize().clipToBounds().pressable(0.985f) { open(a.stub(), "hero") }) {
+            Box(Modifier.fillMaxSize().clipToBounds().pressable(0.985f, onLongClick = { onLongPress(a) }) { open(a.stub(), "hero") }) {
                 if (layout.isTablet) {
                     // Wide screens: ambient blurred backdrop + crisp full vertical poster on the right, so characters are never brutally cropped.
                     PosterImage(
@@ -462,20 +499,27 @@ private fun HeroSkeleton(layout: ScreenLayout) {
 }
 
 @Composable
-private fun AnimeRow(title: String, key: String, list: List<Series>?, marks: Map<Long, ListStatus?>, layout: ScreenLayout, open: OpenAnime) {
+private fun AnimeRow(title: String, key: String, list: List<Series>?, marks: Map<Long, ListStatus?>, layout: ScreenLayout, open: OpenAnime, onLongPress: (Series) -> Unit = {}) {
     if (list != null && list.isEmpty()) return
     Column(Modifier.padding(top = 26.dp)) {
         SectionTitle(title, horizontalPadding = layout.horizontalPadding)
         Spacer(Modifier.height(14.dp))
         LazyRow(contentPadding = PaddingValues(horizontal = layout.horizontalPadding), horizontalArrangement = Arrangement.spacedBy(if (layout.isTablet) 14.dp else 12.dp)) {
             if (list == null) items(if (layout.isTablet) 8 else 6) { PosterCardSkeleton(width = layout.posterCardWidth) }
-            else items(list, key = { it.id }) { a -> PosterCard(a.stub(), key, { open(a.stub(), key) }, width = layout.posterCardWidth, listStatus = marks[a.id]) }
+            else items(list, key = { it.id }) { a ->
+                PosterCard(
+                    a.stub(), key,
+                    onClick = { open(a.stub(), key) },
+                    width = layout.posterCardWidth, listStatus = marks[a.id],
+                    onLongClick = { onLongPress(a) },
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun ContinueRow(entries: List<WatchEntry>, listed: Map<Long, ListedTitle>, padH: androidx.compose.ui.unit.Dp, open: OpenAnime) {
+private fun ContinueRow(entries: List<WatchEntry>, listed: Map<Long, ListedTitle>, padH: androidx.compose.ui.unit.Dp, open: OpenAnime, onLongPress: (AnimeStub) -> Unit = {}) {
     Column(Modifier.padding(top = 22.dp)) {
         SectionTitle("Продолжить просмотр", horizontalPadding = padH)
         Spacer(Modifier.height(14.dp))
@@ -484,7 +528,7 @@ private fun ContinueRow(entries: List<WatchEntry>, listed: Map<Long, ListedTitle
                 val stub = AnimeStub(e.animeId, e.title, e.poster)
                 Row(
                     Modifier.width(272.dp).clip(RoundedCornerShape(20.dp)).background(Nf.Surface)
-                        .pressable { open(stub, "continue") }.padding(10.dp),
+                        .pressable(onLongClick = { onLongPress(stub) }) { open(stub, "continue") }.padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     PosterImage(e.poster, Modifier.sharedPoster("poster/continue/${e.animeId}", RoundedCornerShape(12.dp)).width(58.dp).aspectRatio(0.7f).clip(RoundedCornerShape(12.dp)))
@@ -510,7 +554,7 @@ private fun ContinueRow(entries: List<WatchEntry>, listed: Map<Long, ListedTitle
  * the caption names the one to watch next.
  */
 @Composable
-private fun FreshRow(items: List<ListedTitle>, layout: ScreenLayout, open: OpenAnime) {
+private fun FreshRow(items: List<ListedTitle>, layout: ScreenLayout, open: OpenAnime, onLongPress: (Series) -> Unit = {}) {
     Column(Modifier.padding(top = 22.dp)) {
         SectionTitle("Новые серии", horizontalPadding = layout.horizontalPadding)
         Spacer(Modifier.height(14.dp))
@@ -518,7 +562,7 @@ private fun FreshRow(items: List<ListedTitle>, layout: ScreenLayout, open: OpenA
             items(items, key = { it.entry.seriesId }) { t ->
                 val series = t.series ?: return@items
                 val stub = series.stub()
-                Column(Modifier.width(layout.posterCardWidth).pressable { open(stub, "fresh") }) {
+                Column(Modifier.width(layout.posterCardWidth).pressable(onLongClick = { onLongPress(series) }) { open(stub, "fresh") }) {
                     // The badge lives inside the shared poster, so it travels with it instead of popping in after.
                     Box(Modifier.sharedPoster("poster/fresh/${series.id}").fillMaxWidth().aspectRatio(0.7f).clip(PosterShape)) {
                         PosterImage(series.posterUrl ?: series.posterUrlSmall, Modifier.fillMaxSize())

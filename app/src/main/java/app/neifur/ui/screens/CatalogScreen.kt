@@ -2,6 +2,9 @@
 
 package app.neifur.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -149,6 +152,9 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
     val marks = remember(lists) { lists.titles.mapValues { it.value.status } }
     val q = vm.query
     var sheet by remember { mutableStateOf<String?>(null) }
+    var quick by remember { mutableStateOf<Series?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(notice) { if (notice != null) { delay(2800); notice = null } }
     val layout = rememberScreenLayout()
     val cols = layout.posterColumns
     val padH = layout.horizontalPadding
@@ -170,6 +176,7 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
         }
     }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(
             Modifier.fillMaxWidth().padding(start = padH, end = padH, top = 14.dp, bottom = 14.dp),
@@ -231,7 +238,12 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
                     if (vm.items.isEmpty()) items(cols * 4) { PosterCardSkeleton(width = null) }
                     else {
                         items(vm.items, key = { it.id }, contentType = { "card" }) { a ->
-                            PosterCard(a.stub(), "catalog", { focus.clearFocus(); open(a.stub(), "catalog") }, Modifier.animateItem(), width = null, listStatus = marks[a.id])
+                            PosterCard(
+                                a.stub(), "catalog",
+                                onClick = { focus.clearFocus(); open(a.stub(), "catalog") },
+                                modifier = Modifier.animateItem(), width = null, listStatus = marks[a.id],
+                                onLongClick = { focus.clearFocus(); quick = a },
+                            )
                         }
                         if (vm.loading) item(span = { GridItemSpan(cols) }) {
                             Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
@@ -258,6 +270,31 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
                 }
             }
         }
+    }
+
+        var lastNotice by remember { mutableStateOf("") }
+        if (notice != null) lastNotice = notice!!
+        AnimatedVisibility(
+            notice != null, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 96.dp),
+            enter = fadeIn(), exit = fadeOut(),
+        ) {
+            Text(
+                lastNotice, style = Type.Label, color = Nf.Text, maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(Nf.SurfaceHi).border(1.dp, Nf.Line, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            )
+        }
+    }
+
+    quick?.let { a ->
+        QuickAnimeSheet(
+            stub = a.stub(),
+            series = a,
+            onDismiss = { quick = null },
+            onOpen = { open(a.stub(), "catalog") },
+            onNotice = { notice = it },
+        )
     }
 
     when (sheet) {

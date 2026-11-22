@@ -4,6 +4,8 @@ package app.neifur.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -27,7 +29,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Sort
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
@@ -36,14 +40,18 @@ import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -74,6 +82,8 @@ import app.neifur.stub
 import app.neifur.ui.*
 import kotlinx.coroutines.launch
 
+data class LibraryNotice(val text: String, val onUndo: (() -> Unit)? = null)
+
 class LibraryVm(private val c: Container) : ViewModel() {
     val account = c.account.state
     val expired = c.account.expired
@@ -86,17 +96,47 @@ class LibraryVm(private val c: Container) : ViewModel() {
     var status by mutableStateOf(ListStatus.Watching)
     var query by mutableStateOf("")
     var sort by mutableStateOf(ListSort.Default)
-    var notice by mutableStateOf<String?>(null)
+    var notice by mutableStateOf<LibraryNotice?>(null)
+    var undoGen by mutableIntStateOf(0)
+        private set
 
     fun refresh() = c.lists.refresh()
     fun refreshIfStale() = c.lists.refreshIfStale()
 
     fun bump(t: ListedTitle) = viewModelScope.launch {
-        c.lists.bump(t.entry.seriesId).onFailure { notice = it.userMessage() }
+        c.lists.bump(t.entry.seriesId).onFailure { notice = LibraryNotice(it.userMessage()) }
     }
 
     fun change(t: ListedTitle, s: ListStatus?, watched: Int, score: Int?) = viewModelScope.launch {
-        c.lists.set(t.entry.seriesId, s, watched, score).onFailure { notice = it.userMessage() }
+        c.lists.set(t.entry.seriesId, s, watched, score).onFailure { notice = LibraryNotice(it.userMessage()) }
+    }
+
+    fun quickRemove(t: ListedTitle) = viewModelScope.launch {
+        val prevStatus = t.status
+        val prevWatched = t.entry.watched
+        val prevScore = t.entry.score
+        notice = LibraryNotice("Убрано из списка") { restore(t, prevStatus, prevWatched, prevScore) }
+        c.lists.set(t.entry.seriesId, null, 0, null)
+            .onFailure { undoGen++; notice = LibraryNotice(it.userMessage()) }
+    }
+
+    fun quickComplete(t: ListedTitle) = viewModelScope.launch {
+        val prevStatus = t.status
+        val prevWatched = t.entry.watched
+        val prevScore = t.entry.score
+        val nextWatched = quickWatchedFor(ListStatus.Completed, prevWatched, t.total, t.aired, t.series?.isMovie == true)
+        notice = LibraryNotice("Перенесено в «Просмотрено»") { restore(t, prevStatus, prevWatched, prevScore) }
+        c.lists.set(t.entry.seriesId, ListStatus.Completed, nextWatched, prevScore)
+            .onFailure { undoGen++; notice = LibraryNotice(it.userMessage()) }
+    }
+
+    private fun restore(t: ListedTitle, prevStatus: ListStatus?, prevWatched: Int, prevScore: Int?) {
+        notice = null
+        undoGen++
+        viewModelScope.launch {
+            c.lists.set(t.entry.seriesId, prevStatus, prevWatched, prevScore, series = t.series, title = t.entry.title)
+                .onFailure { notice = LibraryNotice(it.userMessage()) }
+        }
     }
 
     fun forget(animeId: String) = viewModelScope.launch { c.prefs.removeFromHistory(animeId) }
@@ -125,7 +165,11 @@ fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
     val focus = LocalFocusManager.current
     val signedIn = account is AccountState.SignedIn
     LaunchedEffect(signedIn) { if (signedIn) vm.refreshIfStale() }
-    LaunchedEffect(vm.notice) { if (vm.notice != null) { kotlinx.coroutines.delay(3500); vm.notice = null } }
+    LaunchedEffect(vm.notice) {
+        val n = vm.notice ?: return@LaunchedEffect
+        kotlinx.coroutines.delay(if (n.onUndo != null) 4500 else 3500)
+        if (vm.notice === n) vm.notice = null
+    }
 
     val items = remember(lists, vm.status, history, vm.query, vm.sort) {
         lists.display(vm.status, history, vm.query, vm.sort)
@@ -192,7 +236,16 @@ fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
                         }
                         items.isEmpty() -> item(span = { GridItemSpan(cols) }) { EmptyList(vm.status) }
                         wide -> items(items, key = { "w${it.entry.seriesId}" }, span = { GridItemSpan(wideSpan) }, contentType = { "wide" }) { t ->
-                            WideRow(t, Modifier.animateItem(), onOpen = { focus.clearFocus(); open(stubOf(t), "lists") }, onEdit = { editing = t }, onBump = { vm.bump(t) })
+                            SwipeableWideRow(
+                                t = t,
+                                undoGen = vm.undoGen,
+                                modifier = Modifier.animateItem(),
+                                onOpen = { focus.clearFocus(); open(stubOf(t), "lists") },
+                                onEdit = { editing = t },
+                                onBump = { vm.bump(t) },
+                                onComplete = { vm.quickComplete(t) },
+                                onRemove = { vm.quickRemove(t) },
+                            )
                         }
                         else -> items(items, key = { "g${it.entry.seriesId}" }, contentType = { "card" }) { t ->
                             GridCard(t, Modifier.animateItem(), onOpen = { focus.clearFocus(); open(stubOf(t), "lists") }, onEdit = { editing = t })
@@ -213,17 +266,27 @@ fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
             }
         }
 
-        var lastNotice by remember { mutableStateOf("") }
+        var lastNotice by remember { mutableStateOf(LibraryNotice("")) }
         if (vm.notice != null) lastNotice = vm.notice!!
         AnimatedVisibility(
-            vm.notice != null, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 96.dp),
+            vm.notice != null, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 96.dp),
             enter = fadeIn(), exit = fadeOut(),
         ) {
-            Text(
-                lastNotice, style = Type.Label, color = Nf.Text,
-                modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(Nf.SurfaceHi).border(1.dp, Nf.Line, RoundedCornerShape(16.dp))
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-            )
+            Row(
+                Modifier.clip(RoundedCornerShape(18.dp)).background(Nf.SurfaceHi).border(1.dp, Nf.Line, RoundedCornerShape(18.dp))
+                    .padding(start = 16.dp, end = if (lastNotice.onUndo != null) 10.dp else 16.dp, top = 10.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(lastNotice.text, style = Type.Label, color = Nf.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                lastNotice.onUndo?.let { undo ->
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        "Отменить", style = Type.Label, color = Nf.Violet,
+                        modifier = Modifier.clip(CircleShape).background(Nf.Violet.copy(alpha = 0.16f))
+                            .pressable(0.92f) { undo() }.padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
+            }
         }
     }
 
@@ -422,6 +485,97 @@ private fun StatusTabs(current: ListStatus, count: (ListStatus) -> Int, loaded: 
                 if (loaded) Text("  ${count(s)}", style = Type.Label, color = if (on) c else Nf.TextMute)
             }
         }
+    }
+}
+
+/**
+ * Telegram/Gmail-style swipe wrapper for wide list rows: swipe left reveals a red "Убрать" backdrop to remove
+ * from the list, swipe right reveals a blue "Просмотрено" backdrop to finish it; both provide instant Undo.
+ */
+@Composable
+private fun SwipeableWideRow(
+    t: ListedTitle,
+    undoGen: Int,
+    modifier: Modifier,
+    onOpen: () -> Unit,
+    onEdit: () -> Unit,
+    onBump: () -> Unit,
+    onComplete: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    val currentComplete by rememberUpdatedState(onComplete)
+    val currentRemove by rememberUpdatedState(onRemove)
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            when (value) {
+                SwipeToDismissBoxValue.EndToStart -> { currentRemove(); true }
+                SwipeToDismissBoxValue.StartToEnd -> { currentComplete(); true }
+                SwipeToDismissBoxValue.Settled -> false
+            }
+        },
+        positionalThreshold = { it * 0.36f },
+    )
+    // Reset cleanly if this item came back via Undo.
+    LaunchedEffect(undoGen) {
+        if (dismissState.currentValue != SwipeToDismissBoxValue.Settled) {
+            dismissState.snapTo(SwipeToDismissBoxValue.Settled)
+        }
+    }
+    // Single crisp haptic tick when the finger crosses the action threshold.
+    val crossed = dismissState.targetValue != SwipeToDismissBoxValue.Settled
+    LaunchedEffect(crossed) {
+        if (crossed) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+    }
+
+    val shape = RoundedCornerShape(20.dp)
+    SwipeToDismissBox(
+        state = dismissState,
+        modifier = modifier.fillMaxWidth().clip(shape),
+        backgroundContent = {
+            val dir = dismissState.dismissDirection
+            val removing = dir == SwipeToDismissBoxValue.EndToStart
+            val completing = dir == SwipeToDismissBoxValue.StartToEnd
+            val completeColor = statusColor(ListStatus.Completed)
+            val targetBg = when {
+                removing && crossed -> Nf.Red.copy(alpha = 0.88f)
+                removing -> Nf.Red.copy(alpha = 0.24f)
+                completing && crossed -> completeColor.copy(alpha = 0.86f)
+                completing -> completeColor.copy(alpha = 0.22f)
+                else -> Color.Transparent
+            }
+            val bg by animateColorAsState(targetBg, label = "sw-bg")
+            val iconScale by animateFloatAsState(
+                if (crossed) 1.18f else 0.92f,
+                spring(dampingRatio = 0.55f, stiffness = 460f),
+                label = "sw-sc",
+            )
+            val fg = if (crossed) Nf.Ink else if (removing) Nf.Red else completeColor
+            Box(
+                Modifier.fillMaxSize().clip(shape).background(bg).padding(horizontal = 22.dp),
+                contentAlignment = if (removing) Alignment.CenterEnd else Alignment.CenterStart,
+            ) {
+                if (removing || completing) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (completing) {
+                            Icon(
+                                Icons.Rounded.CheckCircle, null, tint = fg,
+                                modifier = Modifier.size(22.dp).graphicsLayer { scaleX = iconScale; scaleY = iconScale },
+                            )
+                            Text("Просмотрено", style = Type.Title.copy(fontSize = 14.sp), color = fg)
+                        } else {
+                            Text("Убрать", style = Type.Title.copy(fontSize = 14.sp), color = fg)
+                            Icon(
+                                Icons.Rounded.DeleteOutline, null, tint = fg,
+                                modifier = Modifier.size(22.dp).graphicsLayer { scaleX = iconScale; scaleY = iconScale },
+                            )
+                        }
+                    }
+                }
+            }
+        },
+    ) {
+        WideRow(t, Modifier, onOpen = onOpen, onEdit = onEdit, onBump = onBump)
     }
 }
 

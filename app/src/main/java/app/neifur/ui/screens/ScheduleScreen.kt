@@ -1,6 +1,7 @@
 package app.neifur.ui.screens
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -199,6 +200,9 @@ fun ScheduleScreen(open: OpenAnime, onBack: () -> Unit) {
         raw?.let { buildWeeklySchedule(it, byMalId, zone, today) } ?: emptyMap()
     }
     val hasAnyMine = remember(schedule) { schedule.values.any { list -> list.any { it.isMine } } }
+    var quick by remember { mutableStateOf<ScheduleItem?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(notice) { if (notice != null) { kotlinx.coroutines.delay(2800); notice = null } }
 
     Box(Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding().navigationBarsPadding(), contentAlignment = Alignment.TopCenter) {
         Column(Modifier.widthIn(max = 760.dp).fillMaxSize()) {
@@ -334,7 +338,7 @@ fun ScheduleScreen(open: OpenAnime, onBack: () -> Unit) {
                                 }
                             }
                             items(dayList, key = { it.malId }) { item ->
-                                ScheduleCard(item, now) { open(item.stub(), "schedule") }
+                                ScheduleCard(item, now, onLongClick = { quick = item }) { open(item.stub(), "schedule") }
                             }
                         }
                     }
@@ -342,11 +346,33 @@ fun ScheduleScreen(open: OpenAnime, onBack: () -> Unit) {
             }
         }
     }
+
+        var lastNotice by remember { mutableStateOf("") }
+        if (notice != null) lastNotice = notice!!
+        AnimatedVisibility(
+            notice != null, Modifier.align(Alignment.BottomCenter).padding(horizontal = 20.dp, vertical = 22.dp),
+            enter = fadeIn(), exit = fadeOut(),
+        ) {
+            Text(
+                lastNotice, style = Type.Label, color = Nf.Text, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(Nf.SurfaceHi).border(1.dp, Nf.Line, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            )
+        }
+    }
+
+    quick?.let { item ->
+        QuickAnimeSheet(
+            stub = item.stub(),
+            onDismiss = { quick = null },
+            onOpen = { open(item.stub(), "schedule") },
+            onNotice = { notice = it },
+        )
     }
 }
 
 @Composable
-private fun ScheduleCard(item: ScheduleItem, now: ZonedDateTime, onClick: () -> Unit) {
+private fun ScheduleCard(item: ScheduleItem, now: ZonedDateTime, onLongClick: () -> Unit = {}, onClick: () -> Unit) {
     val border = when (item.status) {
         ListStatus.Watching -> Nf.Mint.copy(alpha = 0.35f)
         ListStatus.Planned -> Nf.Violet.copy(alpha = 0.3f)
@@ -355,7 +381,7 @@ private fun ScheduleCard(item: ScheduleItem, now: ZonedDateTime, onClick: () -> 
     val (rel, aired) = formatRelativeAir(item.airAt, now)
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Nf.Surface)
-            .border(1.dp, border, RoundedCornerShape(20.dp)).pressable(0.98f, onClick = onClick)
+            .border(1.dp, border, RoundedCornerShape(20.dp)).pressable(0.98f, onLongClick = onLongClick, onClick = onClick)
             .padding(11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
