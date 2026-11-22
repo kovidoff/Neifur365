@@ -137,7 +137,12 @@ class NeifurApp : Application(), SingletonImageLoader.Factory {
 val Context.container: Container get() = (applicationContext as NeifurApp).container
 
 @Composable
-inline fun <reified T : ViewModel> nfViewModel(key: String? = null, crossinline create: (Container) -> T): T {
+inline fun <reified T : ViewModel> nfViewModel(
+    key: String? = null,
+    owner: androidx.lifecycle.ViewModelStoreOwner? = null,
+    crossinline create: (Container) -> T,
+): T {
     val c = LocalContext.current.container
-    return viewModel(key = key, factory = viewModelFactory { initializer { create(c) } })
+    val store = owner ?: checkNotNull(androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner.current)
+    return viewModel(viewModelStoreOwner = store, key = key, factory = viewModelFactory { initializer { create(c) } })
 }

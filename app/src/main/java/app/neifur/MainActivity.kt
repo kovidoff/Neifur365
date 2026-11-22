@@ -59,6 +59,8 @@ import app.neifur.ui.screens.DetailScreen
 import app.neifur.ui.screens.HomeScreen
 import app.neifur.ui.screens.LibraryScreen
 import app.neifur.ui.screens.SettingsScreen
+import app.neifur.ui.screens.SettingsSection
+import app.neifur.ui.screens.SettingsSectionScreen
 import app.neifur.ui.screens.WelcomeScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
@@ -92,10 +94,21 @@ class MainActivity : ComponentActivity() {
         takeOpenRequest(intent)
     }
 
-    /** A tapped new-episode notification names the title to open. */
+    /** A tapped new-episode notification or an Anime 365 link names the title to open. */
     private fun takeOpenRequest(intent: android.content.Intent?) {
-        intent?.getStringExtra(app.neifur.alerts.EpisodeAlerts.EXTRA_SERIES)?.let { container.pendingOpen.value = it }
-        intent?.removeExtra(app.neifur.alerts.EpisodeAlerts.EXTRA_SERIES)
+        val fromAlert = intent?.getStringExtra(app.neifur.alerts.EpisodeAlerts.EXTRA_SERIES)
+        if (fromAlert != null) {
+            container.pendingOpen.value = fromAlert
+            intent.removeExtra(app.neifur.alerts.EpisodeAlerts.EXTRA_SERIES)
+            return
+        }
+        if (intent?.action == android.content.Intent.ACTION_VIEW) {
+            val id = intent.dataString?.let { app.neifur.data.a365.SitePages.seriesId(it) }
+            if (id != null) {
+                container.pendingOpen.value = id.toString()
+                intent.data = null
+            }
+        }
     }
 }
 
@@ -176,7 +189,22 @@ private fun AppRoot() {
                             LibraryScreen(open)
                         }
                     }
-                    composable("settings") { SettingsScreen() }
+                    composable("settings") {
+                        SettingsScreen(onOpenSection = { s -> nav.navigate("settings/${s.route}") { launchSingleTop = true } })
+                    }
+                    composable(
+                        "settings/{section}",
+                        arguments = listOf(navArgument("section") { type = NavType.StringType }),
+                        enterTransition = { slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { it / 5 } + fadeIn(tween(240)) },
+                        exitTransition = { slideOutHorizontally(tween(260, easing = FastOutLinearInEasing)) { -it / 8 } + fadeOut(tween(180)) },
+                        popEnterTransition = { slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 8 } + fadeIn(tween(200)) },
+                        popExitTransition = { slideOutHorizontally(tween(280, easing = FastOutLinearInEasing)) { it / 5 } + fadeOut(tween(200)) },
+                    ) { e ->
+                        val section = SettingsSection.of(e.arguments?.getString("section"))
+                        val owner = remember(e) { runCatching { nav.getBackStackEntry("settings") }.getOrElse { e } }
+                        if (section != null) SettingsSectionScreen(section, owner = owner, onBack = { nav.popBackStack() })
+                        else LaunchedEffect(Unit) { nav.popBackStack() }
+                    }
                     composable(
                         "detail/{id}?origin={origin}",
                         arguments = listOf(

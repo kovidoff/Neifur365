@@ -2,6 +2,8 @@
 
 package app.neifur.ui.screens
 
+import android.os.Build
+import android.provider.Settings
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -20,71 +22,76 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.Login
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.ClosedCaption
-import androidx.compose.material.icons.rounded.Mic
-import androidx.compose.material.icons.rounded.RestartAlt
-import androidx.compose.material.icons.rounded.Translate
-import androidx.compose.material.icons.rounded.Replay5
-import androidx.compose.material.icons.rounded.Replay10
-import androidx.compose.material.icons.rounded.FastForward
-import androidx.compose.material.icons.rounded.KeyboardDoubleArrowRight
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.FastForward
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.KeyboardDoubleArrowRight
+import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Replay10
+import androidx.compose.material.icons.rounded.Replay5
+import androidx.compose.material.icons.rounded.RestartAlt
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import app.neifur.BuildConfig
 import app.neifur.Container
+import app.neifur.alerts.EpisodeAlerts
 import app.neifur.data.a365.AccountState
+import app.neifur.data.a365.ChannelSpeed
 import app.neifur.data.a365.MirrorHealth
 import app.neifur.data.a365.MirrorOrigin
 import app.neifur.data.a365.MirrorStatus
 import app.neifur.data.a365.VideoChannel
-import app.neifur.data.a365.ChannelSpeed
-import app.neifur.core.userMessage
-import androidx.compose.material.icons.rounded.Speed
 import app.neifur.nfViewModel
 import app.neifur.ui.*
 import coil3.SingletonImageLoader
@@ -92,6 +99,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** Subpages under the Settings hub, keeping the main tab concise and easy to scan. */
+enum class SettingsSection(val route: String, val title: String, val subtitle: String) {
+    Player("player", "Плеер", "Качество видео, субтитры, перемотка и жесты"),
+    Translation("translation", "Перевод и студии", "Язык по умолчанию и любимые студии"),
+    Alerts("alerts", "Уведомления", "Выход новых серий из ваших списков"),
+    Connection("connection", "Подключение и ссылки", "Адреса сайта, каналы видео и открытие ссылок"),
+    Data("data", "Память и данные", "История просмотра и кэш обложек"),
+    ;
+
+    companion object {
+        fun of(route: String?): SettingsSection? = entries.firstOrNull { it.route == route }
+    }
+}
 
 class SettingsVm(private val c: Container) : ViewModel() {
     val account = c.account.state
@@ -171,6 +192,8 @@ class SettingsVm(private val c: Container) : ViewModel() {
     fun setSubScale(v: Double) = viewModelScope.launch { c.prefs.setSubScale(v) }
     val seekStep = c.prefs.seekStep
     val holdBoost = c.prefs.holdBoost
+    val alerts = c.prefs.alerts
+    val alertsMyStudio = c.prefs.alertsMyStudio
     fun setSeekStep(v: Int) = viewModelScope.launch { c.prefs.setSeekStep(v) }
     fun setHoldBoost(on: Boolean) = viewModelScope.launch { c.prefs.setHoldBoost(on) }
     fun clearHistory() = viewModelScope.launch { c.prefs.clearHistory() }
@@ -189,11 +212,128 @@ class SettingsVm(private val c: Container) : ViewModel() {
     }
 }
 
-/** [onBack] is null when Settings is opened as a tab of the bottom bar. */
+/**
+ * Settings hub: account hero at the top, followed by grouped category rows with live summaries of the current
+ * choices. Each row opens a focused subpage so adding new capabilities never turns Settings into an endless scroll.
+ */
 @Composable
-fun SettingsScreen(onBack: (() -> Unit)? = null) {
+fun SettingsScreen(onOpenSection: (SettingsSection) -> Unit) {
     val vm = nfViewModel { SettingsVm(it) }
     val ctx = LocalContext.current
+    val acc by vm.account.collectAsStateWithLifecycle()
+    val quality by vm.quality.collectAsStateWithLifecycle(1080)
+    val kind by vm.preferredKind.collectAsStateWithLifecycle("VoiceRu")
+    val history by vm.history.collectAsStateWithLifecycle(emptyList())
+    val seekStep by vm.seekStep.collectAsStateWithLifecycle(10)
+    val holdBoost by vm.holdBoost.collectAsStateWithLifecycle(true)
+    val studios by vm.studios.collectAsStateWithLifecycle(emptyList())
+    val alertsOn by vm.alerts.collectAsStateWithLifecycle(false)
+    val alertsMyStudio by vm.alertsMyStudio.collectAsStateWithLifecycle(true)
+    val channel by vm.channel.collectAsStateWithLifecycle()
+    var alertsPermitted by remember { mutableStateOf(EpisodeAlerts.permitted(ctx)) }
+    var confirmLogout by remember { mutableStateOf(false) }
+
+    LifecycleResumeEffect(Unit) {
+        alertsPermitted = EpisodeAlerts.permitted(ctx)
+        vm.measureCache(ctx)
+        onPauseOrDispose {}
+    }
+    LaunchedEffect(acc) { if (acc is AccountState.SignedIn) vm.loadChannels() }
+
+    val signedIn = acc is AccountState.SignedIn
+    val (alertsLine, alertsWarn) = alertsSummary(signedIn, alertsOn, alertsPermitted, alertsMyStudio)
+    val activeMirror = vm.mirrors?.firstOrNull { it.active }?.host
+    val anyMirrorWorking = vm.mirrors?.any { it.ok }
+    val activeChannel = channel.setup?.let { s -> s.channels.firstOrNull { it.id == s.current }?.label }
+    val (connLine, connWarn) = connectionSummary(activeMirror, anyMirrorWorking, if (signedIn) activeChannel else null)
+    val titleCount = remember(history) { history.distinctBy { it.animeId }.size }
+
+    LazyColumn(
+        Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding(),
+        contentPadding = PaddingValues(bottom = 128.dp),
+    ) {
+        item(key = "header") {
+            Text("Настройки", style = Type.Display, color = Nf.Text, modifier = Modifier.padding(start = 20.dp, top = 14.dp, end = 20.dp, bottom = 4.dp))
+        }
+
+        item(key = "account") { Spacer(Modifier.height(10.dp)); AccountCard(vm) { confirmLogout = true } }
+
+        item(key = "group-watch") {
+            SectionLabel("Просмотр")
+            Card(padding = 6.dp) {
+                NavRow(
+                    icon = Icons.Rounded.PlayArrow, tint = Nf.Violet, title = SettingsSection.Player.title,
+                    summary = playerSummary(quality, seekStep, holdBoost),
+                ) { onOpenSection(SettingsSection.Player) }
+                RowDivider()
+                NavRow(
+                    icon = Icons.Rounded.Translate, tint = Nf.Pink, title = SettingsSection.Translation.title,
+                    summary = translationSummary(kind, studios.size),
+                ) { onOpenSection(SettingsSection.Translation) }
+                RowDivider()
+                NavRow(
+                    icon = Icons.Rounded.NotificationsActive, tint = Nf.Mint, title = SettingsSection.Alerts.title,
+                    summary = alertsLine, summaryColor = if (alertsWarn) Nf.Amber else Nf.TextMute,
+                    badge = if (alertsWarn) Nf.Amber else null,
+                ) { onOpenSection(SettingsSection.Alerts) }
+            }
+        }
+
+        item(key = "group-app") {
+            SectionLabel("Приложение")
+            Card(padding = 6.dp) {
+                NavRow(
+                    icon = Icons.Rounded.Public, tint = Nf.Violet, title = SettingsSection.Connection.title,
+                    summary = connLine, summaryColor = if (connWarn) Nf.Red else Nf.TextMute,
+                    badge = if (connWarn) Nf.Red else null,
+                ) { onOpenSection(SettingsSection.Connection) }
+                RowDivider()
+                NavRow(
+                    icon = Icons.Rounded.FolderOpen, tint = Nf.Amber, title = SettingsSection.Data.title,
+                    summary = dataSummary(vm.cacheBytes, titleCount),
+                ) { onOpenSection(SettingsSection.Data) }
+            }
+        }
+
+        item(key = "about") {
+            Column(Modifier.fillMaxWidth().padding(top = 30.dp, start = 28.dp, end = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                // Hidden for testing: five quick taps on the wordmark bring the welcome flow back.
+                var taps by remember { mutableIntStateOf(0) }
+                var lastTap by remember { mutableLongStateOf(0L) }
+                Wordmark(
+                    Modifier.graphicsLayer { alpha = 0.75f }.clickable(remember { MutableInteractionSource() }, indication = null) {
+                        val now = System.currentTimeMillis()
+                        taps = if (now - lastTap < 600) taps + 1 else 1
+                        lastTap = now
+                        if (taps >= 5) { taps = 0; vm.showWelcome() }
+                    },
+                )
+                Text("Версия ${BuildConfig.VERSION_NAME}", style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 4.dp))
+                Text(
+                    "Neifur 365 — неофициальный клиент Anime 365. Видео и списки — Anime 365, описания и персонажи — Shikimori.",
+                    style = Type.Caption, color = Nf.TextMute, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        }
+    }
+
+    if (confirmLogout) AlertDialog(
+        onDismissRequest = { confirmLogout = false },
+        containerColor = Nf.SurfaceHi, titleContentColor = Nf.Text, textContentColor = Nf.TextDim,
+        title = { Text("Выйти из аккаунта?", style = Type.Section) },
+        text = { Text("Смотреть видео можно будет после нового входа. История на телефоне сохранится.", style = Type.Body) },
+        confirmButton = { TextButton({ vm.logout(); confirmLogout = false }) { Text("Выйти", color = Nf.Red, style = Type.Label) } },
+        dismissButton = { TextButton({ confirmLogout = false }) { Text("Отмена", color = Nf.Text, style = Type.Label) } },
+    )
+}
+
+/** Focused subpage for one category of settings, sharing [SettingsVm] with the hub. */
+@Composable
+fun SettingsSectionScreen(section: SettingsSection, owner: ViewModelStoreOwner, onBack: () -> Unit) {
+    val vm = nfViewModel(owner = owner) { SettingsVm(it) }
+    val ctx = LocalContext.current
+    val acc by vm.account.collectAsStateWithLifecycle()
     val quality by vm.quality.collectAsStateWithLifecycle(1080)
     val kind by vm.preferredKind.collectAsStateWithLifecycle("VoiceRu")
     val history by vm.history.collectAsStateWithLifecycle(emptyList())
@@ -204,147 +344,154 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
     val pickCount by vm.pickCount.collectAsStateWithLifecycle(0)
     var confirmHistory by remember { mutableStateOf(false) }
     var confirmPicks by remember { mutableStateOf(false) }
-    var confirmLogout by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { vm.measureCache(ctx) }
 
-    // A lazy list: the tab opens by composing only what's on screen, which keeps the switch from Home smooth.
+    if (section == SettingsSection.Data) LaunchedEffect(Unit) { vm.measureCache(ctx) }
+    if (section == SettingsSection.Connection) LaunchedEffect(acc) { if (acc is AccountState.SignedIn) vm.loadChannels() }
+
     LazyColumn(
-        Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding().imePadding(),
-        contentPadding = PaddingValues(bottom = 128.dp),
+        Modifier.fillMaxSize().background(Nf.Ink).statusBarsPadding().navigationBarsPadding().imePadding(),
+        contentPadding = PaddingValues(bottom = 44.dp),
     ) {
-        item(key = "header") { Row(Modifier.padding(start = if (onBack != null) 14.dp else 20.dp, top = 14.dp, end = 20.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (onBack != null) {
-                Box(Modifier.size(42.dp).clip(CircleShape).background(Nf.Surface).pressable(0.88f, onClick = onBack), contentAlignment = Alignment.Center) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад", tint = Nf.Text, modifier = Modifier.size(22.dp))
+        item(key = "sub-header") {
+            Row(
+                Modifier.padding(start = 16.dp, end = 20.dp, top = 12.dp, bottom = 18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier.size(42.dp).clip(CircleShape).background(Nf.Surface).border(1.dp, Nf.Line, CircleShape)
+                        .pressable(0.88f, onClick = onBack),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад", tint = Nf.Text, modifier = Modifier.size(20.dp))
                 }
                 Spacer(Modifier.width(14.dp))
-            }
-            Text("Настройки", style = Type.Display, color = Nf.Text)
-        } }
-
-        item(key = "account") { Spacer(Modifier.height(10.dp)); AccountCard(vm) { confirmLogout = true } }
-
-        item(key = "alerts") {
-            val acc by vm.account.collectAsStateWithLifecycle()
-            SectionLabel("Уведомления"); AlertsSettings(signedIn = acc is AccountState.SignedIn)
-        }
-
-        item(key = "translation") { SectionLabel("Перевод")
-        Card {
-            SettingTitle("Как вы смотрите", "Что включать в новых тайтлах, пока вы не выбрали студию сами")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                KindTile("VoiceRu", Icons.Rounded.Mic, Nf.Pink, "Озвучка", kind) { vm.setKind(it) }
-                KindTile("SubRu", Icons.Rounded.ClosedCaption, Nf.Violet, "Субтитры", kind) { vm.setKind(it) }
-                KindTile("Raw", Icons.Rounded.Translate, Nf.Mint, "Оригинал", kind) { vm.setKind(it) }
-            }
-            Divider()
-            SettingTitle(
-                "Любимые студии",
-                if (studios.isEmpty()) "Отмечайте студии звёздочкой ★ в списке переводов — на странице тайтла или в плеере"
-                else "Стоят первыми в списке переводов любого тайтла. Добавляются звёздочкой ★",
-            )
-            if (studios.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                studios.forEach { (key, name) -> StudioChip(key, name) { vm.removeStudio(key) } }
-            }
-            if (pickCount > 0) {
-                Divider()
-                ActionRow(Icons.Rounded.RestartAlt, "Выбор по тайтлам", "Запомнено для $pickCount ${plural(pickCount, "тайтла", "тайтлов", "тайтлов")}", "Сбросить", enabled = true) { confirmPicks = true }
-            }
-        } }
-
-        item(key = "player") { SectionLabel("Плеер")
-        Card {
-            SettingTitle("Качество видео", "Если такого нет у перевода, включится ближайшее ниже")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                QualityTile(1080, "Full HD", 3, quality) { vm.setQuality(it) }
-                QualityTile(720, "HD", 2, quality) { vm.setQuality(it) }
-                QualityTile(480, "Экономия", 1, quality) { vm.setQuality(it) }
-            }
-            Divider()
-            SettingTitle("Размер субтитров", null)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(0.8, 1.0, 1.25, 1.5).forEachIndexed { i, v ->
-                    val on = kotlin.math.abs(subScale - v) < 0.01
-                    val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.2f) else Nf.Ink, label = "sz")
-                    Box(
-                        Modifier.weight(1f).height(52.dp).clip(RoundedCornerShape(14.dp)).background(bg)
-                            .border(1.dp, if (on) Nf.Violet.copy(alpha = 0.55f) else Nf.Line, RoundedCornerShape(14.dp))
-                            .clickable { vm.setSubScale(v) },
-                        contentAlignment = Alignment.Center,
-                    ) { Text("Аа", style = Type.Title.copy(fontSize = (13 + i * 3).sp), color = if (on) Nf.Violet else Nf.Text) }
+                Column(Modifier.weight(1f)) {
+                    Text(section.title, style = Type.Display.copy(fontSize = 22.sp), color = Nf.Text, maxLines = 1)
+                    Text(section.subtitle, style = Type.Caption, color = Nf.TextMute, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
                 }
             }
         }
-        // How the player answers fingers and buttons: its own card, apart from how the picture looks.
-        Spacer(Modifier.height(12.dp))
-        Card {
-            SettingTitle("Перемотка", "Кнопки в плеере, двойной тап по краю экрана и наушники")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StepTile(5, Icons.Rounded.Replay5, "Точнее", seekStep) { vm.setSeekStep(it) }
-                StepTile(10, Icons.Rounded.Replay10, "Быстрее", seekStep) { vm.setSeekStep(it) }
-            }
-            Divider()
-            ToggleRow(
-                Icons.Rounded.FastForward, "Ускорение при удержании",
-                "Держите палец на видео — серия идёт в 2×", holdBoost,
-            ) { vm.setHoldBoost(it) }
-            Divider()
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(Nf.Ink), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.KeyboardDoubleArrowRight, null, tint = Nf.TextDim, modifier = Modifier.size(20.dp))
-                }
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    "В нижней панели плеера есть кнопка «+85» — быстрый пропуск опенинга",
-                    style = Type.Caption, color = Nf.TextMute,
-                )
-            }
-        } }
 
-        item(key = "site") {
-            SectionLabel("Сайт Anime 365"); MirrorsCard(vm)
-            val acc by vm.account.collectAsStateWithLifecycle()
-            if (acc is AccountState.SignedIn) {
-                LaunchedEffect(Unit) { vm.loadChannels() }
-                Spacer(Modifier.height(12.dp)); ChannelCard(vm)
+        when (section) {
+            SettingsSection.Player -> {
+                item(key = "video") {
+                    Card {
+                        SettingTitle("Качество видео", "Если такого нет у перевода, включится ближайшее ниже")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            QualityTile(1080, "Full HD", 3, quality) { vm.setQuality(it) }
+                            QualityTile(720, "HD", 2, quality) { vm.setQuality(it) }
+                            QualityTile(480, "Экономия", 1, quality) { vm.setQuality(it) }
+                        }
+                        Divider()
+                        SettingTitle("Размер субтитров", null)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(0.8, 1.0, 1.25, 1.5).forEachIndexed { i, v ->
+                                val on = kotlin.math.abs(subScale - v) < 0.01
+                                val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.2f) else Nf.Ink, label = "sz")
+                                Box(
+                                    Modifier.weight(1f).height(52.dp).clip(RoundedCornerShape(14.dp)).background(bg)
+                                        .border(1.dp, if (on) Nf.Violet.copy(alpha = 0.55f) else Nf.Line, RoundedCornerShape(14.dp))
+                                        .clickable { vm.setSubScale(v) },
+                                    contentAlignment = Alignment.Center,
+                                ) { Text("Аа", style = Type.Title.copy(fontSize = (13 + i * 3).sp), color = if (on) Nf.Violet else Nf.Text) }
+                            }
+                        }
+                    }
+                }
+                item(key = "controls") {
+                    Spacer(Modifier.height(12.dp))
+                    Card {
+                        SettingTitle("Перемотка", "Кнопки в плеере, двойной тап по краю экрана и наушники")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            StepTile(5, Icons.Rounded.Replay5, "Точнее", seekStep) { vm.setSeekStep(it) }
+                            StepTile(10, Icons.Rounded.Replay10, "Быстрее", seekStep) { vm.setSeekStep(it) }
+                        }
+                        Divider()
+                        ToggleRow(
+                            Icons.Rounded.FastForward, "Ускорение при удержании",
+                            "Держите палец на видео — серия идёт в 2×", holdBoost,
+                        ) { vm.setHoldBoost(it) }
+                        Divider()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(Nf.Ink), contentAlignment = Alignment.Center) {
+                                Icon(Icons.Rounded.KeyboardDoubleArrowRight, null, tint = Nf.TextDim, modifier = Modifier.size(20.dp))
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                "В нижней панели плеера есть кнопка «+85» — быстрый пропуск опенинга",
+                                style = Type.Caption, color = Nf.TextMute,
+                            )
+                        }
+                    }
+                }
+            }
+
+            SettingsSection.Translation -> {
+                item(key = "kind") {
+                    Card {
+                        SettingTitle("Как вы смотрите", "Что включать в новых тайтлах, пока вы не выбрали студию сами")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            KindTile("VoiceRu", Icons.Rounded.Mic, Nf.Pink, "Озвучка", kind) { vm.setKind(it) }
+                            KindTile("SubRu", Icons.Rounded.ClosedCaption, Nf.Violet, "Субтитры", kind) { vm.setKind(it) }
+                            KindTile("Raw", Icons.Rounded.Translate, Nf.Mint, "Оригинал", kind) { vm.setKind(it) }
+                        }
+                    }
+                }
+                item(key = "studios") {
+                    Spacer(Modifier.height(12.dp))
+                    Card {
+                        SettingTitle(
+                            "Любимые студии",
+                            if (studios.isEmpty()) "Отмечайте студии звёздочкой ★ в списке переводов — на странице тайтла или в плеере"
+                            else "Стоят первыми в списке переводов любого тайтла. Добавляются звёздочкой ★",
+                        )
+                        if (studios.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            studios.forEach { (key, name) -> StudioChip(key, name) { vm.removeStudio(key) } }
+                        }
+                    }
+                    if (pickCount > 0) {
+                        Spacer(Modifier.height(12.dp))
+                        Card(padding = 6.dp) {
+                            ActionRow(
+                                Icons.Rounded.RestartAlt, "Выбор по тайтлам",
+                                "Запомнено для $pickCount ${plural(pickCount, "тайтла", "тайтлов", "тайтлов")}",
+                                "Сбросить", enabled = true,
+                            ) { confirmPicks = true }
+                        }
+                    }
+                }
+            }
+
+            SettingsSection.Alerts -> {
+                item(key = "alerts") { AlertsSettings(signedIn = acc is AccountState.SignedIn) }
+            }
+
+            SettingsSection.Connection -> {
+                item(key = "links") { AppLinksCard() }
+                item(key = "mirrors") { Spacer(Modifier.height(12.dp)); MirrorsCard(vm) }
+                if (acc is AccountState.SignedIn) {
+                    item(key = "channels") { Spacer(Modifier.height(12.dp)); ChannelCard(vm) }
+                }
+            }
+
+            SettingsSection.Data -> {
+                item(key = "data") {
+                    Card(padding = 6.dp) {
+                        ActionRow(
+                            Icons.Rounded.History, "История просмотра",
+                            history.distinctBy { it.animeId }.size.let { if (it == 0) "Пусто" else "$it ${plural(it, "тайтл", "тайтла", "тайтлов")}" },
+                            "Очистить", enabled = history.isNotEmpty(),
+                        ) { confirmHistory = true }
+                        RowDivider()
+                        ActionRow(
+                            Icons.Rounded.Image, "Кэш обложек",
+                            vm.cacheBytes?.let { if (it < 1L shl 20) "Меньше 1 МБ" else "${it / (1L shl 20)} МБ" } ?: "…",
+                            "Очистить", enabled = (vm.cacheBytes ?: 0) > 0,
+                        ) { vm.clearCache(ctx) }
+                    }
+                }
             }
         }
-
-        item(key = "data") { SectionLabel("Данные")
-        Card(padding = 6.dp) {
-            ActionRow(
-                Icons.Rounded.History, "История просмотра",
-                history.distinctBy { it.animeId }.size.let { if (it == 0) "Пусто" else "$it ${plural(it, "тайтл", "тайтла", "тайтлов")}" },
-                "Очистить", enabled = history.isNotEmpty(),
-            ) { confirmHistory = true }
-            Divider(inset = 58.dp)
-            ActionRow(
-                Icons.Rounded.Image, "Кэш обложек",
-                vm.cacheBytes?.let { if (it < 1L shl 20) "Меньше 1 МБ" else "${it / (1L shl 20)} МБ" } ?: "…",
-                "Очистить", enabled = (vm.cacheBytes ?: 0) > 0,
-            ) { vm.clearCache(ctx) }
-        } }
-
-        // ---------------- About ----------------
-        item(key = "about") { Column(Modifier.fillMaxWidth().padding(top = 34.dp, start = 28.dp, end = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            // Hidden for testing: five quick taps on the wordmark bring the welcome flow back.
-            var taps by remember { mutableIntStateOf(0) }
-            var lastTap by remember { mutableLongStateOf(0L) }
-            Wordmark(
-                Modifier.graphicsLayer { alpha = 0.75f }.clickable(remember { MutableInteractionSource() }, indication = null) {
-                    val now = System.currentTimeMillis()
-                    taps = if (now - lastTap < 600) taps + 1 else 1
-                    lastTap = now
-                    if (taps >= 5) { taps = 0; vm.showWelcome() }
-                },
-            )
-            Text("Версия ${BuildConfig.VERSION_NAME}", style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 4.dp))
-            Text(
-                "Neifur 365 — неофициальное приложение для просмотра каталога Anime 365. Каталог, видео и аккаунт — Anime 365, описания и персонажи — Shikimori.",
-                style = Type.Caption, color = Nf.TextMute, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        } }
     }
 
     if (confirmHistory) AlertDialog(
@@ -359,19 +506,171 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
         onDismissRequest = { confirmPicks = false },
         containerColor = Nf.SurfaceHi, titleContentColor = Nf.Text, textContentColor = Nf.TextDim,
         title = { Text("Сбросить выбор студий?", style = Type.Section) },
-        text = { Text("Тайтлы снова будут включаться по настройке «Как вы смотрите», любимые студии очистятся.", style = Type.Body) },
+        text = { Text("Тайтлы снова будут включаться по настройке «Как вы смотрите», любимые студии останутся.", style = Type.Body) },
         confirmButton = { TextButton({ vm.clearPicks(); confirmPicks = false }) { Text("Сбросить", color = Nf.Red, style = Type.Label) } },
         dismissButton = { TextButton({ confirmPicks = false }) { Text("Отмена", color = Nf.Text, style = Type.Label) } },
     )
-    if (confirmLogout) AlertDialog(
-        onDismissRequest = { confirmLogout = false },
-        containerColor = Nf.SurfaceHi, titleContentColor = Nf.Text, textContentColor = Nf.TextDim,
-        title = { Text("Выйти из аккаунта?", style = Type.Section) },
-        text = { Text("Смотреть видео можно будет после нового входа. История на телефоне сохранится.", style = Type.Body) },
-        confirmButton = { TextButton({ vm.logout(); confirmLogout = false }) { Text("Выйти", color = Nf.Red, style = Type.Label) } },
-        dismissButton = { TextButton({ confirmLogout = false }) { Text("Отмена", color = Nf.Text, style = Type.Label) } },
-    )
 }
+
+// --- live summaries for the hub ------------------------------------------------------------------------
+
+internal fun playerSummary(quality: Int, seekStep: Int, holdBoost: Boolean): String =
+    listOfNotNull("${quality}p", "±$seekStep с", if (holdBoost) "2× удержание" else null).joinToString(" · ")
+
+internal fun translationSummary(kind: String, favouriteCount: Int): String {
+    val base = when (kind) { "SubRu" -> "Субтитры"; "Raw" -> "Оригинал"; else -> "Озвучка" }
+    return if (favouriteCount > 0) "$base · $favouriteCount ${plural(favouriteCount, "любимая", "любимые", "любимых")}" else base
+}
+
+internal fun alertsSummary(signedIn: Boolean, enabled: Boolean, permitted: Boolean, myStudio: Boolean): Pair<String, Boolean> = when {
+    !signedIn -> "Нужен вход в аккаунт" to false
+    !enabled -> "Выключены" to false
+    !permitted -> "Нет разрешения системы" to true
+    myStudio -> "Включены · моя студия" to false
+    else -> "Включены · любой перевод" to false
+}
+
+internal fun connectionSummary(activeMirror: String?, anyMirrorWorking: Boolean?, channelLabel: String?): Pair<String, Boolean> = when {
+    anyMirrorWorking == false -> "Нет рабочих адресов" to true
+    activeMirror != null && channelLabel != null -> "$activeMirror · $channelLabel" to false
+    activeMirror != null -> activeMirror to false
+    else -> "Адреса, каналы и ссылки" to false
+}
+
+internal fun dataSummary(cacheBytes: Long?, titleCount: Int): String {
+    val parts = buildList {
+        cacheBytes?.let { b -> add("кэш " + if (b < 1L shl 20) "< 1 МБ" else "${b / (1L shl 20)} МБ") }
+        if (titleCount > 0) add("$titleCount ${plural(titleCount, "тайтл", "тайтла", "тайтлов")}")
+    }
+    return if (parts.isEmpty()) "История пуста" else parts.joinToString(" · ").replaceFirstChar { it.uppercase() }
+}
+
+// --- supported links (Android 12+ Open by default) -----------------------------------------------------
+
+private data class AppLinksState(val managed: Boolean, val allowed: Boolean, val enabled: Int, val total: Int)
+
+private fun readAppLinks(ctx: android.content.Context): AppLinksState {
+    if (Build.VERSION.SDK_INT < 31) return AppLinksState(managed = false, allowed = true, enabled = 0, total = 0)
+    return runCatching {
+        val mgr = ctx.getSystemService(android.content.pm.verify.domain.DomainVerificationManager::class.java)
+        val st = mgr?.getDomainVerificationUserState(ctx.packageName) ?: return AppLinksState(false, true, 0, 0)
+        val map = st.hostToStateMap
+        val on = map.values.count {
+            it == android.content.pm.verify.domain.DomainVerificationUserState.DOMAIN_STATE_SELECTED ||
+                it == android.content.pm.verify.domain.DomainVerificationUserState.DOMAIN_STATE_VERIFIED
+        }
+        AppLinksState(managed = true, allowed = st.isLinkHandlingAllowed, enabled = on, total = map.size)
+    }.getOrDefault(AppLinksState(managed = false, allowed = true, enabled = 0, total = 0))
+}
+
+private fun openSupportedLinksSettings(ctx: android.content.Context) {
+    val pkg = android.net.Uri.fromParts("package", ctx.packageName, null)
+    val primary = if (Build.VERSION.SDK_INT >= 31) {
+        android.content.Intent(Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS, pkg)
+    } else {
+        android.content.Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg)
+    }
+    if (runCatching { ctx.startActivity(primary.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }.isFailure) {
+        runCatching {
+            ctx.startActivity(
+                android.content.Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+    }
+}
+
+@Composable
+private fun AppLinksCard() {
+    val ctx = LocalContext.current
+    var st by remember { mutableStateOf(readAppLinks(ctx)) }
+    LifecycleResumeEffect(Unit) { st = readAppLinks(ctx); onPauseOrDispose {} }
+    val active = st.managed && st.allowed && st.enabled > 0
+    val tint = if (active) Nf.Mint else Nf.Violet
+    val statusText = when {
+        active -> "Включено · ${st.enabled} из ${st.total} адресов"
+        st.managed && !st.allowed -> "Открытие ссылок выключено в системе"
+        st.managed -> "Не настроено · сейчас открываются в браузере"
+        else -> "Открывать страницы каталога в Neifur 365"
+    }
+    val statusColor = when {
+        active -> Nf.Mint
+        st.managed && !st.allowed -> Nf.Amber
+        else -> Nf.TextMute
+    }
+    Card {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(40.dp).clip(RoundedCornerShape(13.dp))
+                    .background(tint.copy(alpha = 0.14f)).border(1.dp, tint.copy(alpha = 0.22f), RoundedCornerShape(13.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Rounded.Link, null, tint = tint, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Ссылки Anime 365", style = Type.Title, color = Nf.Text)
+                Text(statusText, style = Type.Caption, color = statusColor, modifier = Modifier.padding(top = 2.dp))
+            }
+        }
+        Text(
+            "Включите адреса anime365.ru и зеркал в системном окне «Открывать по умолчанию» — тогда ссылки на тайтлы из мессенджеров и браузера будут открываться сразу здесь.",
+            style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 12.dp, bottom = 14.dp),
+        )
+        Row(
+            Modifier.fillMaxWidth().height(46.dp).clip(RoundedCornerShape(14.dp))
+                .background(Nf.Violet.copy(alpha = 0.14f)).border(1.dp, Nf.Violet.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+                .pressable(0.97f) { openSupportedLinksSettings(ctx) }.padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, tint = Nf.Violet, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Выбрать поддерживаемые ссылки", style = Type.Label, color = Nf.Text)
+        }
+    }
+}
+
+@Composable
+private fun NavRow(
+    icon: ImageVector,
+    tint: Color,
+    title: String,
+    summary: String,
+    summaryColor: Color = Nf.TextMute,
+    badge: Color? = null,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).pressable(0.985f, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(40.dp).clip(RoundedCornerShape(13.dp))
+                .background(tint.copy(alpha = 0.14f))
+                .border(1.dp, tint.copy(alpha = 0.22f), RoundedCornerShape(13.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = Type.Title.copy(fontSize = 15.5.sp), color = Nf.Text, maxLines = 1)
+            Text(summary, style = Type.Caption, color = summaryColor, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+        }
+        if (badge != null) {
+            Spacer(Modifier.width(8.dp))
+            Box(Modifier.size(8.dp).clip(CircleShape).background(badge))
+        }
+        Spacer(Modifier.width(6.dp))
+        Icon(Icons.Rounded.ChevronRight, null, tint = Nf.TextMute, modifier = Modifier.size(20.dp))
+    }
+}
+
+@Composable
+private fun RowDivider() =
+    Box(Modifier.padding(start = 66.dp, end = 12.dp).fillMaxWidth().height(1.dp).background(Nf.Line.copy(alpha = 0.5f)))
 
 // --- account -------------------------------------------------------------------------------------------
 

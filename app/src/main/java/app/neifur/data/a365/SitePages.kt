@@ -29,9 +29,16 @@ internal object SitePages {
         return Profile(id, name, avatar, subscribed)
     }
 
+    /** `/catalog/<slug>-<seriesId>` (with or without an episode segment) → the series id. */
+    fun seriesId(href: String): Long? {
+        val parts = href.substringBefore('?').substringBefore('#').trim('/').split('/')
+        val i = parts.indexOf("catalog").takeIf { it >= 0 } ?: return null
+        return parts.getOrNull(i + 1)?.substringAfterLast('-')?.toLongOrNull()
+    }
+
     /** `/catalog/<slug>-<seriesId>/<slug>-<episodeId>` → the two ids. */
     fun ids(href: String): Pair<Long, Long>? {
-        val parts = href.substringBefore('?').trim('/').split('/')
+        val parts = href.substringBefore('?').substringBefore('#').trim('/').split('/')
         val i = parts.indexOf("catalog").takeIf { it >= 0 } ?: return null
         val series = parts.getOrNull(i + 1)?.substringAfterLast('-')?.toLongOrNull() ?: return null
         val episode = parts.getOrNull(i + 2)?.substringAfterLast('-')?.toLongOrNull() ?: return null

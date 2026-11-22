@@ -26,6 +26,23 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Anime 365 catalog links: user opts in via Android "Open by default" settings. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:scheme="http" />
+                <data android:host="anime365.ru" />
+                <data android:host="www.anime365.ru" />
+                <data android:host="smotret-anime.app" />
+                <data android:host="smotret-anime.co" />
+                <data android:host="smotretanime.co" />
+                <data android:host="smotret-anime.com" />
+                <data android:host="smotret-anime.org" />
+                <data android:host="smotret-anime.ru" />
+                <data android:pathPrefix="/catalog/" />
+            </intent-filter>
         </activity>
 
         <activity

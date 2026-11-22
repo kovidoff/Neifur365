@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -72,6 +73,8 @@ class CatalogVm(private val c: Container) : ViewModel() {
         private set
     var error by mutableStateOf<String?>(null)
         private set
+    var moreError by mutableStateOf<String?>(null)
+        private set
     private var end = false
     private var job: Job? = null
 
@@ -92,25 +95,34 @@ class CatalogVm(private val c: Container) : ViewModel() {
 
     private fun reload(debounce: Long) {
         job?.cancel()
-        end = false; loading = true; error = null
+        end = false; loading = true; error = null; moreError = null
         job = viewModelScope.launch {
             if (debounce > 0) delay(debounce)
             runCatching { fetch(0) }
                 .onSuccess { items = it; end = it.size < PAGE }
-                .onFailure { if (it !is kotlinx.coroutines.CancellationException) { error = it.userMessage(); items = emptyList() } }
+                .onFailure {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    error = it.userMessage(); items = emptyList()
+                }
             loading = false
         }
     }
 
     fun loadMore() {
         if (loading || end || job?.isActive == true) return
+        moreError = null
         job = viewModelScope.launch {
             loading = true
-            runCatching { fetch(items.size) }.onSuccess { more ->
-                val known = items.mapTo(HashSet()) { it.id }
-                items = items + more.filter { it.id !in known }
-                end = more.size < PAGE
-            }
+            runCatching { fetch(items.size) }
+                .onSuccess { more ->
+                    val known = items.mapTo(HashSet()) { it.id }
+                    items = items + more.filter { it.id !in known }
+                    end = more.size < PAGE
+                }
+                .onFailure {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    moreError = it.userMessage()
+                }
             loading = false
         }
     }
@@ -131,7 +143,7 @@ fun CatalogScreen(open: OpenAnime) {
     val focus = LocalFocusManager.current
 
     val nearEnd by remember { derivedStateOf { (grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= grid.layoutInfo.totalItemsCount - 9 } }
-    LaunchedEffect(nearEnd, vm.items.size) { if (nearEnd && vm.items.isNotEmpty()) vm.loadMore() }
+    LaunchedEffect(nearEnd, vm.items.size, vm.moreError) { if (nearEnd && vm.items.isNotEmpty() && vm.moreError == null) vm.loadMore() }
     LaunchedEffect(q) { grid.scrollToItem(0) }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -187,6 +199,22 @@ fun CatalogScreen(open: OpenAnime) {
                         if (vm.loading) item(span = { GridItemSpan(3) }) {
                             Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                                 CircularProgressIndicator(Modifier.size(24.dp), color = Nf.Violet, strokeWidth = 2.5.dp)
+                            }
+                        } else if (vm.moreError != null) item(span = { GridItemSpan(3) }) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(18.dp))
+                                    .background(Nf.Surface).border(1.dp, Nf.Line, RoundedCornerShape(18.dp))
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(Icons.Rounded.WifiOff, null, tint = Nf.TextMute, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Text(vm.moreError.orEmpty(), style = Type.Caption, color = Nf.TextDim, modifier = Modifier.weight(1f), maxLines = 2)
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    "Повторить", style = Type.Label, color = Nf.Text,
+                                    modifier = Modifier.clip(CircleShape).background(Nf.SurfaceHi).pressable(0.94f) { vm.loadMore() }.padding(horizontal = 12.dp, vertical = 7.dp),
+                                )
                             }
                         }
                     }

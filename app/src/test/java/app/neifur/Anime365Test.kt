@@ -85,6 +85,14 @@ class Anime365Test {
         assertNull(SitePages.ids("https://smotret-anime.app/users/profile"))
     }
 
+    @Test fun catalogDeepLinksResolveSeriesId() {
+        assertEquals(30414L, SitePages.seriesId("https://anime365.ru/catalog/sousou-no-frieren-30414"))
+        assertEquals(30414L, SitePages.seriesId("https://smotret-anime.app/catalog/sousou-no-frieren-30414/1-seriya-291395?ref=tg#top"))
+        assertEquals(30414L, SitePages.seriesId("https://smotret-anime.org/catalog/30414"))
+        assertNull(SitePages.seriesId("https://anime365.ru/users/profile"))
+        assertNull(SitePages.seriesId("https://anime365.ru/catalog/"))
+    }
+
     @Test fun signedOutPagesAreRecognised() {
         assertTrue(SitePages.isSignedOut("<title>Вход - Anime 365</title>"))
         assertNull(SitePages.profile("<form>Вход по паролю</form>", "https://smotret-anime.app"))
