@@ -31,6 +31,7 @@ data class ListedTitle(
 /** Ways to order a list in the Library tab. */
 enum class ListSort(val label: String, val chip: String) {
     Default("По умолчанию", "Обычная"),
+    NewEpisodes("Сначала новые серии", "Новые"),
     Score("По оценке", "Оценка"),
     Year("По году (сначала новые)", "Год"),
     Title("По названию (А–Я)", "А–Я"),
@@ -82,6 +83,11 @@ data class ListsState(
         val filtered = if (query.isBlank()) base else base.filter { matches(it, query) }
         return when (sort) {
             ListSort.Default -> filtered
+            ListSort.NewEpisodes -> filtered.sortedWith(
+                compareByDescending<ListedTitle> { it.behind > 0 }
+                    .thenByDescending { it.behind }
+                    .thenByDescending { it.airing }
+            )
             ListSort.Score -> filtered.sortedWith(
                 compareByDescending<ListedTitle> { it.entry.score ?: 0 }
                     .thenByDescending { it.series?.score ?: 0.0 }
@@ -144,7 +150,9 @@ class Lists(private val api: Anime365, private val account: Account, private val
             }.onSuccess { titles ->
                 _state.value = ListsState(loaded = true, titles = titles, updatedAt = System.currentTimeMillis())
                 titles.values.filter { it.series == null }.forEach { fill(it.entry.seriesId) }
-                countAired(titles.values.filter { it.airing && (it.status == ListStatus.Watching || it.status == ListStatus.Planned) })
+                // Count aired episodes for "Смотрю" first so huge "Запланировано" lists never delay fresh badges.
+                countAired(titles.values.filter { it.airing && it.status == ListStatus.Watching })
+                countAired(titles.values.filter { it.airing && it.status == ListStatus.Planned })
             }.onFailure { e ->
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 _state.update { it.copy(loading = false, error = e.userMessage()) }

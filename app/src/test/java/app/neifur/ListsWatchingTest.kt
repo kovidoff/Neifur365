@@ -110,4 +110,18 @@ class ListsWatchingTest {
         assertEquals(listOf(2L, 1L, 3L), state.display(ListStatus.Completed, emptyList(), sort = ListSort.Title).map { it.entry.seriesId })
         assertEquals(listOf(2L, 3L, 1L), state.display(ListStatus.Completed, emptyList(), sort = ListSort.Progress).map { it.entry.seriesId })
     }
+
+    @Test fun displaySortsByNewEpisodesFirstEvenOverRecentHistory() {
+        val state = ListsState(
+            loaded = true,
+            titles = linkedMapOf(
+                item(1, "RecentNoNew", watched = 5, aired = 5, airing = true),
+                item(2, "TwoNew", watched = 3, aired = 5, airing = true),
+                item(3, "FiveNew", watched = 1, aired = 6, airing = true),
+                item(4, "Finished", watched = 12, aired = 12, airing = false),
+            ),
+        )
+        val history = listOf(entry("1", ep = 5, at = 999))
+        assertEquals(listOf(3L, 2L, 1L, 4L), state.display(ListStatus.Watching, history, sort = ListSort.NewEpisodes).map { it.entry.seriesId })
+    }
 }

@@ -169,9 +169,9 @@ fun PosterCard(
             if (listStatus != null) ListMark(listStatus, Modifier.align(Alignment.TopEnd).padding(7.dp))
         }
         Spacer(Modifier.height(9.dp))
-        Text(stub.title, style = Type.Label, color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(stub.title, style = Type.Label, color = Nf.Text, minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis)
         val meta = listOfNotNull(stub.year?.toString(), kindLabel(stub.kind).takeIf { it.isNotBlank() }).joinToString(" · ")
-        if (meta.isNotBlank()) Text(meta, style = Type.Caption, color = Nf.TextMute, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
+        Text(meta.ifBlank { " " }, style = Type.Caption, color = Nf.TextMute, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
     }
 }
 

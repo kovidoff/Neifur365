@@ -529,7 +529,7 @@ private fun FreshRow(items: List<ListedTitle>, layout: ScreenLayout, open: OpenA
                         )
                     }
                     Spacer(Modifier.height(9.dp))
-                    Text(series.title, style = Type.Label, color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(series.title, style = Type.Label, color = Nf.Text, minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(
                         "Дальше ${t.entry.watched + 1} серия", style = Type.Caption, color = Nf.Mint, maxLines = 1,
                         modifier = Modifier.padding(top = 2.dp),

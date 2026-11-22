@@ -126,7 +126,7 @@ internal fun time(sec: Double): String {
 internal fun speedLabel(v: Double): String = if (v % 1.0 == 0.0) "${v.toInt()}×" else "${v.toString().trimEnd('0')}×"
 
 /** A double-tap seek burst: taps on the same side within a short window add up (10, 20, 30 s... or by 5). */
-private data class SeekBurst(val side: Int, val seconds: Int, val at: Long)
+private data class SeekBurst(val side: Int, val seconds: Int, val at: Long, val repeatable: Boolean = true)
 
 /** Brightness / volume while a vertical swipe is in progress. */
 private data class Level(val volume: Boolean, val value: Float)
@@ -166,6 +166,9 @@ fun PlayerScreen(
     var autoNextCancelled by remember(index) { mutableStateOf(false) }
     val stepSec by remember { ctx.container.prefs.seekStep }.collectAsState(10)
     val holdBoost by remember { ctx.container.prefs.holdBoost }.collectAsState(true)
+    val sideGestures by remember { ctx.container.prefs.sideGestures }.collectAsState(true)
+    val sideGesturesNow by rememberUpdatedState(sideGestures)
+    val holdBoostNow by rememberUpdatedState(holdBoost)
 
     // Auto-hide: controls go away after a few seconds of playback without touches.
     LaunchedEffect(controls, interaction, player.paused, panel, menu, scrub, locked) {
@@ -197,17 +200,17 @@ fun PlayerScreen(
     fun seekStep(side: Int) {
         val now = System.currentTimeMillis()
         val b = burst
-        val secs = if (b != null && b.side == side && now - b.at < 850) b.seconds + stepSec else stepSec
+        val secs = if (b != null && b.repeatable && b.side == side && now - b.at < 850) b.seconds + stepSec else stepSec
         player.seekBy(side * stepSec.toDouble())
-        burst = SeekBurst(side, secs, now)
+        burst = SeekBurst(side, secs, now, repeatable = true)
     }
 
     fun jumpOpening() {
         val now = System.currentTimeMillis()
         val b = burst
-        val secs = if (b != null && b.side == 1 && now - b.at < 850) b.seconds + JUMP_SECONDS else JUMP_SECONDS
+        val secs = if (b != null && !b.repeatable && b.side == 1 && now - b.at < 850) b.seconds + JUMP_SECONDS else JUMP_SECONDS
         player.seekBy(JUMP_SECONDS.toDouble())
-        burst = SeekBurst(1, secs, now)
+        burst = SeekBurst(1, secs, now, repeatable = false)
         menu = null
         interaction++
     }
@@ -269,18 +272,23 @@ fun PlayerScreen(
         if (!locked) Box(
             Modifier.fillMaxSize()
                 .pointerInput(Unit) {
+                    val topEdge = with(density) { 56.dp.toPx() }
+                    val sideEdge = with(density) { 36.dp.toPx() }
+                    fun inDeadZone(o: Offset) = o.y < topEdge || o.y > size.height - sideEdge || o.x < sideEdge || o.x > size.width - sideEdge
                     detectTapGestures(
                         onTap = { o ->
+                            if (inDeadZone(o) && panel == null) return@detectTapGestures
                             val side = if (o.x < size.width / 3f) -1 else if (o.x > size.width * 2 / 3f) 1 else 0
                             val b = burst
                             when {
                                 panel != null -> panel = null
                                 // Keep tapping on the same side to keep seeking, like a double tap that never ends.
-                                b != null && side != 0 && b.side == side -> seekStep(side)
+                                b != null && b.repeatable && side != 0 && b.side == side -> seekStep(side)
                                 else -> { controls = !controls; interaction++ }
                             }
                         },
                         onDoubleTap = { o ->
+                            if (inDeadZone(o) || panel != null) return@detectTapGestures
                             when {
                                 o.x < size.width / 3f -> seekStep(-1)
                                 o.x > size.width * 2 / 3f -> seekStep(1)
@@ -293,7 +301,7 @@ fun PlayerScreen(
                         onPress = {
                             // Hold to watch at 2×; lift to return to the previous speed.
                             val before = player.speed
-                            val job = scope.launch { delay(450); if (holdBoost && player.loaded && !player.paused && panel == null) { boosting = true; player.changeSpeed(2.0) } }
+                            val job = scope.launch { delay(450); if (holdBoostNow && player.loaded && !player.paused && panel == null) { boosting = true; player.changeSpeed(2.0) } }
                             tryAwaitRelease()
                             job.cancel()
                             if (boosting) { boosting = false; player.changeSpeed(before) }
@@ -307,12 +315,13 @@ fun PlayerScreen(
                     var startLevel = 0f
                     val audio = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
                     val maxVol = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-                    val edge = with(density) { 32.dp.toPx() }
+                    val topEdge = with(density) { 56.dp.toPx() }
+                    val edge = with(density) { 40.dp.toPx() }
                     val window = (ctx as ComponentActivity).window
                     detectDragGestures(
                         onDragStart = { o ->
-                            // Leave the screen edges to the system's own swipe gestures.
-                            mode = if (o.y < edge || o.y > size.height - edge || o.x < edge || o.x > size.width - edge || panel != null) -1 else 0
+                            // Leave the screen edges (especially top notification shade) to system gestures.
+                            mode = if (o.y < topEdge || o.y > size.height - edge || o.x < edge || o.x > size.width - edge || panel != null) -1 else 0
                             acc = 0f; startPos = player.position
                         },
                         onDragEnd = {
@@ -324,7 +333,13 @@ fun PlayerScreen(
                     ) { change, drag ->
                         if (mode == -1) return@detectDragGestures
                         if (mode == 0) {
-                            mode = if (abs(drag.x) > abs(drag.y)) 1 else if (change.position.x < size.width / 2) 2 else 3
+                            mode = when {
+                                abs(drag.x) > abs(drag.y) -> 1
+                                !sideGesturesNow -> -1
+                                change.position.x < size.width / 2 -> 2
+                                else -> 3
+                            }
+                            if (mode == -1) return@detectDragGestures
                             startLevel = if (mode == 2) window.attributes.screenBrightness.let { if (it < 0) 0.5f else it }
                             else audio.getStreamVolume(AudioManager.STREAM_MUSIC) / maxVol.toFloat()
                         }

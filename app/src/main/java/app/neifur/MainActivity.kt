@@ -84,6 +84,8 @@ class MainActivity : ComponentActivity() {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus || !container.reseatBars) return
         container.reseatBars = false
+        // Only phones switch back from landscape player to portrait; tablets stay in their current orientation.
+        if (resources.configuration.smallestScreenWidthDp >= 600) return
         // Once the rotation back to portrait has settled (the focus arrives a little before it does).
         window.decorView.postDelayed({
             androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {

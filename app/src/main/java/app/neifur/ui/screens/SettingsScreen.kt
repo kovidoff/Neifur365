@@ -56,6 +56,7 @@ import androidx.compose.material.icons.rounded.Replay5
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Translate
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -196,6 +197,7 @@ class SettingsVm(private val c: Container) : ViewModel() {
     fun setSubScale(v: Double) = viewModelScope.launch { c.prefs.setSubScale(v) }
     val seekStep = c.prefs.seekStep
     val holdBoost = c.prefs.holdBoost
+    val sideGestures = c.prefs.sideGestures
     val rememberBrightness = c.prefs.rememberBrightness
     val downloadQuality = c.prefs.downloadQuality
     val autoDeleteWatched = c.prefs.autoDeleteWatched
@@ -204,6 +206,7 @@ class SettingsVm(private val c: Container) : ViewModel() {
     val alertsMyStudio = c.prefs.alertsMyStudio
     fun setSeekStep(v: Int) = viewModelScope.launch { c.prefs.setSeekStep(v) }
     fun setHoldBoost(on: Boolean) = viewModelScope.launch { c.prefs.setHoldBoost(on) }
+    fun setSideGestures(on: Boolean) = viewModelScope.launch { c.prefs.setSideGestures(on) }
     fun setRememberBrightness(on: Boolean) = viewModelScope.launch { c.prefs.setRememberBrightness(on) }
     fun setDownloadQuality(q: Int) = viewModelScope.launch { c.prefs.setDownloadQuality(q) }
     fun setAutoDeleteWatched(on: Boolean) = viewModelScope.launch { c.prefs.setAutoDeleteWatched(on) }
@@ -361,6 +364,7 @@ fun SettingsSectionScreen(
     val subScale by vm.subScale.collectAsStateWithLifecycle(1.0)
     val seekStep by vm.seekStep.collectAsStateWithLifecycle(10)
     val holdBoost by vm.holdBoost.collectAsStateWithLifecycle(true)
+    val sideGestures by vm.sideGestures.collectAsStateWithLifecycle(true)
     val rememberBrightness by vm.rememberBrightness.collectAsStateWithLifecycle(false)
     val autoDeleteWatched by vm.autoDeleteWatched.collectAsStateWithLifecycle(false)
     val studios by vm.studios.collectAsStateWithLifecycle(emptyList())
@@ -435,6 +439,11 @@ fun SettingsSectionScreen(
                             Icons.Rounded.FastForward, "Ускорение при удержании",
                             "Держите палец на видео — серия идёт в 2×", holdBoost,
                         ) { vm.setHoldBoost(it) }
+                        Divider()
+                        ToggleRow(
+                            Icons.Rounded.Tune, "Жесты яркости и громкости",
+                            "Свайп вверх и вниз по левой и правой сторонам экрана", sideGestures,
+                        ) { vm.setSideGestures(it) }
                         Divider()
                         ToggleRow(
                             Icons.Rounded.LightMode, "Запоминать яркость",
