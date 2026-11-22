@@ -2,7 +2,7 @@
 
 ## Communication
 - Always respond, explain decisions, and summarize results in **Russian**.
-- The owner is not a professional developer: explain trade-offs in plain user-facing terms, proactively critique weak UX/architecture (including existing code), and propose cleaner alternatives before building large features.
+- Explain trade-offs in plain user-facing terms, proactively critique weak UX/architecture (including existing code), and propose cleaner alternatives before building large features.
 
 ## Design & Code Quality
 - **Design matters first**: every screen and control must feel intentional, cohesive, and uncluttered — matching `Neifur 365`'s dark aesthetic (`Nf.Ink`, `Nf.Surface`, `Nf.SurfaceHi`, `Nf.Line`, `Nf.Violet`, `Nf.Mint`, `Nf.Amber`, `Type`, `pressable`, smooth Compose animations).

@@ -1,5 +1,6 @@
 package app.neifur.core
 
+import app.neifur.BuildConfig
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
 import okhttp3.Call
@@ -11,7 +12,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-const val USER_AGENT = "Neifur/0.1 (Android)"
+val USER_AGENT: String = "Neifur365/${BuildConfig.VERSION_NAME} (Android)"
 
 val AppJson = Json {
     ignoreUnknownKeys = true
