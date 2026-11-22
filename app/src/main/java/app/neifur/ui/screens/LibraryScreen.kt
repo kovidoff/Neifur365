@@ -1,11 +1,17 @@
-@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 
 package app.neifur.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
@@ -16,9 +22,14 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -30,11 +41,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,6 +63,7 @@ import app.neifur.data.WatchEntry
 import app.neifur.data.a365.AccountState
 import app.neifur.data.a365.ListProgress
 import app.neifur.data.a365.ListRecord
+import app.neifur.data.a365.ListSort
 import app.neifur.data.a365.ListStatus
 import app.neifur.data.a365.ListedTitle
 import app.neifur.nfViewModel
@@ -65,6 +80,8 @@ class LibraryVm(private val c: Container) : ViewModel() {
     val alertsAsked = c.prefs.alertsAsked
     val alertsOn = c.prefs.alerts
     var status by mutableStateOf(ListStatus.Watching)
+    var query by mutableStateOf("")
+    var sort by mutableStateOf(ListSort.Default)
     var notice by mutableStateOf<String?>(null)
 
     fun refresh() = c.lists.refresh()
@@ -99,14 +116,19 @@ fun LibraryScreen(open: OpenAnime) {
     val recent = history.distinctBy { it.animeId }.take(12)
     var editing by remember { mutableStateOf<ListedTitle?>(null) }
     var signIn by remember { mutableStateOf(false) }
+    var sortSheet by remember { mutableStateOf(false) }
+    val focus = LocalFocusManager.current
     val signedIn = account is AccountState.SignedIn
     LaunchedEffect(signedIn) { if (signedIn) vm.refreshIfStale() }
     LaunchedEffect(vm.notice) { if (vm.notice != null) { kotlinx.coroutines.delay(3500); vm.notice = null } }
 
-    val items = remember(lists, vm.status, history) {
-        // Watching: by what's watched lately and what's new. Others keep the site's order.
-        if (vm.status == ListStatus.Watching) lists.watching(history) else lists.of(vm.status)
+    val items = remember(lists, vm.status, history, vm.query, vm.sort) {
+        lists.display(vm.status, history, vm.query, vm.sort)
     }
+    val otherMatches = remember(lists, vm.status, vm.query, items.isEmpty()) {
+        if (items.isEmpty() && vm.query.isNotBlank()) lists.matchesInOtherTabs(vm.status, vm.query) else emptyList()
+    }
+    val showTools = signedIn && lists.loaded && (lists.count(vm.status) > 0 || vm.query.isNotBlank() || vm.sort != ListSort.Default)
     val wide = vm.status != ListStatus.Planned && vm.status != ListStatus.Completed
 
     Box(Modifier.fillMaxSize()) {
@@ -115,13 +137,13 @@ fun LibraryScreen(open: OpenAnime) {
             modifier = Modifier.fillMaxSize(),
         ) {
             LazyVerticalGrid(
-                GridCells.Fixed(3), modifier = Modifier.fillMaxSize().statusBarsPadding(),
+                GridCells.Fixed(3), modifier = Modifier.fillMaxSize().statusBarsPadding().imePadding(),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 120.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 item(span = { GridItemSpan(3) }, key = "head") { Header(account) }
 
-                if (recent.isNotEmpty()) item(span = { GridItemSpan(3) }, key = "continue") {
+                if (recent.isNotEmpty() && vm.query.isBlank()) item(span = { GridItemSpan(3) }, key = "continue") {
                     ContinueStrip(recent, lists.titles, open, onForget = { vm.forget(it) })
                 }
 
@@ -129,8 +151,18 @@ fun LibraryScreen(open: OpenAnime) {
                     item(span = { GridItemSpan(3) }, key = "tabs") {
                         StatusTabs(vm.status, { lists.count(it) }, lists.loaded) { vm.status = it }
                     }
+                    if (showTools) item(span = { GridItemSpan(3) }, key = "tools") {
+                        ListToolsRow(
+                            status = vm.status,
+                            query = vm.query,
+                            sort = vm.sort,
+                            onQuery = { vm.query = it },
+                            onDone = { focus.clearFocus() },
+                            onSort = { focus.clearFocus(); sortSheet = true },
+                        )
+                    }
                     // Asked once, where it makes sense: above what the viewer is watching.
-                    if (vm.status == ListStatus.Watching && lists.loaded && lists.count(ListStatus.Watching) > 0 && !alertsAsked && !alertsOn) {
+                    if (vm.status == ListStatus.Watching && vm.query.isBlank() && lists.loaded && lists.count(ListStatus.Watching) > 0 && !alertsAsked && !alertsOn) {
                         item(span = { GridItemSpan(3) }, key = "alerts-offer") { AlertsOffer(Modifier.animateItem()) }
                     }
                     when {
@@ -141,12 +173,15 @@ fun LibraryScreen(open: OpenAnime) {
                             if (wide) Box(Modifier.fillMaxWidth().height(104.dp).clip(RoundedCornerShape(20.dp)).shimmer())
                             else PosterCardSkeleton(width = null)
                         }
+                        items.isEmpty() && vm.query.isNotBlank() -> item(span = { GridItemSpan(3) }, key = "empty-search") {
+                            EmptySearch(vm.status, vm.query, otherMatches, onSwitch = { vm.status = it }, onClear = { vm.query = "" })
+                        }
                         items.isEmpty() -> item(span = { GridItemSpan(3) }) { EmptyList(vm.status) }
                         wide -> items(items, key = { "w${it.entry.seriesId}" }, span = { GridItemSpan(3) }, contentType = { "wide" }) { t ->
-                            WideRow(t, Modifier.animateItem(), onOpen = { open(stubOf(t), "lists") }, onEdit = { editing = t }, onBump = { vm.bump(t) })
+                            WideRow(t, Modifier.animateItem(), onOpen = { focus.clearFocus(); open(stubOf(t), "lists") }, onEdit = { editing = t }, onBump = { vm.bump(t) })
                         }
                         else -> items(items, key = { "g${it.entry.seriesId}" }, contentType = { "card" }) { t ->
-                            GridCard(t, Modifier.animateItem(), onOpen = { open(stubOf(t), "lists") }, onEdit = { editing = t })
+                            GridCard(t, Modifier.animateItem(), onOpen = { focus.clearFocus(); open(stubOf(t), "lists") }, onEdit = { editing = t })
                         }
                     }
                 } else {
@@ -184,7 +219,112 @@ fun LibraryScreen(open: OpenAnime) {
             onChange = { s, w, sc -> vm.change(live, s, w, sc) },
         )
     }
+    if (sortSheet) OptionSheet(
+        title = "Сортировка",
+        options = ListSort.entries.map { s ->
+            val label = if (s == ListSort.Default && vm.status == ListStatus.Watching) "Умная (недавние и новые)" else s.label
+            s to label
+        },
+        selected = vm.sort,
+        onDismiss = { sortSheet = false },
+        onPick = { vm.sort = it },
+    )
     if (signIn) SignInSheet(onDismiss = { signIn = false }, onDone = { signIn = false })
+}
+
+/** Compact search + sort bar tucked directly under the status pills. */
+@Composable
+private fun ListToolsRow(
+    status: ListStatus,
+    query: String,
+    sort: ListSort,
+    onQuery: (String) -> Unit,
+    onDone: () -> Unit,
+    onSort: () -> Unit,
+) {
+    val searchActive = query.isNotBlank()
+    val sortActive = sort != ListSort.Default
+    val searchBorder by animateColorAsState(if (searchActive) Nf.Violet.copy(alpha = 0.5f) else Nf.Line, label = "lsb")
+    val sortBg by animateColorAsState(if (sortActive) Nf.Violet.copy(alpha = 0.16f) else Nf.Surface, label = "lsbg")
+    val sortBorder by animateColorAsState(if (sortActive) Nf.Violet.copy(alpha = 0.5f) else Nf.Line, label = "lsbr")
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.weight(1f).height(42.dp).clip(CircleShape).background(Nf.Surface)
+                .border(1.dp, searchBorder, CircleShape).padding(start = 13.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.Search, null, tint = if (searchActive) Nf.Violet else Nf.TextMute, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Box(Modifier.weight(1f)) {
+                if (query.isEmpty()) Text(
+                    "Поиск в «${status.title}»", style = Type.Label, color = Nf.TextMute, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                BasicTextField(
+                    query, onQuery, singleLine = true,
+                    textStyle = Type.Label.copy(color = Nf.Text), cursorBrush = SolidColor(Nf.Violet),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { onDone() }),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            AnimatedVisibility(query.isNotEmpty(), enter = fadeIn() + scaleIn(initialScale = 0.8f), exit = fadeOut() + scaleOut(targetScale = 0.8f)) {
+                Icon(
+                    Icons.Rounded.Close, "Очистить поиск", tint = Nf.TextDim,
+                    modifier = Modifier.size(30.dp).clip(CircleShape).clickable { onQuery("") }.padding(6.dp),
+                )
+            }
+        }
+        Row(
+            Modifier.height(42.dp).clip(CircleShape).background(sortBg).border(1.dp, sortBorder, CircleShape)
+                .pressable(0.94f, onClick = onSort).padding(horizontal = 13.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.AutoMirrored.Rounded.Sort, "Сортировка", tint = if (sortActive) Nf.Violet else Nf.TextDim, modifier = Modifier.size(18.dp))
+            if (sortActive) {
+                Spacer(Modifier.width(6.dp))
+                Text(sort.chip, style = Type.Label, color = Nf.Violet, maxLines = 1)
+            }
+        }
+    }
+}
+
+/** Empty state when filtering inside a tab, with one-tap jumps if another tab has matches. */
+@Composable
+private fun EmptySearch(
+    current: ListStatus,
+    query: String,
+    others: List<Pair<ListStatus, Int>>,
+    onSwitch: (ListStatus) -> Unit,
+    onClear: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(top = 28.dp, start = 20.dp, end = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(56.dp).clip(CircleShape).background(Nf.Surface), contentAlignment = Alignment.Center) {
+            Icon(Icons.Rounded.SearchOff, null, tint = Nf.TextMute, modifier = Modifier.size(26.dp))
+        }
+        Text("В «${current.title}» ничего не нашлось", style = Type.Title, color = Nf.Text, modifier = Modifier.padding(top = 14.dp), textAlign = TextAlign.Center)
+        Text("По запросу «${query.trim()}»", style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 4.dp))
+        if (others.isNotEmpty()) {
+            Text("Нашлось в других списках:", style = Type.Caption, color = Nf.TextDim, modifier = Modifier.padding(top = 16.dp, bottom = 10.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                others.forEach { (s, n) ->
+                    val c = statusColor(s)
+                    Row(
+                        Modifier.clip(CircleShape).background(c.copy(alpha = 0.14f)).border(1.dp, c.copy(alpha = 0.45f), CircleShape)
+                            .pressable(0.94f) { onSwitch(s) }.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(statusIcon(s), null, tint = c, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("${s.title} · $n", style = Type.Label, color = Nf.Text)
+                    }
+                }
+            }
+        }
+        Text(
+            "Сбросить поиск", style = Type.Label, color = Nf.Violet,
+            modifier = Modifier.padding(top = 14.dp).clip(CircleShape).clickable(onClick = onClear).padding(horizontal = 14.dp, vertical = 8.dp),
+        )
+    }
 }
 
 private fun stubOf(t: ListedTitle): AnimeStub = t.series?.stub() ?: AnimeStub(t.entry.seriesId.toString(), t.entry.title, null)

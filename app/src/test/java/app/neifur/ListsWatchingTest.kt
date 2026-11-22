@@ -2,10 +2,12 @@ package app.neifur
 
 import app.neifur.data.WatchEntry
 import app.neifur.data.a365.ListEntry
+import app.neifur.data.a365.ListSort
 import app.neifur.data.a365.ListStatus
 import app.neifur.data.a365.ListedTitle
 import app.neifur.data.a365.ListsState
 import app.neifur.data.a365.Series
+import app.neifur.data.a365.Titles
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -78,5 +80,34 @@ class ListsWatchingTest {
 
         val fresh = state.watching(history).filter { it.behind > 0 }
         assertEquals(listOf(15L, 99L), fresh.map { it.entry.seriesId })
+    }
+
+    @Test fun displayFiltersAcrossLanguagesAndFindsMatchesInOtherTabs() {
+        val frieren = 1L to ListedTitle(
+            ListEntry(1, "Провожающая в последний путь Фрирен", 28, 28, 10, ListStatus.Completed),
+            Series(1, year = 2023, myAnimeListScore = 9.3, titles = Titles(ru = "Фрирен", romaji = "Sousou no Frieren", en = "Frieren: Beyond Journey's End")),
+        )
+        val bleach = 2L to ListedTitle(
+            ListEntry(2, "Блич", 12, 52, null, ListStatus.Watching),
+            Series(2, year = 2004, myAnimeListScore = 7.9, titles = Titles(ru = "Блич", romaji = "Bleach")),
+        )
+        val state = ListsState(loaded = true, titles = linkedMapOf(frieren, bleach))
+
+        assertEquals(listOf(1L), state.display(ListStatus.Completed, emptyList(), query = "frieren").map { it.entry.seriesId })
+        assertEquals(listOf(1L), state.display(ListStatus.Completed, emptyList(), query = "фрирен").map { it.entry.seriesId })
+        assertEquals(emptyList<Long>(), state.display(ListStatus.Watching, emptyList(), query = "frieren").map { it.entry.seriesId })
+        assertEquals(listOf(ListStatus.Completed to 1), state.matchesInOtherTabs(ListStatus.Watching, "frieren"))
+    }
+
+    @Test fun displaySortsByScoreYearTitleAndProgress() {
+        val a = 1L to ListedTitle(ListEntry(1, "Второй", 5, 12, 8, ListStatus.Completed), Series(1, year = 2022, myAnimeListScore = 8.9, titles = Titles(ru = "Второй")))
+        val b = 2L to ListedTitle(ListEntry(2, "Атака", 24, 24, 10, ListStatus.Completed), Series(2, year = 2013, myAnimeListScore = 8.5, titles = Titles(ru = "Атака")))
+        val c = 3L to ListedTitle(ListEntry(3, "Новый", 12, 12, null, ListStatus.Completed), Series(3, year = 2026, myAnimeListScore = 9.1, titles = Titles(ru = "Новый")))
+        val state = ListsState(loaded = true, titles = linkedMapOf(a, b, c))
+
+        assertEquals(listOf(2L, 1L, 3L), state.display(ListStatus.Completed, emptyList(), sort = ListSort.Score).map { it.entry.seriesId })
+        assertEquals(listOf(3L, 1L, 2L), state.display(ListStatus.Completed, emptyList(), sort = ListSort.Year).map { it.entry.seriesId })
+        assertEquals(listOf(2L, 1L, 3L), state.display(ListStatus.Completed, emptyList(), sort = ListSort.Title).map { it.entry.seriesId })
+        assertEquals(listOf(2L, 3L, 1L), state.display(ListStatus.Completed, emptyList(), sort = ListSort.Progress).map { it.entry.seriesId })
     }
 }

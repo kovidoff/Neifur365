@@ -31,8 +31,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ClosedCaption
+import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MovieFilter
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -78,8 +80,39 @@ enum class PanelTab(val title: String, val icon: ImageVector) {
     Subs("Субтитры", Icons.Rounded.Subtitles),
 }
 
-/** Small cards that pop up above their button: quick choices that don't need the side panel. */
-enum class QuickMenu { Quality, Speed }
+/** Small cards that pop up near their button: quick choices that don't need the side panel. */
+enum class QuickMenu { Quality, Speed, Sleep }
+
+/** Sleep timer state: off, counting down to a monotonic deadline, or pausing when this episode ends. */
+sealed interface SleepTimer {
+    data object Off : SleepTimer
+    data class Until(val endAtMs: Long) : SleepTimer
+    data object EndOfEpisode : SleepTimer
+}
+
+/** Compact label for the top-right capsule ("15 м", "1 ч 30 м", "0:42", "Конец"). */
+internal fun formatSleepBadge(timer: SleepTimer, remainingMs: Long): String? = when (timer) {
+    SleepTimer.Off -> null
+    SleepTimer.EndOfEpisode -> "Конец"
+    is SleepTimer.Until -> {
+        val sec = ((remainingMs + 999) / 1000).coerceAtLeast(0)
+        val mins = (sec + 59) / 60
+        when {
+            sec < 60 -> String.format(Locale.US, "0:%02d", sec)
+            mins >= 60 -> "${mins / 60} ч" + if (mins % 60 > 0) " ${mins % 60} м" else ""
+            else -> "$mins м"
+        }
+    }
+}
+
+/** Live countdown inside the sleep timer popup ("14:32", "1:14:32"). */
+internal fun formatSleepCountdown(remainingMs: Long): String {
+    val sec = ((remainingMs + 999) / 1000).coerceAtLeast(0)
+    val h = sec / 3600
+    val m = (sec % 3600) / 60
+    val s = sec % 60
+    return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, s) else String.format(Locale.US, "%d:%02d", m, s)
+}
 
 /** What the player shows about the stream: the translation playing, this episode's alternatives, the qualities. */
 data class StreamUi(
@@ -371,22 +404,40 @@ private fun SubsTab(player: MpvPlayer, onSelect: (String, Track?) -> Unit, onSub
 // --- quick menus -------------------------------------------------------------------------------------
 
 /**
- * Quality or speed: a small card rising from the bottom-right corner, where their buttons are.
- * A tap anywhere else closes it.
+ * Quality, speed or sleep timer: a small card rising near its button (bottom-right for stream settings,
+ * top-right for the sleep timer). A tap anywhere else closes it.
  */
 @Composable
-fun QuickMenuHost(menu: QuickMenu?, player: MpvPlayer, stream: StreamUi, onHeight: (Int) -> Unit, onClose: () -> Unit) {
+fun QuickMenuHost(
+    menu: QuickMenu?,
+    player: MpvPlayer,
+    stream: StreamUi,
+    sleep: SleepTimer,
+    sleepRemainingMs: Long,
+    onHeight: (Int) -> Unit,
+    onSleepMinutes: (Int) -> Unit,
+    onSleepExtend: (Int) -> Unit,
+    onSleepEnd: () -> Unit,
+    onSleepOff: () -> Unit,
+    onClose: () -> Unit,
+) {
     if (menu != null) Box(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, null, onClick = onClose))
-    Box(Modifier.fillMaxSize().displayCutoutPadding().padding(end = 22.dp, bottom = 70.dp), contentAlignment = Alignment.BottomEnd) {
+    var shown by remember { mutableStateOf(QuickMenu.Quality) }
+    if (menu != null) shown = menu
+    val top = shown == QuickMenu.Sleep
+    Box(
+        Modifier.fillMaxSize().displayCutoutPadding()
+            .padding(end = if (top) 18.dp else 22.dp, top = if (top) 70.dp else 0.dp, bottom = if (top) 0.dp else 70.dp),
+        contentAlignment = if (top) Alignment.TopEnd else Alignment.BottomEnd,
+    ) {
         AnimatedVisibility(
             menu != null,
-            enter = scaleIn(spring(dampingRatio = 0.8f, stiffness = 600f), 0.85f, TransformOrigin(1f, 1f)) + fadeIn(tween(120)),
-            exit = scaleOut(tween(140), 0.9f, TransformOrigin(1f, 1f)) + fadeOut(tween(120)),
+            enter = scaleIn(spring(dampingRatio = 0.8f, stiffness = 600f), 0.85f, TransformOrigin(1f, if (top) 0f else 1f)) + fadeIn(tween(120)),
+            exit = scaleOut(tween(140), 0.9f, TransformOrigin(1f, if (top) 0f else 1f)) + fadeOut(tween(120)),
         ) {
-            var shown by remember { mutableStateOf(QuickMenu.Quality) }
-            if (menu != null) shown = menu
             Column(
-                Modifier.width(236.dp).clip(RoundedCornerShape(22.dp)).background(PanelBg).border(1.dp, Color(0x14FFFFFF), RoundedCornerShape(22.dp))
+                Modifier.width(if (top) 264.dp else 236.dp).clip(RoundedCornerShape(22.dp)).background(PanelBg)
+                    .border(1.dp, Color(0x14FFFFFF), RoundedCornerShape(22.dp))
                     .clickable(remember { MutableInteractionSource() }, null) {}.padding(8.dp)
             ) {
                 when (shown) {
@@ -418,6 +469,70 @@ fun QuickMenuHost(menu: QuickMenu?, player: MpvPlayer, stream: StreamUi, onHeigh
                             }
                         }
                         Hint("Удерживайте палец на видео — временно 2×", padding = 10.dp)
+                    }
+                    QuickMenu.Sleep -> {
+                        Row(Modifier.fillMaxWidth().padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            MenuTitle("Таймер сна")
+                            Spacer(Modifier.weight(1f))
+                            if (sleep != SleepTimer.Off) {
+                                val text = if (sleep is SleepTimer.Until) formatSleepCountdown(sleepRemainingMs) else "До конца"
+                                Text(
+                                    text, style = Type.Label.copy(fontSize = 12.sp), color = Nf.Violet,
+                                    modifier = Modifier.clip(CircleShape).background(RowOn).padding(horizontal = 9.dp, vertical = 3.dp),
+                                )
+                            }
+                        }
+                        AnimatedVisibility(sleep != SleepTimer.Off) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 6.dp).padding(bottom = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                if (sleep is SleepTimer.Until) Box(
+                                    Modifier.weight(1f).height(38.dp).clip(RoundedCornerShape(12.dp))
+                                        .background(RowOn).border(1.dp, Nf.Violet.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                                        .pressable(0.94f) { onSleepExtend(5) },
+                                    contentAlignment = Alignment.Center,
+                                ) { Text("+5 мин", style = Type.Label, color = Color.White) }
+                                Box(
+                                    Modifier.weight(1f).height(38.dp).clip(RoundedCornerShape(12.dp))
+                                        .background(Nf.Red.copy(alpha = 0.14f)).border(1.dp, Nf.Red.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                                        .pressable(0.94f) { onSleepOff(); onClose() },
+                                    contentAlignment = Alignment.Center,
+                                ) { Text("Выключить", style = Type.Label, color = Nf.Red) }
+                            }
+                        }
+                        val presets = listOf(15 to "15 мин", 30 to "30 мин", 45 to "45 мин", 60 to "60 мин", 90 to "90 мин", 120 to "2 ч")
+                        FlowRow(
+                            Modifier.padding(horizontal = 6.dp, vertical = 2.dp), maxItemsInEachRow = 3,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            presets.forEach { (mins, label) ->
+                                Box(
+                                    Modifier.weight(1f).height(42.dp).clip(RoundedCornerShape(12.dp))
+                                        .background(Color(0x0FFFFFFF))
+                                        .pressable(0.93f) { onSleepMinutes(mins); onClose() },
+                                    contentAlignment = Alignment.Center,
+                                ) { Text(label, style = Type.Label, color = Color.White, maxLines = 1) }
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        val endOn = sleep == SleepTimer.EndOfEpisode
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 2.dp).clip(RoundedCornerShape(14.dp))
+                                .background(if (endOn) RowOn else Color(0x08FFFFFF))
+                                .border(1.dp, if (endOn) Nf.Violet.copy(alpha = 0.5f) else Color.Transparent, RoundedCornerShape(14.dp))
+                                .pressable(0.97f) { if (endOn) onSleepOff() else onSleepEnd(); onClose() }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Rounded.Flag, null, tint = if (endOn) Nf.Violet else Color(0xB3FFFFFF), modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("В конце серии", style = Type.Title.copy(fontSize = 14.5.sp), color = if (endOn) Nf.Violet else Color.White)
+                                Text("Пауза без автоперехода", style = Type.Caption, color = Color(0x80FFFFFF))
+                            }
+                            if (endOn) Icon(Icons.Rounded.Check, null, tint = Nf.Violet, modifier = Modifier.size(18.dp))
+                        }
                     }
                 }
             }

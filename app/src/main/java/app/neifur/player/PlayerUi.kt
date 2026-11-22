@@ -80,8 +80,10 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Constraints
 import android.view.HapticFeedbackConstants
+import androidx.compose.material.icons.outlined.Bedtime
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.PictureInPictureAlt
+import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -130,9 +132,11 @@ private data class Level(val volume: Boolean, val value: Float)
 fun PlayerScreen(
     player: MpvPlayer, session: PlaySession, index: Int, resolving: Boolean, reconnecting: Boolean, error: String?, inPip: Boolean,
     stream: StreamUi, notice: String?, watched: Set<Int>,
+    sleep: SleepTimer, sleepRemainingMs: Long, autoNextBlocked: Boolean,
     onBack: () -> Unit, onRetry: () -> Unit, onEpisode: (Int) -> Unit, onPip: () -> Unit,
     onSelectTrack: (String, Track?) -> Unit, onSubScale: (Double) -> Unit,
     onTranslation: (app.neifur.data.a365.Translation) -> Unit, onHeight: (Int) -> Unit,
+    onSleepMinutes: (Int) -> Unit, onSleepExtend: (Int) -> Unit, onSleepEnd: () -> Unit, onSleepOff: () -> Unit,
     onVideoBounds: (androidx.compose.ui.geometry.Rect) -> Unit = {},
 ) {
     val ctx = LocalContext.current
@@ -177,11 +181,11 @@ fun PlayerScreen(
     val busy by produceState(rawBusy, rawBusy) { if (rawBusy) { delay(350); value = true } else value = false }
     val failure = error ?: if (player.failed) "Не удалось открыть видео. Возможно, ссылка устарела" else null
 
-    // Auto-advance when an episode ends.
+    // Auto-advance when an episode ends (suppressed when the sleep timer is set to end of episode).
     val countdown = remember { Animatable(0f) }
-    LaunchedEffect(player.ended, index, autoNextCancelled) {
+    LaunchedEffect(player.ended, index, autoNextCancelled, autoNextBlocked) {
         countdown.snapTo(0f)
-        if (player.ended && hasNext && !autoNextCancelled) {
+        if (player.ended && hasNext && !autoNextCancelled && !autoNextBlocked) {
             countdown.animateTo(1f, tween(7000, easing = LinearEasing))
             onEpisode(index + 1)
         }
@@ -368,6 +372,26 @@ fun PlayerScreen(
                         Modifier.height(46.dp).clip(CircleShape).background(Color(0x26FFFFFF)).border(1.dp, Color(0x1AFFFFFF), CircleShape),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        val sleepBadge = formatSleepBadge(sleep, sleepRemainingMs)
+                        val sleepOn = sleep != SleepTimer.Off || menu == QuickMenu.Sleep
+                        Row(
+                            Modifier.fillMaxHeight().clip(CircleShape)
+                                .background(if (sleepOn) Nf.Violet.copy(alpha = 0.28f) else Color.Transparent)
+                                .pressable(0.88f) { menu = if (menu == QuickMenu.Sleep) null else QuickMenu.Sleep; interaction++ }
+                                .padding(horizontal = if (sleepBadge != null) 14.dp else 15.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                if (sleep != SleepTimer.Off) Icons.Rounded.Bedtime else Icons.Outlined.Bedtime,
+                                "Таймер сна", tint = if (sleep != SleepTimer.Off) Nf.Violet else Color.White,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            if (sleepBadge != null) {
+                                Spacer(Modifier.width(6.dp))
+                                Text(sleepBadge, style = Type.Label, color = Color.White, maxLines = 1)
+                            }
+                        }
+                        Box(Modifier.width(1.dp).height(20.dp).background(Color(0x26FFFFFF)))
                         CapsuleIcon(Icons.Outlined.PictureInPictureAlt, "Картинка в картинке", onClick = onPip)
                         Box(Modifier.width(1.dp).height(20.dp).background(Color(0x26FFFFFF)))
                         CapsuleIcon(Icons.Outlined.Lock, "Заблокировать экран") { locked = true; lockHint++ }
@@ -485,7 +509,7 @@ fun PlayerScreen(
         )
 
         // ---- next episode card ----
-        AnimatedVisibility(player.ended && hasNext && failure == null && !autoNextCancelled, Modifier.align(Alignment.BottomEnd).displayCutoutPadding().padding(26.dp), enter = fadeIn() + slideInHorizontally { it / 3 }, exit = fadeOut()) {
+        AnimatedVisibility(player.ended && hasNext && failure == null && !autoNextCancelled && !autoNextBlocked, Modifier.align(Alignment.BottomEnd).displayCutoutPadding().padding(26.dp), enter = fadeIn() + slideInHorizontally { it / 3 }, exit = fadeOut()) {
             Row(
                 Modifier.clip(RoundedCornerShape(22.dp)).background(Color(0xF0151520)).border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(22.dp)).padding(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -539,7 +563,11 @@ fun PlayerScreen(
 
         // ---- settings panel ----
         QuickMenuHost(
-            menu.takeIf { showControls }, player, stream, onHeight = onHeight, onClose = { menu = null },
+            menu.takeIf { showControls }, player, stream,
+            sleep = sleep, sleepRemainingMs = sleepRemainingMs,
+            onHeight = onHeight,
+            onSleepMinutes = onSleepMinutes, onSleepExtend = onSleepExtend, onSleepEnd = onSleepEnd, onSleepOff = onSleepOff,
+            onClose = { menu = null },
         )
         PlayerPanel(
             tab = panel, tabs = tabs, player = player, stream = stream, episodes = episodes, index = index, watched = watched,

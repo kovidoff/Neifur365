@@ -20,6 +20,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -42,6 +43,7 @@ import app.neifur.data.WatchEntry
 import app.neifur.ui.NeifurTheme
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -74,6 +76,10 @@ class PlayerActivity : ComponentActivity() {
     private var playingTr: Translation? = null
     /** Seconds per skip, from the settings. */
     private var seekStep = 10
+    private var sleep by mutableStateOf<SleepTimer>(SleepTimer.Off)
+    private var sleepRemainingMs by mutableLongStateOf(0L)
+    /** Set when an "end of episode" sleep timer fires so auto-advance stays suppressed on that episode. */
+    private var sleepStoppedEpisode by mutableStateOf(false)
     private lateinit var media: MediaControls
 
     private val noisyReceiver = object : BroadcastReceiver() {
@@ -124,10 +130,52 @@ class PlayerActivity : ComponentActivity() {
         ContextCompat.registerReceiver(this, pipReceiver, IntentFilter(PIP_ACTION), ContextCompat.RECEIVER_NOT_EXPORTED)
         ContextCompat.registerReceiver(this, noisyReceiver, IntentFilter(android.media.AudioManager.ACTION_AUDIO_BECOMING_NOISY), ContextCompat.RECEIVER_NOT_EXPORTED)
         lifecycleScope.launch { container.prefs.seekStep.collect { seekStep = it; updatePipParams() } }
-        // Starting to play takes the audio over (music in another app pauses); headphone buttons and the
-        // system's media controls follow what's on screen.
+        // Starting to play keeps the screen awake and takes audio focus; pausing or ending lets the phone sleep.
         lifecycleScope.launch {
-            snapshotFlow { player.loaded && !player.paused && !player.ended }.collect { if (it) media.takeFocus() }
+            snapshotFlow { player.loaded && !player.paused && !player.ended }.collect { playing ->
+                if (playing) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    media.takeFocus()
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+        }
+        // Sleep timer countdown: ticks once a second only while a timed sleep timer is armed.
+        lifecycleScope.launch {
+            snapshotFlow { sleep }.collectLatest { t ->
+                when (t) {
+                    SleepTimer.Off, SleepTimer.EndOfEpisode -> sleepRemainingMs = 0L
+                    is SleepTimer.Until -> {
+                        while (isActive) {
+                            val left = t.endAtMs - android.os.SystemClock.elapsedRealtime()
+                            if (left <= 0L) {
+                                sleep = SleepTimer.Off
+                                sleepRemainingMs = 0L
+                                saveProgress()
+                                player.pause(true)
+                                notice = "Таймер сна сработал — пауза"
+                                break
+                            }
+                            sleepRemainingMs = left
+                            delay(1000)
+                        }
+                    }
+                }
+            }
+        }
+        // Sleep timer "at end of episode": pauses and suppresses auto-next once playback finishes.
+        lifecycleScope.launch {
+            snapshotFlow { player.ended }.collect { ended ->
+                if (!ended) sleepStoppedEpisode = false
+                else if (sleep == SleepTimer.EndOfEpisode) {
+                    sleepStoppedEpisode = true
+                    sleep = SleepTimer.Off
+                    saveProgress()
+                    player.pause(true)
+                    notice = "Таймер сна: серия закончилась"
+                }
+            }
         }
         lifecycleScope.launch {
             snapshotFlow { listOf(player.paused, player.loaded, player.ended, player.speed, index, player.duration.toInt(), stream.current?.id) }.collect { syncMedia() }
@@ -167,6 +215,8 @@ class PlayerActivity : ComponentActivity() {
                 PlayerScreen(
                     player = player, session = session, index = index, resolving = resolving, reconnecting = reconnecting,
                     error = error, inPip = inPip, stream = stream, notice = notice, watched = watched,
+                    sleep = sleep, sleepRemainingMs = sleepRemainingMs,
+                    autoNextBlocked = sleep == SleepTimer.EndOfEpisode || sleepStoppedEpisode,
                     onTranslation = ::switchTranslation, onHeight = { h -> loadEpisode(index, resumeAt = player.position, height = h, keep = true) },
                     onBack = { finish() }, onRetry = { loadEpisode(index) }, onEpisode = { loadEpisode(it) }, onPip = { enterPip() },
                     onVideoBounds = { r ->
@@ -176,6 +226,18 @@ class PlayerActivity : ComponentActivity() {
                     onSelectTrack = ::selectTrack, onSubScale = { v ->
                         player.changeSubScale(v); lifecycleScope.launch { container.prefs.setSubScale(v) }
                     },
+                    onSleepMinutes = { mins ->
+                        sleep = SleepTimer.Until(android.os.SystemClock.elapsedRealtime() + mins * 60_000L)
+                        notice = "Таймер сна: $mins мин"
+                    },
+                    onSleepExtend = { mins ->
+                        (sleep as? SleepTimer.Until)?.let { cur ->
+                            val base = maxOf(cur.endAtMs, android.os.SystemClock.elapsedRealtime())
+                            sleep = SleepTimer.Until(base + mins * 60_000L)
+                        }
+                    },
+                    onSleepEnd = { sleep = SleepTimer.EndOfEpisode; notice = "Таймер сна: в конце серии" },
+                    onSleepOff = { sleep = SleepTimer.Off },
                 )
             }
         }
@@ -191,7 +253,7 @@ class PlayerActivity : ComponentActivity() {
         if (resumeAt == null && player.loaded) saveProgress()
         // Another episode (or a fresh start): close the old file now. Left playing while the new links load, it
         // would be saved and marked on the site under the new episode's number.
-        if (resumeAt == null) { recoverJob?.cancel(); player.stop(); playingIndex = -1; playingTr = null; reconnects = 0 }
+        if (resumeAt == null) { recoverJob?.cancel(); sleepStoppedEpisode = false; player.stop(); playingIndex = -1; playingTr = null; reconnects = 0 }
         index = i; resolving = resumeAt == null; error = null
         loadJob?.cancel()
         loadJob = lifecycleScope.launch {

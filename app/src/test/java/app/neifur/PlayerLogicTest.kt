@@ -7,12 +7,16 @@ import app.neifur.data.a365.ListedTitle
 import app.neifur.data.a365.Series
 import app.neifur.player.ChapterKind
 import app.neifur.player.JUMP_SECONDS
+import app.neifur.player.SleepTimer
 import app.neifur.player.canSkipOpening
+import app.neifur.player.formatSleepBadge
+import app.neifur.player.formatSleepCountdown
 import app.neifur.player.speedLabel
 import app.neifur.player.time
 import app.neifur.ui.screens.continueLine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -56,5 +60,20 @@ class PlayerLogicTest {
 
         val finished = ListedTitle(ListEntry(1, "Test", watched = 12, total = 12, score = null, status = ListStatus.Completed), Series(1, numberOfEpisodes = 12))
         assertEquals("Все серии просмотрены" to 1f, continueLine(local, finished))
+    }
+
+    @Test fun sleepTimerBadgesAndCountdowns() {
+        val until = SleepTimer.Until(100_000L)
+        assertNull(formatSleepBadge(SleepTimer.Off, 0L))
+        assertEquals("Конец", formatSleepBadge(SleepTimer.EndOfEpisode, 0L))
+        assertEquals("0:42", formatSleepBadge(until, 41_500L))
+        assertEquals("15 м", formatSleepBadge(until, 15 * 60_000L))
+        assertEquals("1 ч", formatSleepBadge(until, 60 * 60_000L))
+        assertEquals("1 ч 30 м", formatSleepBadge(until, 90 * 60_000L))
+
+        assertEquals("0:00", formatSleepCountdown(0L))
+        assertEquals("0:42", formatSleepCountdown(41_500L))
+        assertEquals("14:32", formatSleepCountdown((14 * 60 + 32) * 1000L))
+        assertEquals("1:14:32", formatSleepCountdown((74 * 60 + 32) * 1000L))
     }
 }

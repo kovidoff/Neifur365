@@ -28,6 +28,15 @@ data class ListedTitle(
     val behind: Int get() = ((aired ?: 0) - entry.watched).coerceAtLeast(0)
 }
 
+/** Ways to order a list in the Library tab. */
+enum class ListSort(val label: String, val chip: String) {
+    Default("По умолчанию", "Обычная"),
+    Score("По оценке", "Оценка"),
+    Year("По году (сначала новые)", "Год"),
+    Title("По названию (А–Я)", "А–Я"),
+    Progress("По просмотренным сериям", "Серии"),
+}
+
 data class ListsState(
     val loading: Boolean = false,
     val loaded: Boolean = false,
@@ -51,6 +60,50 @@ data class ListsState(
                 .thenByDescending { it.airing }
         )
     }
+
+    fun matches(t: ListedTitle, query: String): Boolean {
+        val q = query.trim()
+        if (q.isEmpty()) return true
+        val s = t.series
+        return t.entry.title.contains(q, ignoreCase = true) ||
+            s?.title?.contains(q, ignoreCase = true) == true ||
+            s?.titles?.romaji?.contains(q, ignoreCase = true) == true ||
+            s?.titles?.en?.contains(q, ignoreCase = true) == true
+    }
+
+    /** Titles of [status], filtered by [query] and ordered according to [sort]. */
+    fun display(
+        status: ListStatus,
+        history: List<app.neifur.data.WatchEntry>,
+        query: String = "",
+        sort: ListSort = ListSort.Default,
+    ): List<ListedTitle> {
+        val base = if (status == ListStatus.Watching) watching(history) else of(status)
+        val filtered = if (query.isBlank()) base else base.filter { matches(it, query) }
+        return when (sort) {
+            ListSort.Default -> filtered
+            ListSort.Score -> filtered.sortedWith(
+                compareByDescending<ListedTitle> { it.entry.score ?: 0 }
+                    .thenByDescending { it.series?.score ?: 0.0 }
+            )
+            ListSort.Year -> filtered.sortedByDescending { it.series?.year ?: 0 }
+            ListSort.Title -> filtered.sortedBy { (it.series?.title ?: it.entry.title).lowercase() }
+            ListSort.Progress -> filtered.sortedWith(
+                compareByDescending<ListedTitle> { it.entry.watched }
+                    .thenByDescending { it.behind }
+            )
+        }
+    }
+
+    /** Other tabs that contain matches for [query], so an empty tab can offer a one-tap jump. */
+    fun matchesInOtherTabs(current: ListStatus, query: String): List<Pair<ListStatus, Int>> {
+        if (query.isBlank()) return emptyList()
+        return ListStatus.entries.filter { it != current }.mapNotNull { s ->
+            val n = of(s).count { matches(it, query) }
+            if (n > 0) s to n else null
+        }
+    }
+
     fun count(status: ListStatus): Int = titles.values.count { it.status == status }
 }
 
