@@ -295,7 +295,7 @@ fun SettingsScreen(onBack: (() -> Unit)? = null) {
                 }
                 Spacer(Modifier.width(12.dp))
                 Text(
-                    "В первые 5 минут серии рядом с полосой перемотки есть кнопка «+85 с», чтобы пропустить опенинг",
+                    "В нижней панели плеера есть кнопка «+85» — быстрый пропуск опенинга",
                     style = Type.Caption, color = Nf.TextMute,
                 )
             }

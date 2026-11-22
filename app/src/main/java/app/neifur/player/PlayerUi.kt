@@ -41,6 +41,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.UnfoldMore
 import androidx.compose.material.icons.rounded.VideoLibrary
+import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Close
@@ -63,7 +64,10 @@ import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.SubtitlesOff
-import androidx.compose.material.icons.rounded.VolumeOff
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -189,6 +193,16 @@ fun PlayerScreen(
         val secs = if (b != null && b.side == side && now - b.at < 850) b.seconds + stepSec else stepSec
         player.seekBy(side * stepSec.toDouble())
         burst = SeekBurst(side, secs, now)
+    }
+
+    fun jumpOpening() {
+        val now = System.currentTimeMillis()
+        val b = burst
+        val secs = if (b != null && b.side == 1 && now - b.at < 850) b.seconds + JUMP_SECONDS else JUMP_SECONDS
+        player.seekBy(JUMP_SECONDS.toDouble())
+        burst = SeekBurst(1, secs, now)
+        menu = null
+        interaction++
     }
 
     fun togglePlay(fromGesture: Boolean) {
@@ -391,11 +405,14 @@ fun PlayerScreen(
                             modifier = Modifier.widthIn(min = 44.dp).clip(RoundedCornerShape(6.dp)).pressable(0.92f) { remaining = !remaining; interaction++ },
                         )
                     }
-                    // Left: what you watch (translation, episodes). Right: how it looks (subtitles, quality, speed, fit).
+                    // Left: what you watch (translation, episodes). Right: opening skip + how it looks (subtitles, quality, speed, fit).
                     Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         TranslationChip(stream, player.tracks.any { it.type == "sub" && it.selected }) { menu = null; panel = PanelTab.Translation }
                         if (episodes.size > 1) Chip(Icons.Rounded.VideoLibrary, "Серии") { menu = null; panel = PanelTab.Episodes }
                         Spacer(Modifier.weight(1f))
+                        if (canSkipOpening(player.loaded, player.ended, player.duration)) {
+                            SkipOpeningPill(onClick = ::jumpOpening)
+                        }
                         if (hasSubTracks) {
                             val on = player.tracks.any { it.type == "sub" && it.selected }
                             IconPill(if (on) Icons.Rounded.Subtitles else Icons.Rounded.SubtitlesOff, "Субтитры", highlight = on) { menu = null; panel = PanelTab.Subs }
@@ -460,15 +477,11 @@ fun PlayerScreen(
             }
         }
 
-        // ---- skip opening / ending ----
+        // ---- skip opening / ending (only when the file itself carries chapter markers) ----
         if (failure == null && !locked && panel == null) SkipButton(
             player = player, hasNext = hasNext, controlsShown = showControls, announced = skipAnnounced,
             modifier = Modifier.align(Alignment.BottomEnd),
             onNext = { onEpisode(index + 1) },
-            onJump = { secs ->
-                player.seekBy(secs.toDouble())
-                burst = SeekBurst(1, secs, System.currentTimeMillis()); interaction++
-            },
         )
 
         // ---- next episode card ----
@@ -591,7 +604,7 @@ private fun LevelBar(level: Level?, icon: ImageVector, modifier: Modifier) {
                 Box(Modifier.fillMaxWidth().fillMaxHeight(v).clip(CircleShape).background(Color.White))
             }
             Spacer(Modifier.height(10.dp))
-            Icon(if (icon == Icons.AutoMirrored.Rounded.VolumeUp && v <= 0.001f) Icons.Rounded.VolumeOff else icon, null, tint = Color.White, modifier = Modifier.size(20.dp))
+            Icon(if (icon == Icons.AutoMirrored.Rounded.VolumeUp && v <= 0.001f) Icons.AutoMirrored.Rounded.VolumeOff else icon, null, tint = Color.White, modifier = Modifier.size(20.dp))
         }
     }
 }
@@ -603,7 +616,6 @@ private fun LevelBar(level: Level?, icon: ImageVector, modifier: Modifier) {
 @Composable
 private fun SkipButton(
     player: MpvPlayer, hasNext: Boolean, controlsShown: Boolean, announced: MutableSet<Double>, modifier: Modifier, onNext: () -> Unit,
-    onJump: (Int) -> Unit,
 ) {
     val now = player.chapterAt(player.position)
     val kind = now?.first?.kind
@@ -654,43 +666,40 @@ private fun SkipButton(
             Icon(Icons.Rounded.SkipNext, null, tint = Color.Black, modifier = Modifier.size(20.dp))
         }
     }
-
-    // No chapters to go by (most Anime 365 files): the site's own "+85 s", offered with the controls during the
-    // first minutes, where openings sit. A glass pill, quieter than the exact white skip above.
-    val jump = shouldOfferOpeningJump(offer != null, controlsShown, player.ended, player.duration, player.position, player.chapters)
-    AnimatedVisibility(
-        jump, modifier.displayCutoutPadding().padding(end = 26.dp, bottom = bottom),
-        enter = fadeIn(tween(200)) + slideInHorizontally(spring(dampingRatio = 0.8f, stiffness = 380f)) { it / 3 },
-        exit = fadeOut(tween(220)) + slideOutHorizontally(tween(280)) { it / 4 },
-    ) {
-        Row(
-            Modifier.clip(RoundedCornerShape(16.dp)).background(Color(0x33FFFFFF)).border(1.dp, Color(0x40FFFFFF), RoundedCornerShape(16.dp))
-                .pressable { onJump(JUMP_SECONDS) }
-                .padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Опенинг", style = Type.Label, color = Color(0xB3FFFFFF))
-            Spacer(Modifier.width(8.dp))
-            Text("+$JUMP_SECONDS с", style = Type.Title.copy(fontSize = 15.sp), color = Color.White)
-            Spacer(Modifier.width(4.dp))
-            Icon(Icons.Rounded.KeyboardDoubleArrowRight, null, tint = Color.White, modifier = Modifier.size(20.dp))
-        }
-    }
 }
 
-/** Anime 365's skip: an opening runs about 85 s. Offered during the first [JUMP_WINDOW] seconds when the file has no opening chapter. */
+/** Standard anime opening length (matches Anime 365's web player). */
 internal const val JUMP_SECONDS = 85
-internal const val JUMP_WINDOW = 300.0
 
-internal fun shouldOfferOpeningJump(
-    hasChapterOffer: Boolean,
-    controlsShown: Boolean,
-    ended: Boolean,
-    duration: Double,
-    position: Double,
-    chapters: List<Chapter>,
-): Boolean = !hasChapterOffer && controlsShown && !ended && duration > 600 && position < JUMP_WINDOW &&
-    chapters.none { it.kind == ChapterKind.Opening }
+internal fun canSkipOpening(loaded: Boolean, ended: Boolean, duration: Double): Boolean =
+    loaded && !ended && duration > 180.0
+
+/** Compact round "+85" skip in the bottom bar: skips a standard opening without cluttering the video frame. */
+@Composable
+private fun SkipOpeningPill(onClick: () -> Unit) {
+    Column(
+        Modifier.size(42.dp).clip(CircleShape).background(Color(0x1FFFFFFF))
+            .semantics { contentDescription = "Пропустить опенинг (+$JUMP_SECONDS секунд)" }
+            .pressable(0.9f, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(Icons.Rounded.KeyboardDoubleArrowRight, null, tint = Color.White, modifier = Modifier.size(16.dp).offset(y = 1.dp))
+        Text(
+            "+$JUMP_SECONDS",
+            style = Type.Caption.copy(
+                fontSize = 10.sp,
+                lineHeight = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = (-0.2).sp,
+                platformStyle = PlatformTextStyle(includeFontPadding = false),
+            ),
+            color = Color(0xE6FFFFFF),
+            maxLines = 1,
+            modifier = Modifier.offset(y = (-1).dp),
+        )
+    }
+}
 
 /** Pause and play morph into each other (rotate + scale + fade) instead of two icons sharing the button. */
 @Composable
