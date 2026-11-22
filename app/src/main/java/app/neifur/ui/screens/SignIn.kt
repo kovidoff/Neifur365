@@ -154,8 +154,10 @@ fun SignInForm(vm: SignInVm, accent: Color = Nf.Violet, modifier: Modifier = Mod
                     modifier = Modifier.size(42.dp).clip(CircleShape).clickable { showPassword = !showPassword }.padding(11.dp),
                 )
             }
+            var lastErr by remember { mutableStateOf("") }
+            if (vm.error != null) lastErr = vm.error!!
             AnimatedVisibility(vm.error != null, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-                Text(vm.error.orEmpty(), style = Type.Label, color = Nf.Red, modifier = Modifier.padding(top = 10.dp, start = 4.dp))
+                Text(lastErr, style = Type.Label, color = Nf.Red, modifier = Modifier.padding(top = 10.dp, start = 4.dp))
             }
             Spacer(Modifier.height(16.dp))
             PrimaryButton("Войти", enabled = vm.email.isNotBlank() && vm.password.isNotEmpty(), busy = vm.busy, color = accent) {

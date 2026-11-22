@@ -33,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.Mic
@@ -380,7 +381,7 @@ private fun SubsTab(player: MpvPlayer, onSelect: (String, Track?) -> Unit, onSub
                     Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                         val d = player.subDelay
                         Text(
-                            if (d == 0.0) "0,0 с" else String.format(Locale("ru"), "%+.1f с", d),
+                            if (d == 0.0) "0,0 с" else String.format(Locale.forLanguageTag("ru"), "%+.1f с", d),
                             style = Type.Title, color = if (d == 0.0) Color.White else Nf.Amber,
                         )
                         Text(
@@ -471,67 +472,72 @@ fun QuickMenuHost(
                         Hint("Удерживайте палец на видео — временно 2×", padding = 10.dp)
                     }
                     QuickMenu.Sleep -> {
-                        Row(Modifier.fillMaxWidth().padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            MenuTitle("Таймер сна")
-                            Spacer(Modifier.weight(1f))
-                            if (sleep != SleepTimer.Off) {
-                                val text = if (sleep is SleepTimer.Until) formatSleepCountdown(sleepRemainingMs) else "До конца"
-                                Text(
-                                    text, style = Type.Label.copy(fontSize = 12.sp), color = Nf.Violet,
-                                    modifier = Modifier.clip(CircleShape).background(RowOn).padding(horizontal = 9.dp, vertical = 3.dp),
-                                )
+                        Column(Modifier.padding(4.dp)) {
+                            Text(
+                                "ТАЙМЕР СНА", style = Type.Overline, color = Color(0x80FFFFFF),
+                                modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 10.dp),
+                            )
+                            AnimatedVisibility(sleep != SleepTimer.Off) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(14.dp))
+                                        .background(RowOn).border(1.dp, Nf.Violet.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+                                        .padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(Icons.Rounded.Bedtime, null, tint = Nf.Violet, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        if (sleep is SleepTimer.Until) formatSleepCountdown(sleepRemainingMs) else "В конце серии",
+                                        style = Type.Title.copy(fontSize = 15.5.sp), color = Color.White,
+                                        modifier = Modifier.weight(1f), maxLines = 1,
+                                    )
+                                    if (sleep is SleepTimer.Until) {
+                                        Text(
+                                            "+5 м", style = Type.Label.copy(fontSize = 12.sp), color = Color.White,
+                                            modifier = Modifier.clip(CircleShape).background(Color(0x1FFFFFFF))
+                                                .pressable(0.92f) { onSleepExtend(5) }.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                    }
+                                    Box(
+                                        Modifier.size(30.dp).clip(CircleShape).background(Nf.Red.copy(alpha = 0.16f))
+                                            .pressable(0.88f) { onSleepOff(); onClose() },
+                                        contentAlignment = Alignment.Center,
+                                    ) { Icon(Icons.Rounded.Close, "Выключить таймер", tint = Nf.Red, modifier = Modifier.size(16.dp)) }
+                                }
                             }
-                        }
-                        AnimatedVisibility(sleep != SleepTimer.Off) {
-                            Row(
-                                Modifier.fillMaxWidth().padding(horizontal = 6.dp).padding(bottom = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            val presets = listOf(15 to "15 мин", 30 to "30 мин", 45 to "45 мин", 60 to "60 мин", 90 to "90 мин", 120 to "2 ч")
+                            FlowRow(
+                                Modifier.fillMaxWidth(), maxItemsInEachRow = 3,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
-                                if (sleep is SleepTimer.Until) Box(
-                                    Modifier.weight(1f).height(38.dp).clip(RoundedCornerShape(12.dp))
-                                        .background(RowOn).border(1.dp, Nf.Violet.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
-                                        .pressable(0.94f) { onSleepExtend(5) },
-                                    contentAlignment = Alignment.Center,
-                                ) { Text("+5 мин", style = Type.Label, color = Color.White) }
-                                Box(
-                                    Modifier.weight(1f).height(38.dp).clip(RoundedCornerShape(12.dp))
-                                        .background(Nf.Red.copy(alpha = 0.14f)).border(1.dp, Nf.Red.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
-                                        .pressable(0.94f) { onSleepOff(); onClose() },
-                                    contentAlignment = Alignment.Center,
-                                ) { Text("Выключить", style = Type.Label, color = Nf.Red) }
+                                presets.forEach { (mins, label) ->
+                                    Box(
+                                        Modifier.weight(1f).height(42.dp).clip(RoundedCornerShape(12.dp))
+                                            .background(Color(0x0FFFFFFF))
+                                            .pressable(0.93f) { onSleepMinutes(mins); onClose() },
+                                        contentAlignment = Alignment.Center,
+                                    ) { Text(label, style = Type.Label, color = Color.White, maxLines = 1) }
+                                }
                             }
-                        }
-                        val presets = listOf(15 to "15 мин", 30 to "30 мин", 45 to "45 мин", 60 to "60 мин", 90 to "90 мин", 120 to "2 ч")
-                        FlowRow(
-                            Modifier.padding(horizontal = 6.dp, vertical = 2.dp), maxItemsInEachRow = 3,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            presets.forEach { (mins, label) ->
-                                Box(
-                                    Modifier.weight(1f).height(42.dp).clip(RoundedCornerShape(12.dp))
-                                        .background(Color(0x0FFFFFFF))
-                                        .pressable(0.93f) { onSleepMinutes(mins); onClose() },
-                                    contentAlignment = Alignment.Center,
-                                ) { Text(label, style = Type.Label, color = Color.White, maxLines = 1) }
+                            Spacer(Modifier.height(8.dp))
+                            val endOn = sleep == SleepTimer.EndOfEpisode
+                            Row(
+                                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                                    .background(if (endOn) RowOn else Color(0x0AFFFFFF))
+                                    .border(1.dp, if (endOn) Nf.Violet.copy(alpha = 0.45f) else Color.Transparent, RoundedCornerShape(14.dp))
+                                    .pressable(0.97f) { if (endOn) onSleepOff() else onSleepEnd(); onClose() }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(Icons.Rounded.Flag, null, tint = if (endOn) Nf.Violet else Color(0xB3FFFFFF), modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text("В конце серии", style = Type.Title.copy(fontSize = 14.5.sp), color = if (endOn) Nf.Violet else Color.White)
+                                    Text("Пауза без автоперехода", style = Type.Caption, color = Color(0x80FFFFFF))
+                                }
+                                if (endOn) Icon(Icons.Rounded.Check, null, tint = Nf.Violet, modifier = Modifier.size(18.dp))
                             }
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        val endOn = sleep == SleepTimer.EndOfEpisode
-                        Row(
-                            Modifier.fillMaxWidth().padding(horizontal = 2.dp).clip(RoundedCornerShape(14.dp))
-                                .background(if (endOn) RowOn else Color(0x08FFFFFF))
-                                .border(1.dp, if (endOn) Nf.Violet.copy(alpha = 0.5f) else Color.Transparent, RoundedCornerShape(14.dp))
-                                .pressable(0.97f) { if (endOn) onSleepOff() else onSleepEnd(); onClose() }
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(Icons.Rounded.Flag, null, tint = if (endOn) Nf.Violet else Color(0xB3FFFFFF), modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(10.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text("В конце серии", style = Type.Title.copy(fontSize = 14.5.sp), color = if (endOn) Nf.Violet else Color.White)
-                                Text("Пауза без автоперехода", style = Type.Caption, color = Color(0x80FFFFFF))
-                            }
-                            if (endOn) Icon(Icons.Rounded.Check, null, tint = Nf.Violet, modifier = Modifier.size(18.dp))
                         }
                     }
                 }

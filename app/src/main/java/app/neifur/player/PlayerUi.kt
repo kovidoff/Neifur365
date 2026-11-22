@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -368,30 +369,34 @@ fun PlayerScreen(
                             style = Type.Caption, color = Color(0xB3FFFFFF), maxLines = 1,
                         )
                     }
+                    val sleepBadge = formatSleepBadge(sleep, sleepRemainingMs)
+                    val sleepActive = sleep != SleepTimer.Off
+                    val sleepLit = sleepActive || menu == QuickMenu.Sleep
+                    Row(
+                        Modifier.height(46.dp).widthIn(min = 46.dp).animateContentSize(spring(dampingRatio = 0.82f, stiffness = 420f))
+                            .clip(CircleShape)
+                            .background(if (sleepLit) Nf.Violet.copy(alpha = 0.24f) else Color(0x26FFFFFF))
+                            .border(1.dp, if (sleepLit) Nf.Violet.copy(alpha = 0.55f) else Color(0x1AFFFFFF), CircleShape)
+                            .pressable(0.88f) { menu = if (menu == QuickMenu.Sleep) null else QuickMenu.Sleep; interaction++ }
+                            .padding(horizontal = if (sleepBadge != null) 14.dp else 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        Icon(
+                            if (sleepActive) Icons.Rounded.Bedtime else Icons.Outlined.Bedtime,
+                            "Таймер сна", tint = if (sleepActive) Nf.Violet else Color.White,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        if (sleepBadge != null) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(sleepBadge, style = Type.Label, color = Color.White, maxLines = 1)
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
                     Row(
                         Modifier.height(46.dp).clip(CircleShape).background(Color(0x26FFFFFF)).border(1.dp, Color(0x1AFFFFFF), CircleShape),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        val sleepBadge = formatSleepBadge(sleep, sleepRemainingMs)
-                        val sleepOn = sleep != SleepTimer.Off || menu == QuickMenu.Sleep
-                        Row(
-                            Modifier.fillMaxHeight().clip(CircleShape)
-                                .background(if (sleepOn) Nf.Violet.copy(alpha = 0.28f) else Color.Transparent)
-                                .pressable(0.88f) { menu = if (menu == QuickMenu.Sleep) null else QuickMenu.Sleep; interaction++ }
-                                .padding(horizontal = if (sleepBadge != null) 14.dp else 15.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                if (sleep != SleepTimer.Off) Icons.Rounded.Bedtime else Icons.Outlined.Bedtime,
-                                "Таймер сна", tint = if (sleep != SleepTimer.Off) Nf.Violet else Color.White,
-                                modifier = Modifier.size(20.dp),
-                            )
-                            if (sleepBadge != null) {
-                                Spacer(Modifier.width(6.dp))
-                                Text(sleepBadge, style = Type.Label, color = Color.White, maxLines = 1)
-                            }
-                        }
-                        Box(Modifier.width(1.dp).height(20.dp).background(Color(0x26FFFFFF)))
                         CapsuleIcon(Icons.Outlined.PictureInPictureAlt, "Картинка в картинке", onClick = onPip)
                         Box(Modifier.width(1.dp).height(20.dp).background(Color(0x26FFFFFF)))
                         CapsuleIcon(Icons.Outlined.Lock, "Заблокировать экран") { locked = true; lockHint++ }
@@ -577,12 +582,14 @@ fun PlayerScreen(
         )
 
         // ---- a word about an automatic change (studio missing for this episode) ----
+        var lastNotice by remember { mutableStateOf("") }
+        if (notice != null) lastNotice = notice
         AnimatedVisibility(
             notice != null && panel == null, Modifier.align(Alignment.TopCenter).padding(top = 84.dp),
-            enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut(),
+            enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 3 },
         ) {
             Text(
-                notice.orEmpty(), style = Type.Label, color = Color.White,
+                lastNotice, style = Type.Label, color = Color.White,
                 modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(Color(0xE6151520)).border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(16.dp))
                     .padding(horizontal = 16.dp, vertical = 11.dp),
             )

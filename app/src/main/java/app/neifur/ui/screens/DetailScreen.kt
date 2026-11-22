@@ -594,12 +594,14 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
 
             CollapsingBar(stub?.title.orEmpty(), listState, onBack)
 
+            var lastNotice by remember { mutableStateOf("") }
+            if (vm.notice != null) lastNotice = vm.notice!!
             AnimatedVisibility(
                 vm.notice != null, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(20.dp),
                 enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut(),
             ) {
                 Text(
-                    vm.notice.orEmpty(), style = Type.Label, color = Nf.Text,
+                    lastNotice, style = Type.Label, color = Nf.Text,
                     modifier = Modifier.shadow(20.dp, RoundedCornerShape(18.dp)).clip(RoundedCornerShape(18.dp))
                         .background(Nf.SurfaceHi).border(1.dp, Nf.Line, RoundedCornerShape(18.dp)).padding(horizontal = 18.dp, vertical = 14.dp),
                 )

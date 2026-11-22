@@ -197,11 +197,14 @@ fun LibraryScreen(open: OpenAnime) {
             }
         }
 
-        androidx.compose.animation.AnimatedVisibility(
+        var lastNotice by remember { mutableStateOf("") }
+        if (vm.notice != null) lastNotice = vm.notice!!
+        AnimatedVisibility(
             vm.notice != null, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 96.dp),
+            enter = fadeIn(), exit = fadeOut(),
         ) {
             Text(
-                vm.notice.orEmpty(), style = Type.Label, color = Nf.Text,
+                lastNotice, style = Type.Label, color = Nf.Text,
                 modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(Nf.SurfaceHi).border(1.dp, Nf.Line, RoundedCornerShape(16.dp))
                     .padding(horizontal = 16.dp, vertical = 12.dp),
             )

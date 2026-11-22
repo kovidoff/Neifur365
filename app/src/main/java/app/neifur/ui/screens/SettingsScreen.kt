@@ -867,8 +867,10 @@ private fun ChannelCard(vm: SettingsVm) {
                 ) { vm.pickChannel(ch) }
             }
         }
+        var lastNote by remember { mutableStateOf("") }
+        if (st.note != null) lastNote = st.note!!
         AnimatedVisibility(st.note != null, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-            Text(st.note.orEmpty(), style = Type.Caption, color = Nf.TextDim, modifier = Modifier.padding(top = 10.dp, start = 2.dp))
+            Text(lastNote, style = Type.Caption, color = Nf.TextDim, modifier = Modifier.padding(top = 10.dp, start = 2.dp))
         }
         // Manual mode after a test that found something faster: one tap to use it.
         val best: VideoChannel? = st.fastest
