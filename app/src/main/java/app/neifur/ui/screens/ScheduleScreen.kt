@@ -161,6 +161,7 @@ class ScheduleVm(private val c: Container) : ViewModel() {
     val lists = c.lists.state
     val state = MutableStateFlow<Load<List<Anime>>>(Load.Loading)
     var onlyMine by mutableStateOf(false)
+    var selectedIdx by mutableIntStateOf(0)
 
     init { load() }
 
@@ -185,8 +186,7 @@ fun ScheduleScreen(open: OpenAnime, onBack: () -> Unit) {
     val zone = remember { ZoneId.systemDefault() }
     val today = remember { LocalDate.now(zone) }
     val days = remember(today) { (0L..6L).map { today.plusDays(it) } }
-    var selectedIdx by remember { mutableIntStateOf(0) }
-    val selectedDay = days[selectedIdx]
+    val selectedIdx = vm.selectedIdx.coerceIn(0, days.lastIndex)
 
     val byMalId = remember(lists) {
         lists.titles.values.mapNotNull { t ->
@@ -248,7 +248,7 @@ fun ScheduleScreen(open: OpenAnime, onBack: () -> Unit) {
                 val br by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.6f) else Nf.Line, label = "dbr")
                 Column(
                     Modifier.width(54.dp).height(68.dp).clip(RoundedCornerShape(18.dp)).background(bg)
-                        .border(1.dp, br, RoundedCornerShape(18.dp)).pressable(0.92f) { selectedIdx = i },
+                        .border(1.dp, br, RoundedCornerShape(18.dp)).pressable(0.92f) { vm.selectedIdx = i },
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {

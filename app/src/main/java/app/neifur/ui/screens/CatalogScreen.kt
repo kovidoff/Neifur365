@@ -34,6 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,6 +71,8 @@ class CatalogVm(private val c: Container) : ViewModel() {
     val lists = c.lists.state
     var query by mutableStateOf(CatalogQuery())
         private set
+    var queryVersion by mutableIntStateOf(0)
+        private set
     var items by mutableStateOf<List<Series>>(emptyList())
         private set
     var loading by mutableStateOf(true)
@@ -89,8 +92,10 @@ class CatalogVm(private val c: Container) : ViewModel() {
     )
 
     fun update(q: CatalogQuery) {
+        if (q == query) return
         val typing = q.search != query.search
         query = q
+        queryVersion++
         reload(if (typing) 380 else 0)
     }
 
@@ -146,10 +151,21 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
     var sheet by remember { mutableStateOf<String?>(null) }
     val grid = rememberLazyGridState()
     val focus = LocalFocusManager.current
+    var handledQueryVersion by rememberSaveable { mutableIntStateOf(vm.queryVersion) }
 
-    val nearEnd by remember { derivedStateOf { (grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= grid.layoutInfo.totalItemsCount - 9 } }
+    val nearEnd by remember {
+        derivedStateOf {
+            val info = grid.layoutInfo
+            info.totalItemsCount > 0 && (info.visibleItemsInfo.lastOrNull()?.index ?: -1) >= info.totalItemsCount - 9
+        }
+    }
     LaunchedEffect(nearEnd, vm.items.size, vm.moreError) { if (nearEnd && vm.items.isNotEmpty() && vm.moreError == null) vm.loadMore() }
-    LaunchedEffect(q) { grid.scrollToItem(0) }
+    LaunchedEffect(vm.queryVersion) {
+        if (handledQueryVersion != vm.queryVersion) {
+            handledQueryVersion = vm.queryVersion
+            grid.scrollToItem(0)
+        }
+    }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(
