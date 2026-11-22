@@ -20,12 +20,14 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.WifiOff
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -65,6 +67,7 @@ data class CatalogQuery(
 private const val PAGE = 30
 
 class CatalogVm(private val c: Container) : ViewModel() {
+    val lists = c.lists.state
     var query by mutableStateOf(CatalogQuery())
         private set
     var items by mutableStateOf<List<Series>>(emptyList())
@@ -135,8 +138,10 @@ private val years: List<Pair<Int?, String>> = listOf<Pair<Int?, String>>(null to
     (java.time.LocalDate.now().year + 1 downTo 1980).map { it to it.toString() }
 
 @Composable
-fun CatalogScreen(open: OpenAnime) {
+fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
     val vm = nfViewModel { CatalogVm(it) }
+    val lists by vm.lists.collectAsStateWithLifecycle()
+    val marks = remember(lists) { lists.titles.mapValues { it.value.status } }
     val q = vm.query
     var sheet by remember { mutableStateOf<String?>(null) }
     val grid = rememberLazyGridState()
@@ -147,7 +152,21 @@ fun CatalogScreen(open: OpenAnime) {
     LaunchedEffect(q) { grid.scrollToItem(0) }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        Text("Каталог", style = Type.Display, color = Nf.Text, modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 14.dp))
+        Row(
+            Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Каталог", style = Type.Display, color = Nf.Text, modifier = Modifier.weight(1f))
+            Row(
+                Modifier.height(36.dp).clip(CircleShape).background(Nf.Surface).border(1.dp, Nf.Line, CircleShape)
+                    .pressable(0.93f) { focus.clearFocus(); onSchedule() }.padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.CalendarMonth, null, tint = Nf.Violet, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Расписание", style = Type.Label, color = Nf.Text)
+            }
+        }
 
         Row(
             Modifier.padding(horizontal = 20.dp).fillMaxWidth().height(50.dp).clip(CircleShape).background(Nf.Surface)
@@ -194,7 +213,7 @@ fun CatalogScreen(open: OpenAnime) {
                     if (vm.items.isEmpty()) items(12) { PosterCardSkeleton(width = null) }
                     else {
                         items(vm.items, key = { it.id }, contentType = { "card" }) { a ->
-                            PosterCard(a.stub(), "catalog", { focus.clearFocus(); open(a.stub(), "catalog") }, Modifier.animateItem(), width = null)
+                            PosterCard(a.stub(), "catalog", { focus.clearFocus(); open(a.stub(), "catalog") }, Modifier.animateItem(), width = null, listStatus = marks[a.id])
                         }
                         if (vm.loading) item(span = { GridItemSpan(3) }) {
                             Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {

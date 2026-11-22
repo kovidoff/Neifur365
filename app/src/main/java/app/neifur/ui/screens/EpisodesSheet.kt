@@ -124,6 +124,7 @@ fun EpisodesSheet(
     onStart: (Studio, Int) -> Unit = { _, _ -> },
     downloads: DownloadsState = DownloadsState(),
     onDownload: (Episode) -> Unit = {},
+    onDownloadBatch: (List<Episode>) -> Unit = {},
     onCancelDownload: (Long) -> Unit = {},
     onRetryDownload: (Long) -> Unit = {},
     onDeleteDownload: (Long) -> Unit = {},
@@ -153,7 +154,7 @@ fun EpisodesSheet(
                             if ((state as? PlayState.Ready)?.started == false) { choosingFor = i; page = SheetPage.Translations } else onPlay(i)
                         },
                         onRetry = onRetry, onRange = onRange,
-                        onDownload = onDownload, onCancelDownload = onCancelDownload,
+                        onDownload = onDownload, onDownloadBatch = onDownloadBatch, onCancelDownload = onCancelDownload,
                         onRetryDownload = onRetryDownload, onDeleteDownload = onDeleteDownload,
                     ) { choosingFor = null; page = SheetPage.Translations }
                     SheetPage.Translations -> TranslationsPage(
@@ -175,13 +176,32 @@ fun EpisodesSheet(
 private fun EpisodesPage(
     state: PlayState, history: List<WatchEntry>, isMovie: Boolean, accent: Color, downloads: DownloadsState,
     onPlay: (Int) -> Unit, onRetry: () -> Unit, onRange: (List<Episode>) -> Unit,
-    onDownload: (Episode) -> Unit, onCancelDownload: (Long) -> Unit, onRetryDownload: (Long) -> Unit, onDeleteDownload: (Long) -> Unit,
+    onDownload: (Episode) -> Unit, onDownloadBatch: (List<Episode>) -> Unit, onCancelDownload: (Long) -> Unit,
+    onRetryDownload: (Long) -> Unit, onDeleteDownload: (Long) -> Unit,
     onTranslations: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(horizontal = 22.dp).padding(top = 4.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(if (isMovie) "Просмотр" else "Серии", style = Type.Display, color = Nf.Text, modifier = Modifier.weight(1f))
-            (state as? PlayState.Ready)?.let { Text("${it.episodes.size} ${plural(it.episodes.size, "серия", "серии", "серий")}", style = Type.Label, color = Nf.TextMute) }
+            (state as? PlayState.Ready)?.let { ready ->
+                val batch = remember(ready.episodes, ready.target, downloads) {
+                    if (isMovie || ready.episodes.size <= 1) emptyList()
+                    else nextBatchToDownload(ready.episodes, ready.target, downloads, count = 3)
+                }
+                if (batch.isNotEmpty()) {
+                    Row(
+                        Modifier.clip(CircleShape).background(Nf.SurfaceHi).border(1.dp, Nf.Line, CircleShape)
+                            .pressable(0.93f) { onDownloadBatch(batch) }.padding(horizontal = 11.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Rounded.Download, null, tint = accent, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("+${batch.size} ${plural(batch.size, "серия", "серии", "серий")}", style = Type.Label, color = Nf.Text)
+                    }
+                    Spacer(Modifier.width(10.dp))
+                }
+                Text("${ready.episodes.size} ${plural(ready.episodes.size, "серия", "серии", "серий")}", style = Type.Label, color = Nf.TextMute)
+            }
         }
         when (state) {
             PlayState.Loading -> Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -441,10 +461,27 @@ private fun EpisodeDownloadButton(
     }
 }
 
+/** Next up to [count] episodes starting from [startIndex] that aren't already saved or queued. */
+internal fun nextBatchToDownload(
+    episodes: List<Episode>,
+    startIndex: Int,
+    downloads: DownloadsState,
+    count: Int = 3,
+): List<Episode> {
+    if (episodes.isEmpty() || count <= 0) return emptyList()
+    val from = startIndex.coerceIn(0, episodes.lastIndex)
+    return episodes.drop(from)
+        .filter { ep ->
+            !downloads.isDownloaded(ep.id) &&
+                downloads.active[ep.id].let { it == null || it is DownloadStatus.Failed }
+        }
+        .take(count)
+}
+
 /** "2023-09-29 18:05:57" → "Вышла 29 сент. 2023". */
 private fun uploaded(s: String?): String? = runCatching {
     val d = java.time.LocalDate.parse(s!!.take(10))
-    "Вышла " + d.format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy", java.util.Locale("ru")))
+    "Вышла " + d.format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy", java.util.Locale.forLanguageTag("ru")))
 }.getOrNull()
 
 /**

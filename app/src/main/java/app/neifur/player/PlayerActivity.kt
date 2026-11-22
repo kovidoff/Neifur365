@@ -70,6 +70,8 @@ class PlayerActivity : ComponentActivity() {
     private var pickName: String? = null
     /** Translations already marked watched on Anime 365 in this session. */
     private val marked = HashSet<Long>()
+    /** Downloaded episodes finished during this session, deleted safely once playback moves on or closes. */
+    private val deleteOnClose = HashSet<Long>()
     /** The episode and translation whose file is actually open: progress and "watched" go to these, not to the
      *  episode just tapped, which may still be loading. */
     private var playingIndex = -1
@@ -119,6 +121,11 @@ class PlayerActivity : ComponentActivity() {
         player.onFileLoaded = { reconnecting = false; lifecycleScope.launch { applyTrackPrefs() } }
         player.onStreamError = ::recover
         lifecycleScope.launch { player.changeSubScale(container.prefs.subScale()) }
+        lifecycleScope.launch {
+            container.prefs.savedBrightness()?.let { b ->
+                window.attributes = window.attributes.apply { screenBrightness = b }
+            }
+        }
         media = MediaControls(
             this, player,
             onNext = { if (index + 1 < session.episodes.size) loadEpisode(index + 1) },
@@ -253,7 +260,10 @@ class PlayerActivity : ComponentActivity() {
         if (resumeAt == null && player.loaded) saveProgress()
         // Another episode (or a fresh start): close the old file now. Left playing while the new links load, it
         // would be saved and marked on the site under the new episode's number.
-        if (resumeAt == null) { recoverJob?.cancel(); sleepStoppedEpisode = false; player.stop(); playingIndex = -1; playingTr = null; reconnects = 0 }
+        if (resumeAt == null) {
+            recoverJob?.cancel(); sleepStoppedEpisode = false; player.stop(); playingIndex = -1; playingTr = null; reconnects = 0
+            flushWatchedDeletes(keepEpisodeId = ep.id)
+        }
         index = i; resolving = resumeAt == null; error = null
         loadJob?.cancel()
         loadJob = lifecycleScope.launch {
@@ -425,7 +435,21 @@ class PlayerActivity : ComponentActivity() {
             session.anime.id, session.anime.title, session.anime.poster, ep.number,
             player.position, player.duration, System.currentTimeMillis(),
         )
-        container.scope.launch { container.prefs.saveProgress(entry) }
+        container.scope.launch {
+            container.prefs.saveProgress(entry)
+            if (entry.finished && container.prefs.autoDeleteWatched.first() && container.downloads.state.value.isDownloaded(ep.id)) {
+                synchronized(deleteOnClose) { deleteOnClose += ep.id }
+            }
+        }
+    }
+
+    private fun flushWatchedDeletes(keepEpisodeId: Long? = null) {
+        val ids = synchronized(deleteOnClose) {
+            val out = deleteOnClose.filter { it != keepEpisodeId }
+            deleteOnClose.removeAll(out.toSet())
+            out
+        }
+        ids.forEach { container.downloads.delete(it) }
     }
 
     // --- picture in picture ------------------------------------------------------------------------------
@@ -553,6 +577,7 @@ class PlayerActivity : ComponentActivity() {
         runCatching { unregisterReceiver(noisyReceiver) }
         if (::media.isInitialized) media.release()
         if (::player.isInitialized) player.release()
+        flushWatchedDeletes()
         super.onDestroy()
     }
 

@@ -57,6 +57,9 @@ class Prefs(private val context: Context) {
     private val KEY_SEEK_STEP = intPreferencesKey("seek_step")
     private val KEY_HOLD_BOOST = stringPreferencesKey("hold_boost")
     private val KEY_DOWNLOAD_QUALITY = intPreferencesKey("download_quality")
+    private val KEY_AUTO_DELETE_DL = stringPreferencesKey("auto_delete_dl")
+    private val KEY_REMEMBER_BRIGHTNESS = stringPreferencesKey("remember_brightness")
+    private val KEY_BRIGHTNESS = stringPreferencesKey("player_brightness")
     private val KEY_ONBOARDED = stringPreferencesKey("onboarded")
     private val KEY_ALERTS = stringPreferencesKey("alerts")
     private val KEY_ALERTS_MODE = stringPreferencesKey("alerts_mode")
@@ -291,4 +294,22 @@ class Prefs(private val context: Context) {
     /** Quality for offline downloads: 0 follows the player's quality setting, otherwise 1080/720/480. */
     val downloadQuality: Flow<Int> = context.store.data.map { it[KEY_DOWNLOAD_QUALITY] ?: 0 }.distinctUntilChanged()
     suspend fun setDownloadQuality(q: Int) = context.store.edit { if (q <= 0) it.remove(KEY_DOWNLOAD_QUALITY) else it[KEY_DOWNLOAD_QUALITY] = q }
+
+    /** Automatically deletes a downloaded episode once it has been watched past 92%. Off by default. */
+    val autoDeleteWatched: Flow<Boolean> = context.store.data.map { it[KEY_AUTO_DELETE_DL] == "on" }.distinctUntilChanged()
+    suspend fun setAutoDeleteWatched(on: Boolean) = context.store.edit { if (on) it[KEY_AUTO_DELETE_DL] = "on" else it.remove(KEY_AUTO_DELETE_DL) }
+
+    /** Keeps manual player brightness between sessions instead of reverting to system auto-brightness. */
+    val rememberBrightness: Flow<Boolean> = context.store.data.map { it[KEY_REMEMBER_BRIGHTNESS] == "on" }.distinctUntilChanged()
+    suspend fun setRememberBrightness(on: Boolean) = context.store.edit {
+        if (on) it[KEY_REMEMBER_BRIGHTNESS] = "on" else { it.remove(KEY_REMEMBER_BRIGHTNESS); it.remove(KEY_BRIGHTNESS) }
+    }
+    suspend fun savedBrightness(): Float? {
+        val d = context.store.data.first()
+        if (d[KEY_REMEMBER_BRIGHTNESS] != "on") return null
+        return d[KEY_BRIGHTNESS]?.toFloatOrNull()?.takeIf { it in 0.01f..1f }
+    }
+    suspend fun saveBrightness(v: Float) = context.store.edit {
+        if (it[KEY_REMEMBER_BRIGHTNESS] == "on") it[KEY_BRIGHTNESS] = v.coerceIn(0.01f, 1f).toString()
+    }
 }

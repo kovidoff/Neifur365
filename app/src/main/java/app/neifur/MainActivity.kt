@@ -59,6 +59,7 @@ import app.neifur.ui.screens.DetailScreen
 import app.neifur.ui.screens.DownloadsScreen
 import app.neifur.ui.screens.HomeScreen
 import app.neifur.ui.screens.LibraryScreen
+import app.neifur.ui.screens.ScheduleScreen
 import app.neifur.ui.screens.SettingsScreen
 import app.neifur.ui.screens.SettingsSection
 import app.neifur.ui.screens.SettingsSectionScreen
@@ -198,7 +199,9 @@ private fun AppRoot() {
                         }
                     }
                     composable("catalog") {
-                        CompositionLocalProvider(LocalNavAnimScope provides this) { CatalogScreen(open) }
+                        CompositionLocalProvider(LocalNavAnimScope provides this) {
+                            CatalogScreen(open, onSchedule = { nav.navigate("schedule") { launchSingleTop = true } })
+                        }
                     }
                     composable("library") {
                         CompositionLocalProvider(LocalNavAnimScope provides this) {
@@ -234,6 +237,15 @@ private fun AppRoot() {
                         popExitTransition = { slideOutHorizontally(tween(280, easing = FastOutLinearInEasing)) { it / 5 } + fadeOut(tween(200)) },
                     ) {
                         DownloadsScreen(onBack = { nav.popBackStack() })
+                    }
+                    composable(
+                        "schedule",
+                        enterTransition = { slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { it / 5 } + fadeIn(tween(240)) },
+                        exitTransition = { slideOutHorizontally(tween(260, easing = FastOutLinearInEasing)) { -it / 8 } + fadeOut(tween(180)) },
+                        popEnterTransition = { slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 8 } + fadeIn(tween(200)) },
+                        popExitTransition = { slideOutHorizontally(tween(280, easing = FastOutLinearInEasing)) { it / 5 } + fadeOut(tween(200)) },
+                    ) {
+                        ScheduleScreen(open, onBack = { nav.popBackStack() })
                     }
                     composable(
                         "detail/{id}?origin={origin}",

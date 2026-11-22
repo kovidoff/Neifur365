@@ -227,4 +227,22 @@ class ShikimoriApi(private val http: OkHttpClient) {
         val staff = a["personRoles"].decode<List<PersonRole>>().filter { it.person != null }
         return AnimeCast(chars, staff)
     }
+
+    /** Currently airing anime with their next episode timestamps; merges any extra MAL IDs from the user's lists. */
+    suspend fun ongoingSchedule(extraMalIds: List<Long> = emptyList()): List<Anime> {
+        val fields = """
+            id name russian kind score status episodes episodesAired nextEpisodeAt
+            airedOn { year } poster { originalUrl mainUrl main2xUrl }
+        """.trimIndent()
+        val popular = query("""{ animes(status: "ongoing", order: popularity, limit: 50, censored: false) { $fields } }""")["animes"]
+            .decode<List<Anime>>()
+        val have = popular.mapTo(HashSet()) { it.id }
+        val missing = extraMalIds.filter { it > 0L && it.toString() !in have }.distinct().take(50)
+        val extra = if (missing.isEmpty()) emptyList() else runCatching {
+            val ids = missing.joinToString(",")
+            query("""{ animes(ids: "$ids", limit: ${missing.size}, censored: false) { $fields } }""")["animes"]
+                .decode<List<Anime>>()
+        }.getOrDefault(emptyList())
+        return (popular + extra).distinctBy { it.id }
+    }
 }

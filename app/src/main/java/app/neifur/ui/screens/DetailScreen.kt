@@ -442,6 +442,17 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         notice = "Загрузка: ${ep.label}"
     }
 
+    fun downloadBatch(eps: List<Episode>) {
+        if (eps.isEmpty()) return
+        if (!signedIn) { askSignIn = true; return }
+        val r = play as? PlayState.Ready ?: return
+        val s = series?.stub() ?: stub ?: return
+        val pk = pickKey ?: r.studio?.key
+        val pn = r.studio?.author
+        eps.forEach { c.downloads.enqueue(s, it, pk, pn) }
+        notice = "В очереди: ${eps.size} ${plural(eps.size, "серия", "серии", "серий")}"
+    }
+
     fun cancelDownload(episodeId: Long) = c.downloads.cancel(episodeId)
 
     fun retryDownload(episodeId: Long) = c.downloads.retry(episodeId)
@@ -659,6 +670,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                 onStart = { s, i -> sheet = null; startFor = null; vm.start(ctx, s, i) },
                 downloads = downloads,
                 onDownload = vm::download,
+                onDownloadBatch = vm::downloadBatch,
                 onCancelDownload = vm::cancelDownload,
                 onRetryDownload = vm::retryDownload,
                 onDeleteDownload = vm::deleteDownload,
@@ -812,7 +824,7 @@ private fun nextEpisodeLabel(iso: String?): String? {
         val day = when (t.toLocalDate()) {
             today -> "сегодня"
             today.plusDays(1) -> "завтра"
-            else -> t.format(java.time.format.DateTimeFormatter.ofPattern("EE, d MMM", java.util.Locale("ru"))).trimEnd('.')
+            else -> t.format(java.time.format.DateTimeFormatter.ofPattern("EE, d MMM", Locale.forLanguageTag("ru"))).trimEnd('.')
         }
         "Серия $day в ${t.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))}"
     }.getOrNull()
@@ -1051,11 +1063,14 @@ private fun Facts(anime: Anime, cast: AnimeCast?, modifier: Modifier) {
     }
 }
 
-private fun compact(n: Int): String = when {
-    n >= 1_000_000 -> String.format(Locale("ru"), "%.1f млн", n / 1_000_000.0)
-    n >= 10_000 -> "${n / 1000} тыс."
-    n >= 1000 -> String.format(Locale("ru"), "%.1f тыс.", n / 1000.0)
-    else -> n.toString()
+private fun compact(n: Int): String {
+    val ru = Locale.forLanguageTag("ru")
+    return when {
+        n >= 1_000_000 -> String.format(ru, "%.1f млн", n / 1_000_000.0)
+        n >= 10_000 -> "${n / 1000} тыс."
+        n >= 1000 -> String.format(ru, "%.1f тыс.", n / 1000.0)
+        else -> n.toString()
+    }
 }
 
 @Composable

@@ -263,7 +263,7 @@ private fun RowScope.ModeTile(icon: ImageVector, title: String, caption: String,
 
 private fun timeOf(ms: Long): String {
     val today = System.currentTimeMillis() / 86_400_000L == ms / 86_400_000L
-    return SimpleDateFormat(if (today) "'в' HH:mm" else "d MMM 'в' HH:mm", Locale("ru")).format(Date(ms))
+    return SimpleDateFormat(if (today) "'в' HH:mm" else "d MMM 'в' HH:mm", Locale.forLanguageTag("ru")).format(Date(ms))
 }
 
 /**

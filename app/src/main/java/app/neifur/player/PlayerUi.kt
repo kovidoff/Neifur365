@@ -315,7 +315,11 @@ fun PlayerScreen(
                             mode = if (o.y < edge || o.y > size.height - edge || o.x < edge || o.x > size.width - edge || panel != null) -1 else 0
                             acc = 0f; startPos = player.position
                         },
-                        onDragEnd = { if (mode == 1) scrub?.let { player.seekTo(it) }; scrub = null; mode = 0; level = null },
+                        onDragEnd = {
+                            if (mode == 1) scrub?.let { player.seekTo(it) }
+                            if (mode == 2) level?.let { l -> scope.launch { ctx.container.prefs.saveBrightness(l.value) } }
+                            scrub = null; mode = 0; level = null
+                        },
                         onDragCancel = { scrub = null; mode = 0; level = null },
                     ) { change, drag ->
                         if (mode == -1) return@detectDragGestures

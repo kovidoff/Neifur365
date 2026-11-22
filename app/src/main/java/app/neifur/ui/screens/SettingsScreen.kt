@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoDelete
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.KeyboardDoubleArrowRight
+import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mic
@@ -194,13 +196,17 @@ class SettingsVm(private val c: Container) : ViewModel() {
     fun setSubScale(v: Double) = viewModelScope.launch { c.prefs.setSubScale(v) }
     val seekStep = c.prefs.seekStep
     val holdBoost = c.prefs.holdBoost
+    val rememberBrightness = c.prefs.rememberBrightness
     val downloadQuality = c.prefs.downloadQuality
+    val autoDeleteWatched = c.prefs.autoDeleteWatched
     val downloads = c.downloads.state
     val alerts = c.prefs.alerts
     val alertsMyStudio = c.prefs.alertsMyStudio
     fun setSeekStep(v: Int) = viewModelScope.launch { c.prefs.setSeekStep(v) }
     fun setHoldBoost(on: Boolean) = viewModelScope.launch { c.prefs.setHoldBoost(on) }
+    fun setRememberBrightness(on: Boolean) = viewModelScope.launch { c.prefs.setRememberBrightness(on) }
     fun setDownloadQuality(q: Int) = viewModelScope.launch { c.prefs.setDownloadQuality(q) }
+    fun setAutoDeleteWatched(on: Boolean) = viewModelScope.launch { c.prefs.setAutoDeleteWatched(on) }
     fun clearHistory() = viewModelScope.launch { c.prefs.clearHistory() }
     fun showWelcome() = viewModelScope.launch { c.prefs.beginOnboarding() }
 
@@ -353,6 +359,8 @@ fun SettingsSectionScreen(
     val subScale by vm.subScale.collectAsStateWithLifecycle(1.0)
     val seekStep by vm.seekStep.collectAsStateWithLifecycle(10)
     val holdBoost by vm.holdBoost.collectAsStateWithLifecycle(true)
+    val rememberBrightness by vm.rememberBrightness.collectAsStateWithLifecycle(false)
+    val autoDeleteWatched by vm.autoDeleteWatched.collectAsStateWithLifecycle(false)
     val studios by vm.studios.collectAsStateWithLifecycle(emptyList())
     val pickCount by vm.pickCount.collectAsStateWithLifecycle(0)
     var confirmHistory by remember { mutableStateOf(false) }
@@ -424,6 +432,11 @@ fun SettingsSectionScreen(
                             Icons.Rounded.FastForward, "Ускорение при удержании",
                             "Держите палец на видео — серия идёт в 2×", holdBoost,
                         ) { vm.setHoldBoost(it) }
+                        Divider()
+                        ToggleRow(
+                            Icons.Rounded.LightMode, "Запоминать яркость",
+                            "Сохраняет яркость из свайпа в плеере между сериями", rememberBrightness,
+                        ) { vm.setRememberBrightness(it) }
                         Divider()
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(Nf.Ink), contentAlignment = Alignment.Center) {
@@ -515,6 +528,11 @@ fun SettingsSectionScreen(
                             selected = downloadQuality,
                             onPick = { vm.setDownloadQuality(it) },
                         )
+                        Divider()
+                        ToggleRow(
+                            Icons.Rounded.AutoDelete, "Удалять после просмотра",
+                            "Освобождает память, когда скачанная серия досмотрена", autoDeleteWatched,
+                        ) { vm.setAutoDeleteWatched(it) }
                     }
                     Spacer(Modifier.height(12.dp))
                 }
