@@ -29,6 +29,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Sort
+import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -162,6 +163,7 @@ fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
     var editing by remember { mutableStateOf<ListedTitle?>(null) }
     var signIn by remember { mutableStateOf(false) }
     var sortSheet by remember { mutableStateOf(false) }
+    var statsOpen by remember { mutableStateOf(false) }
     val focus = LocalFocusManager.current
     val signedIn = account is AccountState.SignedIn
     LaunchedEffect(signedIn) { if (signedIn) vm.refreshIfStale() }
@@ -195,7 +197,9 @@ fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
                 horizontalArrangement = Arrangement.spacedBy(if (layout.isTablet) 14.dp else 12.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                item(span = { GridItemSpan(cols) }, key = "head") { Header(account, downloads, onDownloads) }
+                item(span = { GridItemSpan(cols) }, key = "head") {
+                    Header(account, downloads, onDownloads, onStats = { focus.clearFocus(); statsOpen = true })
+                }
 
                 if (recent.isNotEmpty() && vm.query.isBlank()) item(span = { GridItemSpan(cols) }, key = "continue") {
                     ContinueStrip(recent, lists.titles, open, onForget = { vm.forget(it) })
@@ -312,6 +316,9 @@ fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
         onPick = { vm.sort = it },
     )
     if (signIn) SignInSheet(onDismiss = { signIn = false }, onDone = { signIn = false })
+    if (statsOpen) (account as? AccountState.SignedIn)?.profile?.let { profile ->
+        WatchStatsSheet(profile = profile, lists = lists, onDismiss = { statsOpen = false })
+    }
 }
 
 /** Compact search + sort bar tucked directly under the status pills. */
@@ -414,7 +421,7 @@ private fun EmptySearch(
 private fun stubOf(t: ListedTitle): AnimeStub = t.series?.stub() ?: AnimeStub(t.entry.seriesId.toString(), t.entry.title, null)
 
 @Composable
-private fun Header(account: AccountState, downloads: DownloadsState, onDownloads: () -> Unit) {
+private fun Header(account: AccountState, downloads: DownloadsState, onDownloads: () -> Unit, onStats: () -> Unit) {
     Row(Modifier.padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("Списки", style = Type.Display, color = Nf.Text, modifier = Modifier.weight(1f))
         val running = downloads.runningCount
@@ -452,12 +459,17 @@ private fun Header(account: AccountState, downloads: DownloadsState, onDownloads
         (account as? AccountState.SignedIn)?.profile?.let { p ->
             Spacer(Modifier.width(8.dp))
             Row(
-                Modifier.height(36.dp).clip(CircleShape).background(Nf.Surface).padding(start = 4.dp, end = 12.dp),
+                Modifier.height(36.dp).clip(CircleShape).background(Nf.Surface)
+                    .border(1.dp, Nf.Line, CircleShape)
+                    .pressable(0.93f, onClick = onStats)
+                    .padding(start = 4.dp, end = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 PosterImage(p.avatarUrl, Modifier.size(28.dp).clip(CircleShape))
-                Spacer(Modifier.width(8.dp))
-                Text(p.name, style = Type.Label, color = Nf.TextDim, maxLines = 1, modifier = Modifier.widthIn(max = 110.dp), overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.width(7.dp))
+                Text(p.name, style = Type.Label, color = Nf.Text, maxLines = 1, modifier = Modifier.widthIn(max = 96.dp), overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.width(5.dp))
+                Icon(Icons.Rounded.BarChart, "Статистика просмотра", tint = Nf.Violet, modifier = Modifier.size(15.dp))
             }
         }
     }

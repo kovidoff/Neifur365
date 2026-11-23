@@ -71,6 +71,7 @@ class Prefs(private val context: Context) {
     private val KEY_OWNER = stringPreferencesKey("owner")
     private val KEY_STASH = stringPreferencesKey("account_stash")
     private val KEY_PROFILE = stringPreferencesKey("profile")
+    private val KEY_RECENT_SEARCHES = stringPreferencesKey("recent_searches")
 
     /** What belongs to one Anime 365 account rather than to the phone: put aside when another account signs in. */
     private val accountKeys = listOf(KEY_HISTORY, KEY_PICKS, KEY_ALERTS_SEEN, KEY_ALERTS_CHECKED, KEY_CHANNEL_CHECKED)
@@ -325,4 +326,30 @@ class Prefs(private val context: Context) {
     suspend fun saveBrightness(v: Float) = context.store.edit {
         if (it[KEY_REMEMBER_BRIGHTNESS] == "on") it[KEY_BRIGHTNESS] = v.coerceIn(0.01f, 1f).toString()
     }
+
+    // --- catalog recent searches ---------------------------------------------------------------------
+    val recentSearches: Flow<List<String>> = context.store.data
+        .map { p -> p[KEY_RECENT_SEARCHES]?.lines()?.filter(String::isNotBlank) ?: emptyList() }
+        .distinctUntilChanged()
+
+    suspend fun addRecentSearch(raw: String) = context.store.edit { p ->
+        val cur = p[KEY_RECENT_SEARCHES]?.lines()?.filter(String::isNotBlank) ?: emptyList()
+        val next = pushRecentSearch(cur, raw)
+        if (next != cur) p[KEY_RECENT_SEARCHES] = next.joinToString("\n")
+    }
+
+    suspend fun removeRecentSearch(query: String) = context.store.edit { p ->
+        val next = p[KEY_RECENT_SEARCHES]?.lines()?.filter(String::isNotBlank)
+            ?.filterNot { it.equals(query, ignoreCase = true) }.orEmpty()
+        if (next.isEmpty()) p.remove(KEY_RECENT_SEARCHES) else p[KEY_RECENT_SEARCHES] = next.joinToString("\n")
+    }
+
+    suspend fun clearRecentSearches() = context.store.edit { it.remove(KEY_RECENT_SEARCHES) }
+}
+
+/** Normalises [raw] and puts it at the front of [current], dropping duplicates (case-insensitively) and excess items. */
+internal fun pushRecentSearch(current: List<String>, raw: String, limit: Int = 8): List<String> {
+    val clean = raw.trim().replace(Regex("\\s+"), " ")
+    if (clean.length < 2) return current
+    return (listOf(clean) + current.filterNot { it.equals(clean, ignoreCase = true) }).take(limit)
 }

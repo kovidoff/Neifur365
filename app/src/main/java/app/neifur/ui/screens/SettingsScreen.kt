@@ -870,16 +870,23 @@ private fun AccountCard(vm: SettingsVm, onLogout: () -> Unit) {
                         }
                     }
 
-                    // Live collection snapshot from already-loaded lists (zero extra network requests).
+                    // Live collection snapshot from already-loaded lists (tapping opens full WatchStatsSheet).
+                    var statsOpen by remember { mutableStateOf(false) }
                     if (lists.loaded && lists.titles.isNotEmpty()) {
                         val watching = remember(lists) { lists.count(ListStatus.Watching) }
                         val completed = remember(lists) { lists.count(ListStatus.Completed) }
                         val episodes = remember(lists) { lists.titles.values.sumOf { it.entry.watched } }
-                        Row(Modifier.padding(top = 10.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            Modifier.padding(top = 10.dp).fillMaxWidth().pressable(0.98f) { statsOpen = true },
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             ProfileStatTile(formatCount(watching), "Смотрю", Nf.Mint, Modifier.weight(1f))
                             ProfileStatTile(formatCount(completed), "Просмотрено", statusColor(ListStatus.Completed), Modifier.weight(1f))
                             ProfileStatTile(formatCount(episodes), "Серий", Nf.Violet, Modifier.weight(1f))
                         }
+                    }
+                    if (statsOpen) {
+                        WatchStatsSheet(profile = s.profile, lists = lists, onDismiss = { statsOpen = false })
                     }
 
                     vm.base?.let { b ->
