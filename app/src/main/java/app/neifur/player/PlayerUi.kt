@@ -129,6 +129,14 @@ internal fun nextSeekBurst(current: SeekBurst?, side: Int, stepSec: Int, nowMs: 
 internal fun canHoldBoost(holdBoost: Boolean, loaded: Boolean, paused: Boolean, panelOpen: Boolean, currentSpeed: Double): Boolean =
     holdBoost && loaded && !paused && !panelOpen && currentSpeed < 2.0
 
+/**
+ * PlayerActivity is locked to sensorLandscape, but Android briefly measures it in portrait (maxW < maxH) for 1–2 frames
+ * when launching from portrait MainActivity, unlocking a portrait lockscreen, or resuming from a portrait launcher.
+ * Resolving to the target landscape dimensions immediately prevents a transient 1080×608 SurfaceView buffer and UI jump.
+ */
+internal fun resolvePlayerWindowSize(maxW: Int, maxH: Int, inPip: Boolean): Pair<Int, Int> =
+    if (!inPip && maxW < maxH) maxH to maxW else maxW to maxH
+
 /** Brightness / volume while a vertical swipe is in progress. */
 private data class Level(val volume: Boolean, val value: Float)
 
@@ -234,15 +242,8 @@ fun PlayerScreen(
 
     val skipAnnounced = remember(session.anime.id, index) { mutableSetOf<Double>() }
 
-    // The picture lives in a view shaped like the video itself, backed by a buffer of the video's own size.
-    // mpv therefore never sees the window change size (PiP, panel, fill/fit): the system compositor scales
-    // the finished frames. That is what keeps PiP transitions free of grey/black frames and stale crops.
     val vw = player.videoW.takeIf { it > 0 } ?: 1920
     val vh = player.videoH.takeIf { it > 0 } ?: 1080
-    val (bufW, bufH) = remember(vw, vh) {
-        val k = minOf(1f, 2560f / maxOf(vw, vh))   // cap the buffer for 4K files; subtitles stay crisp at 1440p
-        (vw * k).roundToInt() to (vh * k).roundToInt()
-    }
     val aspect = vw.toFloat() / vh
     val rightCutoutDp = with(density) { WindowInsets.displayCutout.getRight(density, layoutDir).toDp() }
     val targetPanelShift = playerPanelWidth(screenWidthDp) + 12.dp + rightCutoutDp
@@ -252,27 +253,20 @@ fun PlayerScreen(
         spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow), label = "shift",
     )
     val fillNow = player.fill && panel == null && !inPip
+    var winW by remember { mutableIntStateOf(0) }
+    var winH by remember { mutableIntStateOf(0) }
+    val inPortraitTransition = !inPip && winW > 0 && winH > 0 && winW < winH
+    SideEffect { player.setPortraitTransition(inPortraitTransition) }
 
-    val holderRef = remember { arrayOfNulls<SurfaceHolder>(1) }
-    val fixedBuf = remember { intArrayOf(0, 0) }
-    var wasInPip by remember { mutableStateOf(false) }
-    LaunchedEffect(inPip) {
-        if (wasInPip && !inPip) {
-            val surface = holderRef[0]?.surface
-            if (surface != null && surface.isValid && fixedBuf[0] > 0 && fixedBuf[1] > 0) {
-                player.reattach(surface, fixedBuf[0], fixedBuf[1])
-            }
-        }
-        wasInPip = inPip
-    }
-
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(
+        Modifier.fillMaxSize().background(Color.Black)
+            .onSizeChanged { winW = it.width; winH = it.height }
+    ) {
         AndroidView(
             factory = { c ->
                 SurfaceView(c).apply {
-                    holderRef[0] = holder
-                    fixedBuf[0] = bufW; fixedBuf[1] = bufH
-                    holder.setFixedSize(bufW, bufH)
+                    // Use native SurfaceView buffer sizing (no setFixedSize) so EGLSurface and surfaceChanged
+                    // always stay 1:1 in sync across lockscreen rotation, app resume and PiP transitions.
                     holder.addCallback(object : SurfaceHolder.Callback {
                         override fun surfaceCreated(h: SurfaceHolder) = player.attach(h.surface)
                         override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) = player.resize(w, hh)
@@ -280,35 +274,30 @@ fun PlayerScreen(
                     })
                 }
             },
-            update = { v ->
-                if (fixedBuf[0] != bufW || fixedBuf[1] != bufH) {
-                    fixedBuf[0] = bufW; fixedBuf[1] = bufH
-                    v.holder.setFixedSize(bufW, bufH)
-                }
-            },
             modifier = Modifier
                 .layout { m, c ->
-                    val areaW = (c.maxWidth - shift.roundToPx()).coerceAtLeast(1)
-                    val areaH = c.maxHeight
+                    val (fullW, fullH) = resolvePlayerWindowSize(c.maxWidth, c.maxHeight, inPip)
+                    val areaW = (fullW - shift.roundToPx()).coerceAtLeast(1)
+                    val areaH = fullH
                     val byHeight = areaH * aspect
                     val (w, h) = if (fillNow == (byHeight >= areaW)) byHeight to areaH.toFloat() else areaW.toFloat() to areaW / aspect
                     val pl = m.measure(Constraints.fixed(w.roundToInt().coerceAtLeast(1), h.roundToInt().coerceAtLeast(1)))
                     layout(c.maxWidth, c.maxHeight) { pl.place(((areaW - pl.width) / 2f).roundToInt(), ((areaH - pl.height) / 2f).roundToInt()) }
                 }
                 .onGloballyPositioned {
-                    // Only report PiP bounds when stable (never during side-panel slide animation or inside PiP).
-                    if (!inPip && panelNow == null) onVideoBounds(it.boundsInWindow())
+                    // Only report PiP bounds when stable in landscape (never during portrait rotation, panel slide or inside PiP).
+                    if (!inPip && !inPortraitTransition && panelNow == null) onVideoBounds(it.boundsInWindow())
                 },
         )
-        // Instant black curtain hides stale SurfaceView buffers during episode switches and resume; fades out cleanly once a fresh frame is ready.
-        val showCurtain = !player.videoReady || resolving
+        // Instant black curtain hides stale SurfaceView buffers during episode switches and transient portrait->landscape rotation.
+        val showCurtain = !player.videoReady || resolving || inPortraitTransition
         val curtainAlpha by animateFloatAsState(
             if (showCurtain) 1f else 0f,
             tween(if (showCurtain) 0 else 180),
             label = "curtain",
         )
         if (curtainAlpha > 0.01f) Box(Modifier.fillMaxSize().graphicsLayer { alpha = curtainAlpha }.background(Color.Black))
-        if (inPip) return@Box
+        if (inPip || inPortraitTransition) return@Box
 
         // ---- gestures (all disabled while locked) ----
         if (!locked) Box(

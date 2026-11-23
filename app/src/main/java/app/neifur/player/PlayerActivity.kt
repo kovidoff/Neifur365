@@ -556,7 +556,7 @@ class PlayerActivity : ComponentActivity() {
                 action("fwd", android.R.drawable.ic_media_ff, "+$seekStep секунд", 3),
             )
         )
-        .apply { if (Build.VERSION.SDK_INT >= 31) setAutoEnterEnabled(canAutoEnterPip(player.loaded, player.paused, player.ended)).setSeamlessResizeEnabled(false) }
+        .apply { if (Build.VERSION.SDK_INT >= 31) setAutoEnterEnabled(canAutoEnterPip(player.loaded, player.paused, player.ended)).setSeamlessResizeEnabled(true) }
         .build()
 
     /** The video's own shape, kept inside the range Android accepts for PiP windows. */

@@ -122,9 +122,11 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         fun opt(k: String, v: String) = mpv.setOptionString(k, v)
         opt("config", "no"); opt("config-dir", dir.absolutePath)
         opt("profile", "fast")
-        // Keep vo=null until SurfaceView reports a valid size so OpenGL never renders into a stale/zero viewport.
+        // Keep vo=null until SurfaceView reports a valid landscape size so OpenGL never renders into a stale/portrait viewport.
         opt("vo", "null"); opt("gpu-context", "android"); opt("opengl-es", "yes")
-        opt("hwdec", "mediacodec,mediacodec-copy"); opt("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1")
+        // mediacodec-copy keeps the decoded frame in mpv memory so pausing, locking the screen or recreating the surface
+        // redraws the exact paused frame immediately without waiting for a new decoder keyframe.
+        opt("hwdec", "mediacodec-copy"); opt("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1")
         opt("ao", "audiotrack,opensles")
         opt("force-window", "no"); opt("idle", "yes"); opt("keep-open", "yes")
         opt("hr-seek", "yes"); opt("hr-seek-framedrop", "yes")
@@ -154,36 +156,50 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     private var surfaceAttached = false
     private var surfaceSized = false
     private var voEnabled = false
+    private var portraitHold = false
     private var surfaceW = 0
     private var surfaceH = 0
     /** Local files open faster than SurfaceView creates its buffer; wait until both surface and size exist. */
     private var pendingLoad: (() -> Unit)? = null
     private var revealTask: Runnable? = null
 
+    /** Holds off VO initialization during the ~50 ms portrait->landscape window rotation on phones (launch / lockscreen). */
+    fun setPortraitTransition(inPortrait: Boolean) {
+        if (released || portraitHold == inPortrait) return
+        portraitHold = inPortrait
+        if (!inPortrait && surfaceAttached && surfaceSized && surfaceW > 0 && surfaceH > 0) {
+            mpv.setPropertyString("android-surface-size", "${surfaceW}x$surfaceH")
+            enableVoAndFlush()
+        }
+    }
+
     fun attach(surface: Surface) {
         if (released) return
         mpv.attachSurface(surface)
         surfaceAttached = true
-        if (surfaceSized) enableVoAndFlush()
+        if (surfaceSized && !portraitHold) enableVoAndFlush()
     }
 
     fun resize(w: Int, h: Int) {
         if (released || w <= 0 || h <= 0) return
+        val changed = w != surfaceW || h != surfaceH || !surfaceSized
         surfaceW = w
         surfaceH = h
         surfaceSized = true
-        mpv.setPropertyString("android-surface-size", "${w}x$h")
-        if (surfaceAttached) enableVoAndFlush()
+        if (!portraitHold) {
+            if (changed) mpv.setPropertyString("android-surface-size", "${w}x$h")
+            if (surfaceAttached) enableVoAndFlush()
+        }
     }
 
     private fun enableVoAndFlush() {
-        if (released || !surfaceAttached || !surfaceSized) return
+        if (released || !surfaceAttached || !surfaceSized || portraitHold) return
         if (!voEnabled) {
+            mpv.setPropertyString("android-surface-size", "${surfaceW}x$surfaceH")
             mpv.setPropertyString("force-window", "yes")
             mpv.setPropertyString("vo", "gpu")
             voEnabled = true
-            // Resuming on pause won't emit PLAYBACK_RESTART; reveal once the fresh VO has drawn a frame.
-            if (loaded && !videoReady) scheduleVideoReveal(140L)
+            if (loaded && !videoReady) scheduleVideoReveal(80L)
         }
         val run = pendingLoad ?: return
         pendingLoad = null
@@ -206,14 +222,6 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         revealTask = null
     }
 
-    /** Rebuilds the video output on the same surface: the cure for a stale picture after PiP or buffer resize. */
-    fun reattach(surface: Surface, w: Int, h: Int) {
-        if (released || !surface.isValid || w <= 0 || h <= 0) return
-        detach()
-        attach(surface)
-        resize(w, h)
-    }
-
     /** Shrinks the picture area from the right (fraction of the width), e.g. to make room for a side panel. */
     fun setRightMargin(fraction: Double) { if (!released) mpv.setPropertyDouble("video-margin-ratio-right", fraction) }
 
@@ -225,7 +233,6 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         voEnabled = false
         surfaceW = 0
         surfaceH = 0
-        videoReady = false
         mpv.setPropertyString("vo", "null")
         mpv.setPropertyString("force-window", "no")
         mpv.detachSurface()

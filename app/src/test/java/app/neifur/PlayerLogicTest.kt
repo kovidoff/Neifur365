@@ -17,6 +17,7 @@ import app.neifur.player.formatSleepBadge
 import app.neifur.player.formatSleepCountdown
 import app.neifur.player.nextSeekBurst
 import app.neifur.player.playerPanelWidth
+import app.neifur.player.resolvePlayerWindowSize
 import app.neifur.player.shouldFinishOnStop
 import app.neifur.player.shouldThrottle
 import app.neifur.player.speedLabel
@@ -134,5 +135,9 @@ class PlayerLogicTest {
         assertEquals(420.dp, playerPanelWidth(800))
         assertEquals(460.dp, playerPanelWidth(1000))
         assertEquals(336.dp, playerPanelWidth(360))
+
+        assertEquals(2400 to 1080, resolvePlayerWindowSize(1080, 2400, inPip = false))
+        assertEquals(2400 to 1080, resolvePlayerWindowSize(2400, 1080, inPip = false))
+        assertEquals(400 to 600, resolvePlayerWindowSize(400, 600, inPip = true))
     }
 }
