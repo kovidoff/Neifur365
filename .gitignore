@@ -12,8 +12,9 @@ captures/
 *.keystore
 keystore.properties
 
-# Local promo drafts & banner builder (README uses assets/)
+# Local promo drafts, agent instructions & banner builder (README uses assets/)
 promo/
+AGENTS.md
 
 # OS / editor noise
 .DS_Store
