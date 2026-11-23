@@ -63,6 +63,16 @@ enum class ChapterKind {
     }
 }
 
+/** Clamps a seek target to valid bounds, or returns null when duration is not known yet. */
+internal fun clampSeekTarget(sec: Double, duration: Double): Double? {
+    if (duration <= 0.0) return null
+    return sec.coerceIn(0.0, (duration - 0.5).coerceAtLeast(0.0))
+}
+
+/** True when a rapid numeric property update changed less than [threshold] since the last emitted value. */
+internal fun shouldThrottle(value: Double, last: Double, threshold: Double): Boolean =
+    last >= 0.0 && abs(value - last) < threshold
+
 /**
  * Thin, main-thread-friendly wrapper around libmpv. mpv renders ASS/SSA with libass (styles, embedded
  * fonts, karaoke) and decodes practically everything fansub groups ship, which is why it's here
@@ -71,7 +81,7 @@ enum class ChapterKind {
 class MpvPlayer(context: Context) : MPVLib.EventObserver {
     private val main = Handler(Looper.getMainLooper())
     private val mpv: MPVLib = MPVLib.create(context.applicationContext) ?: error("libmpv failed to start")
-    private var released = false
+    @Volatile private var released = false
 
     var position by mutableDoubleStateOf(0.0); private set
     var duration by mutableDoubleStateOf(0.0); private set
@@ -79,6 +89,8 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     var paused by mutableStateOf(false); private set
     var buffering by mutableStateOf(true); private set
     var loaded by mutableStateOf(false); private set
+    /** True once the current video has rendered to an active VO surface — hides stale frames while switching/resuming. */
+    var videoReady by mutableStateOf(false); private set
     var ended by mutableStateOf(false); private set
     var failed by mutableStateOf(false); private set
     var speed by mutableDoubleStateOf(1.0); private set
@@ -108,16 +120,20 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
             if (font.length() != bundled.size.toLong()) font.writeBytes(bundled)
         }
         fun opt(k: String, v: String) = mpv.setOptionString(k, v)
-        opt("config", "yes"); opt("config-dir", dir.absolutePath)
+        opt("config", "no"); opt("config-dir", dir.absolutePath)
         opt("profile", "fast")
-        opt("vo", "gpu"); opt("gpu-context", "android"); opt("opengl-es", "yes")
-        opt("hwdec", "mediacodec-copy"); opt("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1")
+        // Keep vo=null until SurfaceView reports a valid size so OpenGL never renders into a stale/zero viewport.
+        opt("vo", "null"); opt("gpu-context", "android"); opt("opengl-es", "yes")
+        opt("hwdec", "mediacodec,mediacodec-copy"); opt("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1")
         opt("ao", "audiotrack,opensles")
         opt("force-window", "no"); opt("idle", "yes"); opt("keep-open", "yes")
-        opt("cache", "yes"); opt("cache-secs", "180"); opt("demuxer-max-bytes", "160MiB"); opt("demuxer-max-back-bytes", "48MiB")
-        opt("network-timeout", "30"); opt("user-agent", USER_AGENT)
+        opt("hr-seek", "yes"); opt("hr-seek-framedrop", "yes")
+        opt("cache", "yes"); opt("cache-secs", "120"); opt("demuxer-max-bytes", "64MiB"); opt("demuxer-max-back-bytes", "24MiB")
+        opt("network-timeout", "12"); opt("user-agent", USER_AGENT)
+        opt("stream-lavf-o", "reconnect=1,reconnect_streamed=1,reconnect_delay_max=5")
         opt("alang", "ja,jpn,jp"); opt("slang", "ru,rus,en,eng"); opt("subs-fallback", "yes")
-        opt("sub-auto", "fuzzy"); opt("sub-font", "Manrope"); opt("sub-scale-with-window", "yes")
+        // External subtitles are always added explicitly via sub-add; fuzzy auto-load duplicates downloaded .ass files.
+        opt("sub-auto", "no"); opt("sub-font", "Manrope"); opt("sub-scale-with-window", "yes")
         opt("embeddedfonts", "yes"); opt("sub-fix-timing", "no")
         // No system fonts: on Xiaomi, libass picked a clock font (MiClockTibetan) for missing families and lost every space.
         // Fonts embedded in the file still win; anything else falls back to our own subfont.ttf.
@@ -137,32 +153,60 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     // --- surface -------------------------------------------------------------------------------------
     private var surfaceAttached = false
     private var surfaceSized = false
+    private var voEnabled = false
+    private var surfaceW = 0
+    private var surfaceH = 0
     /** Local files open faster than SurfaceView creates its buffer; wait until both surface and size exist. */
     private var pendingLoad: (() -> Unit)? = null
+    private var revealTask: Runnable? = null
 
     fun attach(surface: Surface) {
         if (released) return
         mpv.attachSurface(surface)
-        mpv.setOptionString("force-window", "yes")
-        mpv.setPropertyString("vo", "gpu")
         surfaceAttached = true
-        if (surfaceSized) flushPendingLoad()
+        if (surfaceSized) enableVoAndFlush()
     }
 
     fun resize(w: Int, h: Int) {
         if (released || w <= 0 || h <= 0) return
-        mpv.setPropertyString("android-surface-size", "${w}x$h")
+        surfaceW = w
+        surfaceH = h
         surfaceSized = true
-        if (surfaceAttached) flushPendingLoad()
+        mpv.setPropertyString("android-surface-size", "${w}x$h")
+        if (surfaceAttached) enableVoAndFlush()
     }
 
-    private fun flushPendingLoad() {
+    private fun enableVoAndFlush() {
+        if (released || !surfaceAttached || !surfaceSized) return
+        if (!voEnabled) {
+            mpv.setPropertyString("force-window", "yes")
+            mpv.setPropertyString("vo", "gpu")
+            voEnabled = true
+            // Resuming on pause won't emit PLAYBACK_RESTART; reveal once the fresh VO has drawn a frame.
+            if (loaded && !videoReady) scheduleVideoReveal(140L)
+        }
         val run = pendingLoad ?: return
         pendingLoad = null
         run()
     }
 
-    /** Rebuilds the video output on the same surface: the cure for a stale picture after PiP. */
+    private fun scheduleVideoReveal(delayMs: Long) {
+        revealTask?.let { main.removeCallbacks(it) }
+        val gen = loadGen
+        val task = Runnable {
+            revealTask = null
+            if (!released && loadGen == gen && loaded && voEnabled) videoReady = true
+        }
+        revealTask = task
+        main.postDelayed(task, delayMs)
+    }
+
+    private fun cancelVideoReveal() {
+        revealTask?.let { main.removeCallbacks(it) }
+        revealTask = null
+    }
+
+    /** Rebuilds the video output on the same surface: the cure for a stale picture after PiP or buffer resize. */
     fun reattach(surface: Surface, w: Int, h: Int) {
         if (released || !surface.isValid || w <= 0 || h <= 0) return
         detach()
@@ -175,42 +219,65 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
 
     fun detach() {
         if (released) return
+        cancelVideoReveal()
         surfaceAttached = false
         surfaceSized = false
+        voEnabled = false
+        surfaceW = 0
+        surfaceH = 0
+        videoReady = false
         mpv.setPropertyString("vo", "null")
-        mpv.setOptionString("force-window", "no")
+        mpv.setPropertyString("force-window", "no")
         mpv.detachSurface()
     }
 
     // --- control -------------------------------------------------------------------------------------
     /** A file is open or opening; replacing it makes mpv emit END_FILE for the old one first. */
     private var active = false
-    @Volatile private var skipEndFile = 0
+    private var loadGen = 0
+    /** Number of files currently submitted to libmpv whose END_FILE has not arrived yet. */
+    private var mpvOpenCount = 0
+    private var skipEndFile = 0
     private var cacheWait = false
     private var seeking = false
+    private var pendingPrefsGen = -1
+    private var prefsFallbackTask: Runnable? = null
 
     /** An external subtitle file to attach once the video opens (Anime 365 serves subtitles separately). */
     private var pendingSub: Triple<String, String, String>? = null
 
     /** [subtitles] is (file, title, language): the title and language name the track in the subtitle list. */
-    fun load(url: String, startAt: Double, subtitles: Triple<String, String, String>? = null, referrer: String? = null) {
+    fun load(
+        url: String,
+        startAt: Double,
+        subtitles: Triple<String, String, String>? = null,
+        referrer: String? = null,
+        startPaused: Boolean = false,
+    ) {
         if (released) return
+        cancelVideoReveal()
+        cancelPrefsFallback()
+        loadGen++
+        val gen = loadGen
         pendingSub = subtitles
         pendingLoad = null
-        val wasActive = active
         active = true
-        loaded = false; ended = false; failed = false; buffering = true; position = startAt; duration = 0.0; buffered = 0.0
+        loaded = false; videoReady = false; ended = false; failed = false; buffering = true
+        cacheWait = false; seeking = false
+        position = startAt; duration = 0.0; buffered = 0.0
+        lastPos = -1.0; lastBuffered = -1.0
         tracks = emptyList(); chapters = emptyList()
         val startNow = {
-            if (!released && active) {
-                if (wasActive) skipEndFile++
-                referrer?.let { mpv.setPropertyString("referrer", it) }
-                mpv.setOptionString("start", if (startAt > 1) String.format(java.util.Locale.US, "%.2f", startAt) else "none")
+            if (!released && active && loadGen == gen) {
+                if (mpvOpenCount > 0) skipEndFile += mpvOpenCount
+                mpvOpenCount = 1
+                mpv.setPropertyString("referrer", referrer.orEmpty())
+                mpv.setOptionString("start", if (startAt > 0.5) String.format(java.util.Locale.US, "%.2f", startAt) else "none")
                 mpv.command(arrayOf("loadfile", url, "replace"))
-                mpv.setPropertyBoolean("pause", false)
+                mpv.setPropertyBoolean("pause", startPaused)
             }
         }
-        if (surfaceAttached && surfaceSized) startNow() else pendingLoad = startNow
+        if (surfaceAttached && surfaceSized && voEnabled) startNow() else pendingLoad = startNow
     }
 
     /**
@@ -219,14 +286,25 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
      */
     fun stop() {
         if (released) return
-        val deferred = pendingLoad != null
+        cancelVideoReveal()
+        cancelPrefsFallback()
+        loadGen++
         pendingLoad = null
-        if (!active) return
-        if (!deferred) skipEndFile++
+        pendingSub = null
+        val hadOpen = mpvOpenCount > 0
+        if (hadOpen) {
+            skipEndFile += mpvOpenCount
+            mpvOpenCount = 0
+        }
         active = false
-        loaded = false; ended = false; failed = false; buffering = true; position = 0.0; duration = 0.0; buffered = 0.0
+        loaded = false; videoReady = false; ended = false; failed = false; buffering = true
+        cacheWait = false; seeking = false
+        position = 0.0; duration = 0.0; buffered = 0.0
+        lastPos = -1.0; lastBuffered = -1.0
+        videoW = 0; videoH = 0
         tracks = emptyList(); chapters = emptyList()
-        if (!deferred) mpv.command(arrayOf("stop"))
+        if (subDelay != 0.0) changeSubDelay(0.0)
+        if (hadOpen) mpv.command(arrayOf("stop"))
     }
 
     /** Voice-overs are Russian tracks; subtitle and raw releases keep the Japanese audio first. */
@@ -234,29 +312,34 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
 
     fun pause(p: Boolean) {
         if (released) return
-        if (!p && ended) seekTo(0.0)
+        if (!p && ended) seekTo(0.0, exact = true)
         mpv.setPropertyBoolean("pause", p)
     }
 
     fun toggle() = pause(!paused)
 
-    fun seekTo(sec: Double) {
+    fun seekTo(sec: Double, exact: Boolean = true) {
         if (released || !loaded) return
-        val t = sec.coerceIn(0.0, (duration - 0.5).coerceAtLeast(0.0))
-        ended = false; position = t
-        mpv.command(arrayOf("seek", t.toString(), "absolute"))
+        val t = clampSeekTarget(sec, duration) ?: return
+        ended = false
+        seeking = true
+        position = t
+        lastPos = -1.0
+        val mode = if (exact) "absolute+exact" else "absolute+keyframes"
+        mpv.command(arrayOf("seek", String.format(java.util.Locale.US, "%.3f", t), mode))
     }
 
-    fun seekBy(delta: Double) = seekTo(position + delta)
+    fun seekBy(delta: Double) = seekTo(position + delta, exact = true)
 
     fun changeSpeed(v: Double) { if (!released) { speed = v; mpv.setPropertyDouble("speed", v) } }
 
     fun select(type: String, id: Int?) {
         if (released) return
+        val gen = loadGen
         mpv.setPropertyString(if (type == "audio") "aid" else "sid", id?.toString() ?: "no")
         // Reflect the choice at once; mpv's own track-list update follows and confirms it.
         tracks = tracks.map { if (it.type == type) it.copy(selected = it.id == id) else it }
-        main.postDelayed({ readTracks() }, 150)
+        main.postDelayed({ if (!released && loadGen == gen) readTracks() }, 150)
     }
 
     fun changeSubScale(v: Double) { if (!released) { subScale = v; mpv.setPropertyDouble("sub-scale", v) } }
@@ -273,11 +356,15 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     fun release() {
         if (released) return
         released = true
+        active = false
+        loaded = false
+        videoReady = false
         onFileLoaded = null; onStreamError = null
-        main.removeCallbacksAndMessages(null)
         runCatching { mpv.removeObserver(this) }
         runCatching { mpv.command(arrayOf("stop")) }
         runCatching { mpv.destroy() }
+        // Clear pending UI callbacks only AFTER mpv.destroy() joins the native event thread.
+        main.removeCallbacksAndMessages(null)
     }
 
     /** The chapter playing now, if the file has chapters. */
@@ -287,6 +374,18 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         if (i < 0) return null
         val end = list.getOrNull(i + 1)?.start ?: duration
         return list[i] to end
+    }
+
+    private fun cancelPrefsFallback() {
+        prefsFallbackTask?.let { main.removeCallbacks(it) }
+        prefsFallbackTask = null
+        pendingPrefsGen = -1
+    }
+
+    private fun firePendingPrefs() {
+        if (released || pendingPrefsGen != loadGen) return
+        cancelPrefsFallback()
+        onFileLoaded?.invoke()
     }
 
     private fun readTracks() {
@@ -305,6 +404,9 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
                 channels = if (type == "audio") mpv.getPropertyInt("$p/demux-channel-count") else null,
             )
         }
+        if (pendingPrefsGen == loadGen && tracks.any { it.type == "sub" && it.external }) {
+            firePendingPrefs()
+        }
     }
 
     private fun readChapters() {
@@ -317,44 +419,66 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         if (BuildConfig.DEBUG) android.util.Log.i("NeifurPlayer", "chapters: " + chapters.joinToString { "${it.start.toInt()}s '${it.title}' ${it.kind}" })
     }
 
+    /** Reads dwidth and dheight atomically as a pair so Compose never sees a transient mismatched square aspect. */
+    private fun syncVideoDimensions() {
+        if (released || !active) return
+        val w = mpv.getPropertyInt("dwidth") ?: 0
+        val h = mpv.getPropertyInt("dheight") ?: 0
+        if (w > 0 && h > 0 && (w != videoW || h != videoH)) {
+            videoW = w
+            videoH = h
+        }
+    }
+
     // --- mpv event thread ----------------------------------------------------------------------------
-    private var lastPos = -1.0
+    @Volatile private var lastPos = -1.0
+    @Volatile private var lastBuffered = -1.0
 
     override fun eventProperty(property: String) {
+        if (released) return
         when (property) {
-            "track-list" -> main.post { readTracks() }
-            "chapter-list" -> main.post { readChapters() }
+            "track-list" -> main.post { if (!released && active) readTracks() }
+            "chapter-list" -> main.post { if (!released && active) readChapters() }
         }
     }
 
     override fun eventProperty(property: String, value: Long) {
+        if (released) return
         when (property) {
-            "dwidth" -> if (value > 0) main.post { videoW = value.toInt() }
-            "dheight" -> if (value > 0) main.post { videoH = value.toInt() }
+            "dwidth", "dheight" -> if (value > 0) main.post { syncVideoDimensions() }
         }
     }
 
     override fun eventProperty(property: String, value: Double) {
+        if (released) return
         when (property) {
-            "time-pos" -> if (abs(value - lastPos) >= 0.2) {
-                val advanced = value > lastPos && value - lastPos < 2.0
+            "time-pos" -> if (!shouldThrottle(value, lastPos, 0.2)) {
+                val advanced = lastPos >= 0.0 && value > lastPos && value - lastPos < 4.0
                 lastPos = value
                 main.post {
-                    if (!loaded) return@post
+                    if (released || !loaded) return@post
                     // Time moving forward in small steps is the ground truth that nothing is stalled:
                     // mpv doesn't always send the matching "seeking=false" after a track switch.
                     if (advanced && !paused) { seeking = false; cacheWait = false; buffering = false }
-                    if (!seeking) position = value
+                    if (!seeking) {
+                        position = value
+                        if (voEnabled && !videoReady) { cancelVideoReveal(); videoReady = true }
+                    }
                 }
             }
-            "duration" -> main.post { if (active) duration = value }
-            "demuxer-cache-time" -> main.post { if (active) buffered = value }
-            "speed" -> main.post { speed = value }
+            "duration" -> main.post { if (!released && active) duration = value }
+            "demuxer-cache-time" -> if (!shouldThrottle(value, lastBuffered, 0.5)) {
+                lastBuffered = value
+                main.post { if (!released && active) buffered = value }
+            }
+            "speed" -> main.post { if (!released) speed = value }
         }
     }
 
     override fun eventProperty(property: String, value: Boolean) {
+        if (released) return
         main.post {
+            if (released) return@post
             when (property) {
                 "pause" -> paused = value
                 // Both flags feed the spinner; one turning off must not hide the other.
@@ -368,22 +492,57 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     override fun eventProperty(property: String, value: String) {}
 
     override fun event(eventId: Int) {
+        if (released) return
         when (eventId) {
             MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED -> main.post {
-                if (!active || released) return@post
-                loaded = true; buffering = false; failed = false
-                pendingSub?.let { (file, title, lang) -> runCatching { mpv.command(arrayOf("sub-add", file, "select", title, lang)) } }
+                // While skipEndFile > 0, an older file's END_FILE is still pending, so this FILE_LOADED is stale.
+                if (released || !active || skipEndFile > 0) return@post
+                loaded = true; buffering = cacheWait || seeking; failed = false
+                syncVideoDimensions()
+                val sub = pendingSub
                 pendingSub = null
-                readTracks(); readChapters()
-                onFileLoaded?.invoke()
+                val gen = loadGen
+                if (sub != null) {
+                    val (file, title, lang) = sub
+                    runCatching { mpv.command(arrayOf("sub-add", file, "select", title, lang)) }
+                    pendingPrefsGen = gen
+                    readTracks()
+                    // If the external track isn't in track-list yet, wait briefly for track-list event before applying prefs.
+                    if (pendingPrefsGen == gen) {
+                        val fallback = Runnable { firePendingPrefs() }
+                        prefsFallbackTask = fallback
+                        main.postDelayed(fallback, 220L)
+                    }
+                } else {
+                    readTracks()
+                    onFileLoaded?.invoke()
+                }
+                readChapters()
+                if (voEnabled && !videoReady) scheduleVideoReveal(320L)
             }
-            MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> main.post { if (active && !released) { seeking = false; buffering = cacheWait } }
+            MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> main.post {
+                if (released || !active || skipEndFile > 0) return@post
+                seeking = false
+                buffering = cacheWait || !loaded
+                if (loaded && voEnabled) {
+                    syncVideoDimensions()
+                    cancelVideoReveal()
+                    videoReady = true
+                }
+            }
             // With keep-open a normal ending never unloads the file: END_FILE means the open failed or the stream broke.
             MPVLib.MpvEvent.MPV_EVENT_END_FILE -> main.post {
+                if (released) return@post
                 when {
                     skipEndFile > 0 -> skipEndFile--
-                    !loaded -> { failed = true; buffering = false; active = false }
-                    !released -> { active = false; loaded = false; buffering = true; onStreamError?.invoke() }
+                    else -> {
+                        mpvOpenCount = (mpvOpenCount - 1).coerceAtLeast(0)
+                        when {
+                            !active -> {}
+                            !loaded -> { failed = true; buffering = false; active = false; videoReady = false }
+                            else -> { active = false; loaded = false; videoReady = false; buffering = true; onStreamError?.invoke() }
+                        }
+                    }
                 }
             }
         }

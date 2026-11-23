@@ -27,8 +27,10 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Bedtime
@@ -146,6 +148,12 @@ private val PanelBg = Color(0xF5121219)
 internal val PanelWidth = 420.dp
 private val RowOn = Nf.Violet.copy(alpha = 0.16f)
 
+/** Effective width of the side panel, shared with PlayerUi so the video shift always matches the card width. */
+internal fun playerPanelWidth(screenWidthDp: Int): androidx.compose.ui.unit.Dp {
+    val desired = if (screenWidthDp >= 900) 460.dp else PanelWidth
+    return desired.coerceAtMost((screenWidthDp - 24).coerceAtLeast(240).dp)
+}
+
 @Composable
 fun PlayerPanel(
     tab: PanelTab?, tabs: List<PanelTab>, player: MpvPlayer, stream: StreamUi,
@@ -155,13 +163,16 @@ fun PlayerPanel(
     onTranslation: (Translation) -> Unit, onEpisode: (Int) -> Unit,
 ) {
     // Scrim: the video stays visible but dims, and a tap on it closes the panel.
+    // Only intercept touches while the panel is actually open so the fade-out never swallows taps.
     val scrim by animateFloatAsState(if (tab != null) 0.45f else 0f, tween(260), label = "scrim")
     if (scrim > 0.01f) Box(
         Modifier.fillMaxSize().background(Color.Black.copy(alpha = scrim))
-            .clickable(remember { MutableInteractionSource() }, null, onClick = onClose)
+            .then(if (tab != null) Modifier.clickable(remember { MutableInteractionSource() }, null, onClick = onClose) else Modifier)
     )
     var shown by remember { mutableStateOf(PanelTab.Translation) }
     if (tab != null) shown = tab
+    if (shown !in tabs && tabs.isNotEmpty()) shown = tabs.first()
+    val panelW = playerPanelWidth(LocalConfiguration.current.screenWidthDp)
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterEnd) {
         AnimatedVisibility(
             tab != null,
@@ -169,7 +180,6 @@ fun PlayerPanel(
             exit = slideOutHorizontally(tween(220)) { it } + fadeOut(tween(200)),
         ) {
             // A floating card: only the screen edge it sits against is inset.
-            val panelW = if (LocalConfiguration.current.screenWidthDp >= 900) 460.dp else PanelWidth
             Column(
                 Modifier.fillMaxHeight()
                     .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
@@ -418,7 +428,7 @@ fun QuickMenuHost(
     player: MpvPlayer,
     stream: StreamUi,
     sleep: SleepTimer,
-    sleepRemainingMs: Long,
+    sleepRemainingMs: () -> Long,
     onHeight: (Int) -> Unit,
     onSleepMinutes: (Int) -> Unit,
     onSleepExtend: (Int) -> Unit,
@@ -443,7 +453,9 @@ fun QuickMenuHost(
             Column(
                 Modifier.width(if (top) 264.dp else 236.dp).clip(RoundedCornerShape(22.dp)).background(PanelBg)
                     .border(1.dp, Color(0x14FFFFFF), RoundedCornerShape(22.dp))
-                    .clickable(remember { MutableInteractionSource() }, null) {}.padding(8.dp)
+                    .clickable(remember { MutableInteractionSource() }, null) {}
+                    .verticalScroll(rememberScrollState())
+                    .padding(8.dp)
             ) {
                 when (shown) {
                     QuickMenu.Quality -> {
@@ -470,7 +482,7 @@ fun QuickMenuHost(
                                         .border(1.dp, if (on) Nf.Violet.copy(alpha = 0.6f) else Color.Transparent, RoundedCornerShape(12.dp))
                                         .clickable { player.changeSpeed(v) },
                                     contentAlignment = Alignment.Center,
-                                ) { Text(speedLabel(v), style = Type.Label, color = if (on) Nf.Violet else Color.White) }
+                                ) { Text(speedLabel(v), style = Type.Label, color = if (on) Nf.Violet else Color.White, maxLines = 1, softWrap = false) }
                             }
                         }
                         Hint("Удерживайте палец на видео — временно 2×", padding = 10.dp)
@@ -491,7 +503,7 @@ fun QuickMenuHost(
                                     Icon(Icons.Rounded.Bedtime, null, tint = Nf.Violet, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(8.dp))
                                     Text(
-                                        if (sleep is SleepTimer.Until) formatSleepCountdown(sleepRemainingMs) else "В конце серии",
+                                        if (sleep is SleepTimer.Until) formatSleepCountdown(sleepRemainingMs()) else "В конце серии",
                                         style = Type.Title.copy(fontSize = 15.5.sp), color = Color.White,
                                         modifier = Modifier.weight(1f), maxLines = 1,
                                     )

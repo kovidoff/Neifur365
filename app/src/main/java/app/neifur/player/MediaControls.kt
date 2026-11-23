@@ -60,13 +60,16 @@ class MediaControls(
         isActive = true
     }
 
-    /** Called as playback starts or resumes. Refused (a call is on): stay paused. */
+    /** Called as playback starts or resumes. Refused or delayed (e.g. a call is on): stay paused. */
     fun takeFocus() {
         if (hasFocus) return
         resumeOnGain = false
         val r = audio.requestAudioFocus(focus)
         hasFocus = r == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        if (r == AudioManager.AUDIOFOCUS_REQUEST_FAILED) player.pause(true)
+        when (r) {
+            AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> { resumeOnGain = true; player.pause(true) }
+            AudioManager.AUDIOFOCUS_REQUEST_FAILED -> player.pause(true)
+        }
     }
 
     /** Re-arms headphone and system media buttons when the player comes back to the foreground. */

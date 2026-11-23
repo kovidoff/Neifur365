@@ -2,6 +2,7 @@ package app.neifur.player
 
 import android.content.Context
 import android.media.AudioManager
+import android.view.HapticFeedbackConstants
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.ComponentActivity
@@ -12,7 +13,6 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
@@ -31,8 +31,6 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -41,12 +39,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Mic
-import androidx.compose.material.icons.rounded.UnfoldMore
-import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.outlined.Bedtime
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.AspectRatio
+import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FitScreen
@@ -56,21 +55,13 @@ import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Replay10
-import androidx.compose.material.icons.rounded.Forward10
-import androidx.compose.material.icons.rounded.Replay5
-import androidx.compose.material.icons.rounded.Forward5
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
-import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.SubtitlesOff
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.PlatformTextStyle
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.material.icons.rounded.UnfoldMore
+import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -79,14 +70,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.unit.Constraints
-import android.view.HapticFeedbackConstants
-import androidx.compose.material.icons.outlined.Bedtime
-import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.PictureInPictureAlt
-import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -95,19 +79,27 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import app.neifur.container
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.neifur.PlaySession
+import app.neifur.container
 import app.neifur.ui.Nf
 import app.neifur.ui.Type
 import app.neifur.ui.pressable
@@ -125,8 +117,17 @@ internal fun time(sec: Double): String {
 
 internal fun speedLabel(v: Double): String = if (v % 1.0 == 0.0) "${v.toInt()}×" else "${v.toString().trimEnd('0')}×"
 
-/** A double-tap seek burst: taps on the same side within a short window add up (10, 20, 30 s... or by 5). */
-private data class SeekBurst(val side: Int, val seconds: Int, val at: Long, val repeatable: Boolean = true)
+/** A double-tap seek burst: consecutive double-taps on the same side within [windowMs] sum up visually (5, 10, 15 s...). */
+internal data class SeekBurst(val side: Int, val seconds: Int, val at: Long)
+
+internal fun nextSeekBurst(current: SeekBurst?, side: Int, stepSec: Int, nowMs: Long, windowMs: Long = 850L): SeekBurst {
+    val secs = if (current != null && current.side == side && nowMs - current.at < windowMs) current.seconds + stepSec else stepSec
+    return SeekBurst(side, secs, nowMs)
+}
+
+/** True when a finger hold may temporarily boost playback to 2× (never slows down 2×/3× playback). */
+internal fun canHoldBoost(holdBoost: Boolean, loaded: Boolean, paused: Boolean, panelOpen: Boolean, currentSpeed: Double): Boolean =
+    holdBoost && loaded && !paused && !panelOpen && currentSpeed < 2.0
 
 /** Brightness / volume while a vertical swipe is in progress. */
 private data class Level(val volume: Boolean, val value: Float)
@@ -135,7 +136,7 @@ private data class Level(val volume: Boolean, val value: Float)
 fun PlayerScreen(
     player: MpvPlayer, session: PlaySession, index: Int, resolving: Boolean, reconnecting: Boolean, error: String?, inPip: Boolean,
     stream: StreamUi, notice: String?, watched: Set<Int>,
-    sleep: SleepTimer, sleepRemainingMs: Long, autoNextBlocked: Boolean,
+    sleep: SleepTimer, sleepRemainingMs: () -> Long, autoNextBlocked: Boolean,
     onBack: () -> Unit, onRetry: () -> Unit, onEpisode: (Int) -> Unit, onPip: () -> Unit,
     onSelectTrack: (String, Track?) -> Unit, onSubScale: (Double) -> Unit,
     onTranslation: (app.neifur.data.a365.Translation) -> Unit, onHeight: (Int) -> Unit,
@@ -144,6 +145,8 @@ fun PlayerScreen(
 ) {
     val ctx = LocalContext.current
     val density = LocalDensity.current
+    val layoutDir = LocalLayoutDirection.current
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
     val scope = rememberCoroutineScope()
     val episodes = session.episodes
     val ep = episodes.getOrNull(index)
@@ -151,32 +154,39 @@ fun PlayerScreen(
     val hasPrev = index > 0
 
     var controls by remember { mutableStateOf(true) }
+    var remaining by remember { mutableStateOf(false) }
     var locked by remember { mutableStateOf(false) }
     var lockHint by remember { mutableIntStateOf(0) }
     var panel by remember { mutableStateOf<PanelTab?>(null) }
     var menu by remember { mutableStateOf<QuickMenu?>(null) }
-    val hasSubTracks = player.tracks.any { it.type == "sub" }
-    val tabs = listOfNotNull(PanelTab.Translation, PanelTab.Episodes.takeIf { episodes.size > 1 }, PanelTab.Subs.takeIf { hasSubTracks })
+    val hasSubTracks by remember(player) { derivedStateOf { player.tracks.any { it.type == "sub" } } }
+    val tabs = remember(episodes.size, hasSubTracks) {
+        listOfNotNull(PanelTab.Translation, PanelTab.Episodes.takeIf { episodes.size > 1 }, PanelTab.Subs.takeIf { hasSubTracks })
+    }
     var burst by remember { mutableStateOf<SeekBurst?>(null) }
-    var level by remember { mutableStateOf<Level?>(null) }
-    var scrub by remember { mutableStateOf<Double?>(null) }
+    // Keep high-frequency gesture state inside State holders read only by leaf overlays so PlayerScreen doesn't recompose at 60–120 FPS.
+    val levelState = remember { mutableStateOf<Level?>(null) }
+    val scrubState = remember { mutableStateOf<Double?>(null) }
+    val isScrubbing by remember { derivedStateOf { scrubState.value != null } }
     var boosting by remember { mutableStateOf(false) }
     var pop by remember { mutableStateOf<Pair<ImageVector, Long>?>(null) }
     var interaction by remember { mutableIntStateOf(0) }
-    var autoNextCancelled by remember(index) { mutableStateOf(false) }
+    var autoNextCancelled by remember(session.anime.id, index) { mutableStateOf(false) }
     val stepSec by remember { ctx.container.prefs.seekStep }.collectAsState(10)
     val holdBoost by remember { ctx.container.prefs.holdBoost }.collectAsState(true)
     val sideGestures by remember { ctx.container.prefs.sideGestures }.collectAsState(true)
     val sideGesturesNow by rememberUpdatedState(sideGestures)
     val holdBoostNow by rememberUpdatedState(holdBoost)
+    val panelNow by rememberUpdatedState(panel)
+    val boostingNow by rememberUpdatedState(boosting)
+    val dragActive = remember { object { var value = false } }
 
     // Auto-hide: controls go away after a few seconds of playback without touches.
-    LaunchedEffect(controls, interaction, player.paused, panel, menu, scrub, locked) {
-        if (controls && !player.paused && panel == null && menu == null && scrub == null && !locked) { delay(3500); controls = false }
+    LaunchedEffect(controls, interaction, player.paused, panel, menu, isScrubbing, locked) {
+        if (controls && !player.paused && panel == null && menu == null && !isScrubbing && !locked) { delay(3500); controls = false }
     }
     LaunchedEffect(burst?.at) { if (burst != null) { delay(850); burst = null } }
     LaunchedEffect(pop?.second) { if (pop != null) { delay(550); pop = null } }
-    LaunchedEffect(lockHint) { if (lockHint > 0) delay(2500) }
 
     BackHandler(enabled = panel != null || menu != null || locked) {
         when { menu != null -> menu = null; panel != null -> panel = null; else -> lockHint++ }
@@ -187,30 +197,29 @@ fun PlayerScreen(
     val busy by produceState(rawBusy, rawBusy) { if (rawBusy) { delay(350); value = true } else value = false }
     val failure = error ?: if (player.failed) "Не удалось открыть видео. Возможно, ссылка устарела" else null
 
-    // Auto-advance when an episode ends (suppressed when the sleep timer is set to end of episode).
+    // Auto-advance when an episode ends (paused while panel is open, player is paused, or sleep timer suppressed it).
     val countdown = remember { Animatable(0f) }
-    LaunchedEffect(player.ended, index, autoNextCancelled, autoNextBlocked) {
+    val autoNextActive = player.ended && hasNext && failure == null && !autoNextCancelled && !autoNextBlocked && !player.paused && panel == null
+    LaunchedEffect(autoNextActive, session.anime.id, index) {
         countdown.snapTo(0f)
-        if (player.ended && hasNext && !autoNextCancelled && !autoNextBlocked) {
+        if (autoNextActive) {
             countdown.animateTo(1f, tween(7000, easing = LinearEasing))
             onEpisode(index + 1)
         }
     }
 
     fun seekStep(side: Int) {
+        if (!player.loaded || player.duration <= 0.0) return
         val now = System.currentTimeMillis()
-        val b = burst
-        val secs = if (b != null && b.repeatable && b.side == side && now - b.at < 850) b.seconds + stepSec else stepSec
         player.seekBy(side * stepSec.toDouble())
-        burst = SeekBurst(side, secs, now, repeatable = true)
+        burst = nextSeekBurst(burst, side, stepSec, now)
     }
 
     fun jumpOpening() {
+        if (!player.loaded || player.duration <= 0.0) return
         val now = System.currentTimeMillis()
-        val b = burst
-        val secs = if (b != null && !b.repeatable && b.side == 1 && now - b.at < 850) b.seconds + JUMP_SECONDS else JUMP_SECONDS
         player.seekBy(JUMP_SECONDS.toDouble())
-        burst = SeekBurst(1, secs, now, repeatable = false)
+        burst = nextSeekBurst(burst, 1, JUMP_SECONDS, now)
         menu = null
         interaction++
     }
@@ -223,7 +232,7 @@ fun PlayerScreen(
         interaction++
     }
 
-    val skipAnnounced = remember(index) { mutableSetOf<Double>() }
+    val skipAnnounced = remember(session.anime.id, index) { mutableSetOf<Double>() }
 
     // The picture lives in a view shaped like the video itself, backed by a buffer of the video's own size.
     // mpv therefore never sees the window change size (PiP, panel, fill/fit): the system compositor scales
@@ -235,17 +244,34 @@ fun PlayerScreen(
         (vw * k).roundToInt() to (vh * k).roundToInt()
     }
     val aspect = vw.toFloat() / vh
+    val rightCutoutDp = with(density) { WindowInsets.displayCutout.getRight(density, layoutDir).toDp() }
+    val targetPanelShift = playerPanelWidth(screenWidthDp) + 12.dp + rightCutoutDp
     // With the settings panel open the picture glides into the space left of it, subtitles included.
     val shift by animateDpAsState(
-        if (panel != null && !inPip) PanelWidth + 12.dp else 0.dp,
+        if (panel != null && !inPip) targetPanelShift else 0.dp,
         spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow), label = "shift",
     )
     val fillNow = player.fill && panel == null && !inPip
+
+    val holderRef = remember { arrayOfNulls<SurfaceHolder>(1) }
+    val fixedBuf = remember { intArrayOf(0, 0) }
+    var wasInPip by remember { mutableStateOf(false) }
+    LaunchedEffect(inPip) {
+        if (wasInPip && !inPip) {
+            val surface = holderRef[0]?.surface
+            if (surface != null && surface.isValid && fixedBuf[0] > 0 && fixedBuf[1] > 0) {
+                player.reattach(surface, fixedBuf[0], fixedBuf[1])
+            }
+        }
+        wasInPip = inPip
+    }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { c ->
                 SurfaceView(c).apply {
+                    holderRef[0] = holder
+                    fixedBuf[0] = bufW; fixedBuf[1] = bufH
                     holder.setFixedSize(bufW, bufH)
                     holder.addCallback(object : SurfaceHolder.Callback {
                         override fun surfaceCreated(h: SurfaceHolder) = player.attach(h.surface)
@@ -254,7 +280,12 @@ fun PlayerScreen(
                     })
                 }
             },
-            update = { v -> v.holder.setFixedSize(bufW, bufH) },
+            update = { v ->
+                if (fixedBuf[0] != bufW || fixedBuf[1] != bufH) {
+                    fixedBuf[0] = bufW; fixedBuf[1] = bufH
+                    v.holder.setFixedSize(bufW, bufH)
+                }
+            },
             modifier = Modifier
                 .layout { m, c ->
                     val areaW = (c.maxWidth - shift.roundToPx()).coerceAtLeast(1)
@@ -264,8 +295,19 @@ fun PlayerScreen(
                     val pl = m.measure(Constraints.fixed(w.roundToInt().coerceAtLeast(1), h.roundToInt().coerceAtLeast(1)))
                     layout(c.maxWidth, c.maxHeight) { pl.place(((areaW - pl.width) / 2f).roundToInt(), ((areaH - pl.height) / 2f).roundToInt()) }
                 }
-                .onGloballyPositioned { onVideoBounds(it.boundsInWindow()) },
+                .onGloballyPositioned {
+                    // Only report PiP bounds when stable (never during side-panel slide animation or inside PiP).
+                    if (!inPip && panelNow == null) onVideoBounds(it.boundsInWindow())
+                },
         )
+        // Instant black curtain hides stale SurfaceView buffers during episode switches and resume; fades out cleanly once a fresh frame is ready.
+        val showCurtain = !player.videoReady || resolving
+        val curtainAlpha by animateFloatAsState(
+            if (showCurtain) 1f else 0f,
+            tween(if (showCurtain) 0 else 180),
+            label = "curtain",
+        )
+        if (curtainAlpha > 0.01f) Box(Modifier.fillMaxSize().graphicsLayer { alpha = curtainAlpha }.background(Color.Black))
         if (inPip) return@Box
 
         // ---- gestures (all disabled while locked) ----
@@ -275,36 +317,46 @@ fun PlayerScreen(
                     val topEdge = with(density) { 56.dp.toPx() }
                     val sideEdge = with(density) { 36.dp.toPx() }
                     fun inDeadZone(o: Offset) = o.y < topEdge || o.y > size.height - sideEdge || o.x < sideEdge || o.x > size.width - sideEdge
+                    var suppressTapUntil = 0L
                     detectTapGestures(
                         onTap = { o ->
-                            if (inDeadZone(o) && panel == null) return@detectTapGestures
-                            val side = if (o.x < size.width / 3f) -1 else if (o.x > size.width * 2 / 3f) 1 else 0
-                            val b = burst
-                            when {
-                                panel != null -> panel = null
-                                // Keep tapping on the same side to keep seeking, like a double tap that never ends.
-                                b != null && b.repeatable && side != 0 && b.side == side -> seekStep(side)
-                                else -> { controls = !controls; interaction++ }
-                            }
+                            if (System.currentTimeMillis() < suppressTapUntil) return@detectTapGestures
+                            if (inDeadZone(o) && panelNow == null) return@detectTapGestures
+                            if (panelNow != null) panel = null
+                            else { controls = !controls; interaction++ }
                         },
                         onDoubleTap = { o ->
-                            if (inDeadZone(o) || panel != null) return@detectTapGestures
+                            if (inDeadZone(o) || panelNow != null) return@detectTapGestures
                             when {
                                 o.x < size.width / 3f -> seekStep(-1)
                                 o.x > size.width * 2 / 3f -> seekStep(1)
                                 else -> togglePlay(fromGesture = true)
                             }
                         },
-                        // Declaring a long press is what stops the finger lifting after a 2× hold from counting as a tap
-                        // (which used to bring the controls up). The hold itself is handled in onPress below.
+                        // Declaring a long press prevents lifting after a 2× hold from triggering onTap.
                         onLongPress = {},
-                        onPress = {
-                            // Hold to watch at 2×; lift to return to the previous speed.
+                        onPress = { offset ->
+                            if (inDeadZone(offset) || panelNow != null) return@detectTapGestures
                             val before = player.speed
-                            val job = scope.launch { delay(450); if (holdBoostNow && player.loaded && !player.paused && panel == null) { boosting = true; player.changeSpeed(2.0) } }
-                            tryAwaitRelease()
-                            job.cancel()
-                            if (boosting) { boosting = false; player.changeSpeed(before) }
+                            var boosted = false
+                            val job = scope.launch {
+                                delay(450)
+                                if (!dragActive.value && canHoldBoost(holdBoostNow, player.loaded, player.paused, panelNow != null, player.speed)) {
+                                    boosted = true
+                                    boosting = true
+                                    player.changeSpeed(2.0)
+                                }
+                            }
+                            try {
+                                tryAwaitRelease()
+                            } finally {
+                                job.cancel()
+                                if (boosted) {
+                                    boosting = false
+                                    player.changeSpeed(before)
+                                    suppressTapUntil = System.currentTimeMillis() + 350L
+                                }
+                            }
                         },
                     )
                 }
@@ -320,18 +372,19 @@ fun PlayerScreen(
                     val window = (ctx as ComponentActivity).window
                     detectDragGestures(
                         onDragStart = { o ->
+                            dragActive.value = false
                             // Leave the screen edges (especially top notification shade) to system gestures.
-                            mode = if (o.y < topEdge || o.y > size.height - edge || o.x < edge || o.x > size.width - edge || panel != null) -1 else 0
+                            mode = if (boostingNow || o.y < topEdge || o.y > size.height - edge || o.x < edge || o.x > size.width - edge || panelNow != null) -1 else 0
                             acc = 0f; startPos = player.position
                         },
                         onDragEnd = {
-                            if (mode == 1) scrub?.let { player.seekTo(it) }
-                            if (mode == 2) level?.let { l -> scope.launch { ctx.container.prefs.saveBrightness(l.value) } }
-                            scrub = null; mode = 0; level = null
+                            if (mode == 1) scrubState.value?.let { player.seekTo(it, exact = true) }
+                            if (mode == 2) levelState.value?.let { l -> scope.launch { ctx.container.prefs.saveBrightness(l.value) } }
+                            dragActive.value = false; scrubState.value = null; mode = 0; levelState.value = null
                         },
-                        onDragCancel = { scrub = null; mode = 0; level = null },
+                        onDragCancel = { dragActive.value = false; scrubState.value = null; mode = 0; levelState.value = null },
                     ) { change, drag ->
-                        if (mode == -1) return@detectDragGestures
+                        if (mode == -1 || boostingNow) return@detectDragGestures
                         if (mode == 0) {
                             mode = when {
                                 abs(drag.x) > abs(drag.y) -> 1
@@ -340,26 +393,27 @@ fun PlayerScreen(
                                 else -> 3
                             }
                             if (mode == -1) return@detectDragGestures
+                            dragActive.value = true
                             startLevel = if (mode == 2) window.attributes.screenBrightness.let { if (it < 0) 0.5f else it }
                             else audio.getStreamVolume(AudioManager.STREAM_MUSIC) / maxVol.toFloat()
                         }
                         when (mode) {
-                            1 -> if (player.loaded) {
+                            1 -> if (player.loaded && player.duration > 0.0) {
                                 acc += drag.x
                                 // A full-width swipe covers 3 minutes: precise enough to land after an opening.
-                                scrub = (startPos + acc / size.width * 180.0).coerceIn(0.0, player.duration)
+                                scrubState.value = (startPos + acc / size.width * 180.0).coerceIn(0.0, player.duration)
                             }
                             2 -> {
                                 acc -= drag.y
                                 val v = (startLevel + acc / (size.height * 0.75f)).coerceIn(0.01f, 1f)
                                 window.attributes = window.attributes.apply { screenBrightness = v }
-                                level = Level(false, v)
+                                levelState.value = Level(false, v)
                             }
                             3 -> {
                                 acc -= drag.y
                                 val v = (startLevel + acc / (size.height * 0.75f)).coerceIn(0f, 1f)
                                 audio.setStreamVolume(AudioManager.STREAM_MUSIC, (v * maxVol).roundToInt(), 0)
-                                level = Level(true, v)
+                                levelState.value = Level(true, v)
                             }
                         }
                     }
@@ -371,10 +425,12 @@ fun PlayerScreen(
 
         // ---- controls ----
         val showControls = controls && panel == null && failure == null && !locked
+        val topGradient = remember { Brush.verticalGradient(listOf(Color(0xB3000000), Color.Transparent)) }
+        val bottomGradient = remember { Brush.verticalGradient(listOf(Color.Transparent, Color(0xD9000000))) }
         AnimatedVisibility(showControls, enter = fadeIn(tween(160)), exit = fadeOut(tween(260))) {
             Box(Modifier.fillMaxSize().background(Color(0x59000000))) {
-                Box(Modifier.fillMaxWidth().height(130.dp).background(Brush.verticalGradient(listOf(Color(0xB3000000), Color.Transparent))))
-                Box(Modifier.fillMaxWidth().height(190.dp).align(Alignment.BottomCenter).background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xD9000000)))))
+                Box(Modifier.fillMaxWidth().height(130.dp).background(topGradient))
+                Box(Modifier.fillMaxWidth().height(190.dp).align(Alignment.BottomCenter).background(bottomGradient))
 
                 // Top bar
                 Row(Modifier.fillMaxWidth().displayCutoutPadding().padding(horizontal = 18.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -382,49 +438,23 @@ fun PlayerScreen(
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
                         Text(session.anime.title, style = Type.Title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(
+                        val subtitle = remember(ep, episodes.size, stream.current?.author, stream.height, stream.offline) {
                             listOfNotNull(
                                 ep?.takeIf { episodes.size > 1 || (ep.number > 0 && ep.episodeFull.contains("сери", ignoreCase = true)) }?.label,
                                 stream.current?.author,
                                 stream.height.takeIf { it > 0 }?.let { "${it}p" },
                                 if (stream.offline) "Офлайн" else null,
-                            ).joinToString(" · "),
-                            style = Type.Caption, color = Color(0xB3FFFFFF), maxLines = 1,
-                        )
-                    }
-                    val sleepBadge = formatSleepBadge(sleep, sleepRemainingMs)
-                    var lastSleepBadge by remember { mutableStateOf("") }
-                    if (sleepBadge != null) lastSleepBadge = sleepBadge
-                    val sleepActive = sleep != SleepTimer.Off
-                    val sleepLit = sleepActive || menu == QuickMenu.Sleep
-                    val sleepBg by animateColorAsState(if (sleepLit) Nf.Violet.copy(alpha = 0.24f) else Color(0x26FFFFFF), tween(200), label = "sbg")
-                    val sleepBr by animateColorAsState(if (sleepLit) Nf.Violet.copy(alpha = 0.55f) else Color(0x1AFFFFFF), tween(200), label = "sbr")
-                    val sleepIconTint by animateColorAsState(if (sleepActive) Nf.Violet else Color.White, tween(200), label = "sic")
-                    Row(
-                        Modifier.height(46.dp).widthIn(min = 46.dp).clip(CircleShape)
-                            .background(sleepBg).border(1.dp, sleepBr, CircleShape)
-                            .pressable(0.88f) { menu = if (menu == QuickMenu.Sleep) null else QuickMenu.Sleep; interaction++ }
-                            .padding(horizontal = 13.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                    ) {
-                        Icon(
-                            if (sleepActive) Icons.Rounded.Bedtime else Icons.Outlined.Bedtime,
-                            "Таймер сна", tint = sleepIconTint,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        AnimatedVisibility(
-                            sleepBadge != null,
-                            enter = expandHorizontally(spring(dampingRatio = 0.85f, stiffness = 420f), expandFrom = Alignment.Start) + fadeIn(tween(180, 60)),
-                            exit = shrinkHorizontally(spring(dampingRatio = 0.9f, stiffness = 480f), shrinkTowards = Alignment.Start) + fadeOut(tween(100)),
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Spacer(Modifier.width(6.dp))
-                                Text(lastSleepBadge, style = Type.Label, color = Color.White, maxLines = 1, softWrap = false)
-                                Spacer(Modifier.width(2.dp))
-                            }
+                            ).joinToString(" · ")
                         }
+                        Text(subtitle, style = Type.Caption, color = Color(0xB3FFFFFF), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
+                    Spacer(Modifier.width(10.dp))
+                    SleepTopPill(
+                        sleep = sleep,
+                        sleepRemainingMs = sleepRemainingMs,
+                        menuOpen = menu == QuickMenu.Sleep,
+                        onToggle = { menu = if (menu == QuickMenu.Sleep) null else QuickMenu.Sleep; interaction++ },
+                    )
                     Spacer(Modifier.width(8.dp))
                     Row(
                         Modifier.height(46.dp).clip(CircleShape).background(Color(0x26FFFFFF)).border(1.dp, Color(0x1AFFFFFF), CircleShape),
@@ -436,10 +466,9 @@ fun PlayerScreen(
                     }
                 }
 
-                // Center transport
-                Row(Modifier.align(Alignment.Center), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-                    RoundButton(Icons.Rounded.SkipPrevious, "Предыдущая серия", enabled = hasPrev, size = 44.dp) { onEpisode(index - 1) }
-                    RoundButton(if (stepSec == 5) Icons.Rounded.Replay5 else Icons.Rounded.Replay10, "Назад на $stepSec секунд", size = 50.dp) { seekStep(-1); interaction++ }
+                // Center transport: clean YouTube-style trio (Previous — Play/Pause — Next); seeking lives on crisp double-taps.
+                Row(Modifier.align(Alignment.Center), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(36.dp)) {
+                    RoundButton(Icons.Rounded.SkipPrevious, "Предыдущая серия", enabled = hasPrev, size = 48.dp) { onEpisode(index - 1) }
                     Box(
                         Modifier.size(78.dp).clip(CircleShape).background(Color(0x38FFFFFF)).border(1.dp, Color(0x1AFFFFFF), CircleShape)
                             .pressable(0.9f) { togglePlay(fromGesture = false) },
@@ -448,30 +477,30 @@ fun PlayerScreen(
                         if (busy) CircularProgressIndicator(Modifier.size(34.dp), color = Color.White, strokeWidth = 3.dp)
                         else PlayPauseIcon(player.paused || player.ended)
                     }
-                    RoundButton(if (stepSec == 5) Icons.Rounded.Forward5 else Icons.Rounded.Forward10, "Вперёд на $stepSec секунд", size = 50.dp) { seekStep(1); interaction++ }
-                    RoundButton(Icons.Rounded.SkipNext, "Следующая серия", enabled = hasNext, size = 44.dp) { onEpisode(index + 1) }
+                    RoundButton(Icons.Rounded.SkipNext, "Следующая серия", enabled = hasNext, size = 48.dp) { onEpisode(index + 1) }
                 }
 
                 // Bottom: timeline + quick settings
                 Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().displayCutoutPadding().padding(horizontal = 22.dp).padding(bottom = 12.dp)) {
-                    var remaining by remember { mutableStateOf(false) }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(time(scrub ?: player.position), style = Type.Label, color = Color.White, modifier = Modifier.widthIn(min = 44.dp))
-                        SeekBar(
-                            player = player, scrub = scrub, modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
-                            onScrub = { scrub = it; interaction++ }, onCommit = { player.seekTo(it); scrub = null },
-                        )
-                        Text(
-                            if (remaining) "−" + time(player.duration - (scrub ?: player.position)) else time(player.duration),
-                            style = Type.Label, color = Color(0xCCFFFFFF),
-                            modifier = Modifier.widthIn(min = 44.dp).clip(RoundedCornerShape(6.dp)).pressable(0.92f) { remaining = !remaining; interaction++ },
-                        )
-                    }
-                    // Left: what you watch (translation, episodes). Right: opening skip + how it looks (subtitles, quality, speed, fit).
+                    TimelineRow(
+                        player = player,
+                        scrubProvider = { scrubState.value },
+                        remaining = remaining,
+                        onToggleRemaining = { remaining = !remaining; interaction++ },
+                        onScrub = { scrubState.value = it; interaction++ },
+                        onCommit = { player.seekTo(it, exact = true); scrubState.value = null },
+                        onCancel = { scrubState.value = null },
+                    )
+                    // Left group shrinks gracefully on narrow screens so right-side pills (Speed, FitScreen) never clip off-screen.
                     Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        TranslationChip(stream, player.tracks.any { it.type == "sub" && it.selected }) { menu = null; panel = PanelTab.Translation }
-                        if (episodes.size > 1) Chip(Icons.Rounded.VideoLibrary, "Серии") { menu = null; panel = PanelTab.Episodes }
-                        Spacer(Modifier.weight(1f))
+                        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            TranslationChip(
+                                stream = stream,
+                                subsOn = player.tracks.any { it.type == "sub" && it.selected },
+                                modifier = Modifier.weight(1f, fill = false),
+                            ) { menu = null; panel = PanelTab.Translation }
+                            if (episodes.size > 1) Chip(Icons.Rounded.VideoLibrary, "Серии") { menu = null; panel = PanelTab.Episodes }
+                        }
                         if (canSkipOpening(player.loaded, player.ended, player.duration)) {
                             SkipOpeningPill(onClick = ::jumpOpening)
                         }
@@ -509,29 +538,20 @@ fun PlayerScreen(
         SeekRipple(burst, 1, Modifier.align(Alignment.CenterEnd))
 
         // ---- play/pause pop ----
-        AnimatedVisibility(pop != null, Modifier.align(Alignment.Center), enter = scaleIn(initialScale = 0.7f) + fadeIn(tween(90)), exit = scaleOut(targetScale = 1.25f) + fadeOut(tween(300))) {
-            val icon = pop?.first ?: Icons.Rounded.PlayArrow
-            Box(Modifier.size(84.dp).clip(CircleShape).background(Color(0x66000000)), contentAlignment = Alignment.Center) {
-                Icon(icon, null, tint = Color.White, modifier = Modifier.size(46.dp))
-            }
-        }
+        PopOverlay(pop, Modifier.align(Alignment.Center))
 
-        // ---- brightness / volume side bars ----
-        LevelBar(level?.takeIf { !it.volume }, Icons.Rounded.LightMode, Modifier.align(Alignment.CenterStart).padding(start = 40.dp))
-        LevelBar(level?.takeIf { it.volume }, Icons.AutoMirrored.Rounded.VolumeUp, Modifier.align(Alignment.CenterEnd).padding(end = 40.dp))
+        // ---- brightness / volume side bars (isolated so 60–120 FPS drags never recompose PlayerScreen) ----
+        LevelBarsOverlay(levelProvider = { levelState.value })
 
-        // ---- swipe-seek preview ----
-        AnimatedVisibility(scrub != null && !showControls, Modifier.align(Alignment.Center), enter = fadeIn(tween(100)), exit = fadeOut(tween(200))) {
-            val s = scrub ?: 0.0
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clip(RoundedCornerShape(22.dp)).background(Color(0xCC0E0E15)).padding(horizontal = 24.dp, vertical = 14.dp)) {
-                Text(time(s), style = Type.Display, color = Color.White)
-                val d = s - player.position
-                Text((if (d >= 0) "+" else "−") + time(abs(d)), style = Type.Label, color = Color(0xB3FFFFFF))
-                player.chapterAt(s)?.first?.title?.takeIf { it.isNotBlank() }?.let { Text(it, style = Type.Caption, color = Nf.Violet, modifier = Modifier.padding(top = 4.dp)) }
-            }
-        }
+        // ---- swipe-seek preview (isolated + retains last value during fade-out) ----
+        ScrubPreviewOverlay(
+            scrubProvider = { scrubState.value },
+            player = player,
+            showControls = showControls,
+            modifier = Modifier.align(Alignment.Center),
+        )
 
-        AnimatedVisibility(boosting, Modifier.align(Alignment.TopCenter).padding(top = 22.dp), enter = fadeIn() + slideInVertically { -it }, exit = fadeOut() + slideOutVertically { -it }) {
+        AnimatedVisibility(boosting, Modifier.align(Alignment.TopCenter).displayCutoutPadding().padding(top = 22.dp), enter = fadeIn() + slideInVertically { -it }, exit = fadeOut() + slideOutVertically { -it }) {
             Row(Modifier.clip(CircleShape).background(Color(0xCC0E0E15)).padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Rounded.FastForward, null, tint = Color.White, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
@@ -539,15 +559,21 @@ fun PlayerScreen(
             }
         }
 
-        // ---- skip opening / ending (only when the file itself carries chapter markers) ----
-        if (failure == null && !locked && panel == null) SkipButton(
+        // ---- skip opening / ending (mounted only when the file actually has chapters — zero idle recompositions) ----
+        if (failure == null && !locked && panel == null && player.chapters.isNotEmpty()) SkipButton(
             player = player, hasNext = hasNext, controlsShown = showControls, announced = skipAnnounced,
             modifier = Modifier.align(Alignment.BottomEnd),
             onNext = { onEpisode(index + 1) },
         )
 
-        // ---- next episode card ----
-        AnimatedVisibility(player.ended && hasNext && failure == null && !autoNextCancelled && !autoNextBlocked, Modifier.align(Alignment.BottomEnd).displayCutoutPadding().padding(26.dp), enter = fadeIn() + slideInHorizontally { it / 3 }, exit = fadeOut()) {
+        // ---- next episode card (lifts above controls just like SkipButton) ----
+        val nextBottom by animateDpAsState(if (showControls) 118.dp else 26.dp, spring(dampingRatio = 0.8f, stiffness = 300f), label = "nextY")
+        AnimatedVisibility(
+            player.ended && hasNext && failure == null && !autoNextCancelled && !autoNextBlocked && panel == null,
+            Modifier.align(Alignment.BottomEnd).displayCutoutPadding().padding(end = 26.dp, bottom = nextBottom),
+            enter = fadeIn() + slideInHorizontally { it / 3 },
+            exit = fadeOut(),
+        ) {
             Row(
                 Modifier.clip(RoundedCornerShape(22.dp)).background(Color(0xF0151520)).border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(22.dp)).padding(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -618,7 +644,8 @@ fun PlayerScreen(
         var lastNotice by remember { mutableStateOf("") }
         if (notice != null) lastNotice = notice
         AnimatedVisibility(
-            notice != null && panel == null, Modifier.align(Alignment.TopCenter).padding(top = 84.dp),
+            notice != null && panel == null,
+            Modifier.align(Alignment.TopCenter).displayCutoutPadding().padding(horizontal = 24.dp).padding(top = 84.dp),
             enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 3 },
         ) {
             Text(
@@ -631,26 +658,129 @@ fun PlayerScreen(
 }
 
 @Composable
+private fun SleepTopPill(sleep: SleepTimer, sleepRemainingMs: () -> Long, menuOpen: Boolean, onToggle: () -> Unit) {
+    val sleepBadge = formatSleepBadge(sleep, sleepRemainingMs())
+    var lastSleepBadge by remember { mutableStateOf("") }
+    if (sleepBadge != null) lastSleepBadge = sleepBadge
+    val sleepActive = sleep != SleepTimer.Off
+    val sleepLit = sleepActive || menuOpen
+    val sleepBg by animateColorAsState(if (sleepLit) Nf.Violet.copy(alpha = 0.24f) else Color(0x26FFFFFF), tween(200), label = "sbg")
+    val sleepBr by animateColorAsState(if (sleepLit) Nf.Violet.copy(alpha = 0.55f) else Color(0x1AFFFFFF), tween(200), label = "sbr")
+    val sleepIconTint by animateColorAsState(if (sleepActive) Nf.Violet else Color.White, tween(200), label = "sic")
+    Row(
+        Modifier.height(46.dp).widthIn(min = 46.dp).clip(CircleShape)
+            .background(sleepBg).border(1.dp, sleepBr, CircleShape)
+            .pressable(0.88f, onClick = onToggle)
+            .padding(horizontal = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            if (sleepActive) Icons.Rounded.Bedtime else Icons.Outlined.Bedtime,
+            "Таймер сна", tint = sleepIconTint,
+            modifier = Modifier.size(20.dp),
+        )
+        AnimatedVisibility(
+            sleepBadge != null,
+            enter = expandHorizontally(spring(dampingRatio = 0.85f, stiffness = 420f), expandFrom = Alignment.Start) + fadeIn(tween(180, 60)),
+            exit = shrinkHorizontally(spring(dampingRatio = 0.9f, stiffness = 480f), shrinkTowards = Alignment.Start) + fadeOut(tween(100)),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.width(6.dp))
+                Text(lastSleepBadge, style = Type.Label, color = Color.White, maxLines = 1, softWrap = false)
+                Spacer(Modifier.width(2.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimelineRow(
+    player: MpvPlayer,
+    scrubProvider: () -> Double?,
+    remaining: Boolean,
+    onToggleRemaining: () -> Unit,
+    onScrub: (Double) -> Unit,
+    onCommit: (Double) -> Unit,
+    onCancel: () -> Unit,
+) {
+    val dur = player.duration
+    val pos = scrubProvider() ?: if (dur > 0.0) player.position else 0.0
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(time(pos), style = Type.Label, color = Color.White, modifier = Modifier.widthIn(min = 44.dp))
+        SeekBar(
+            player = player, scrubProvider = scrubProvider, modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+            onScrub = onScrub, onCommit = onCommit, onCancel = onCancel,
+        )
+        Text(
+            when {
+                dur <= 0.0 -> "—:——"
+                remaining -> "−" + time((dur - pos).coerceAtLeast(0.0))
+                else -> time(dur)
+            },
+            style = Type.Label, color = Color(0xCCFFFFFF),
+            modifier = Modifier.widthIn(min = 44.dp).clip(RoundedCornerShape(6.dp)).pressable(0.92f, onClick = onToggleRemaining),
+        )
+    }
+}
+
+@Composable
+private fun PopOverlay(pop: Pair<ImageVector, Long>?, modifier: Modifier) {
+    var lastIcon by remember { mutableStateOf(Icons.Rounded.PlayArrow) }
+    if (pop != null) lastIcon = pop.first
+    AnimatedVisibility(pop != null, modifier, enter = scaleIn(initialScale = 0.7f) + fadeIn(tween(90)), exit = scaleOut(targetScale = 1.25f) + fadeOut(tween(300))) {
+        Box(Modifier.size(84.dp).clip(CircleShape).background(Color(0x66000000)), contentAlignment = Alignment.Center) {
+            Icon(lastIcon, null, tint = Color.White, modifier = Modifier.size(46.dp))
+        }
+    }
+}
+
+@Composable
+private fun ScrubPreviewOverlay(scrubProvider: () -> Double?, player: MpvPlayer, showControls: Boolean, modifier: Modifier) {
+    val scrub = scrubProvider()
+    var lastScrub by remember { mutableDoubleStateOf(0.0) }
+    var lastBasePos by remember { mutableDoubleStateOf(0.0) }
+    if (scrub != null) { lastScrub = scrub; lastBasePos = player.position }
+    AnimatedVisibility(scrub != null && !showControls, modifier, enter = fadeIn(tween(100)), exit = fadeOut(tween(200))) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clip(RoundedCornerShape(22.dp)).background(Color(0xCC0E0E15)).padding(horizontal = 24.dp, vertical = 14.dp)) {
+            Text(time(lastScrub), style = Type.Display, color = Color.White)
+            val d = lastScrub - lastBasePos
+            Text((if (d >= 0) "+" else "−") + time(abs(d)), style = Type.Label, color = Color(0xB3FFFFFF))
+            player.chapterAt(lastScrub)?.first?.title?.takeIf { it.isNotBlank() }?.let { Text(it, style = Type.Caption, color = Nf.Violet, modifier = Modifier.padding(top = 4.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.LevelBarsOverlay(levelProvider: () -> Level?) {
+    val level = levelProvider()
+    LevelBar(level?.takeIf { !it.volume }, Icons.Rounded.LightMode, Modifier.align(Alignment.CenterStart).displayCutoutPadding().padding(start = 40.dp))
+    LevelBar(level?.takeIf { it.volume }, Icons.AutoMirrored.Rounded.VolumeUp, Modifier.align(Alignment.CenterEnd).displayCutoutPadding().padding(end = 40.dp))
+}
+
+@Composable
 private fun SeekRipple(burst: SeekBurst?, side: Int, modifier: Modifier) {
     val active = burst?.side == side
-    val alpha by animateFloatAsState(if (active) 1f else 0f, tween(if (active) 120 else 380), label = "ripple")
     val secs = remember { mutableIntStateOf(10) }
     if (active) secs.intValue = burst!!.seconds
-    if (alpha <= 0.01f) return
-    Box(
-        modifier.fillMaxHeight().fillMaxWidth(0.36f).graphicsLayer { this.alpha = alpha }
-            .drawBehind {
-                // A soft half-moon from the screen edge, like light leaking in from that side.
-                val r = size.height * 0.95f
-                val cx = if (side < 0) -r * 0.45f else size.width + r * 0.45f
-                drawCircle(Brush.radialGradient(listOf(Color(0x4DFFFFFF), Color(0x1AFFFFFF)), Offset(cx, size.height / 2), r), r, Offset(cx, size.height / 2))
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(if (side < 0) Icons.Rounded.KeyboardDoubleArrowLeft else Icons.Rounded.KeyboardDoubleArrowRight, null, tint = Color.White, modifier = Modifier.size(40.dp))
-            AnimatedContent(secs.intValue, label = "secs", transitionSpec = { (slideInVertically { it / 2 } + fadeIn()) togetherWith fadeOut(tween(80)) }) { s ->
-                Text((if (side < 0) "−" else "+") + "$s с", style = Type.Display, color = Color.White)
+    AnimatedVisibility(active, modifier, enter = fadeIn(tween(120)), exit = fadeOut(tween(340))) {
+        Box(
+            Modifier.fillMaxHeight().fillMaxWidth(0.36f)
+                .drawWithCache {
+                    // Cache the soft half-moon gradient for the current size so fade frames never re-allocate Brush.
+                    val r = size.height * 0.95f
+                    val cx = if (side < 0) -r * 0.45f else size.width + r * 0.45f
+                    val center = Offset(cx, size.height / 2)
+                    val brush = Brush.radialGradient(listOf(Color(0x4DFFFFFF), Color(0x1AFFFFFF)), center, r)
+                    onDrawBehind { drawCircle(brush, r, center) }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(if (side < 0) Icons.Rounded.KeyboardDoubleArrowLeft else Icons.Rounded.KeyboardDoubleArrowRight, null, tint = Color.White, modifier = Modifier.size(40.dp))
+                AnimatedContent(secs.intValue, label = "secs", transitionSpec = { (slideInVertically { it / 2 } + fadeIn()) togetherWith fadeOut(tween(80)) }) { s ->
+                    Text((if (side < 0) "−" else "+") + "$s с", style = Type.Display, color = Color.White)
+                }
             }
         }
     }
@@ -658,7 +788,7 @@ private fun SeekRipple(burst: SeekBurst?, side: Int, modifier: Modifier) {
 
 @Composable
 private fun LevelBar(level: Level?, icon: ImageVector, modifier: Modifier) {
-    var last by remember { mutableStateOf(0f) }
+    var last by remember { mutableFloatStateOf(0f) }
     if (level != null) last = level.value
     AnimatedVisibility(level != null, modifier, enter = fadeIn(tween(120)) + scaleIn(initialScale = 0.9f), exit = fadeOut(tween(400))) {
         val v by animateFloatAsState(last, spring(stiffness = Spring.StiffnessHigh), label = "lvl")
@@ -713,19 +843,29 @@ private fun SkipButton(
     val visible = offer != null && (controlsShown || autoShown)
     val bottom by animateDpAsState(if (controlsShown) 118.dp else 34.dp, spring(dampingRatio = 0.8f, stiffness = 300f), label = "skipY")
     var last by remember { mutableStateOf("") }
-    if (offer != null) last = offer
+    var lastTargetEnd by remember { mutableDoubleStateOf(-1.0) }
+    if (offer != null && now != null) {
+        last = offer
+        lastTargetEnd = now.second
+    }
     AnimatedVisibility(
         visible, modifier.displayCutoutPadding().padding(end = 26.dp, bottom = bottom),
         enter = fadeIn(tween(220)) + slideInHorizontally(spring(dampingRatio = 0.8f, stiffness = 380f)) { it / 2 } + scaleIn(initialScale = 0.92f),
         exit = fadeOut(tween(260)) + slideOutHorizontally(tween(320)) { it / 3 } + scaleOut(targetScale = 0.94f),
     ) {
         val showTimer = autoShown && !controlsShown
-        val drain by animateFloatAsState(if (showTimer) timer.value else 0f, tween(if (showTimer) 0 else 250), label = "drain")
+        val timerAlpha by animateFloatAsState(if (showTimer) 1f else 0f, tween(if (showTimer) 0 else 250), label = "drain")
         Row(
             Modifier.clip(RoundedCornerShape(16.dp)).background(Color.White)
-                // The fill shrinking from the right is the countdown until the button steps aside.
-                .drawBehind { if (drain > 0f) drawRect(Color(0xFFE2DCF2), size = Size(size.width * drain, size.height)) }
-                .pressable { if (last == "Следующая серия") onNext() else now?.let { player.seekTo(it.second + 0.1) } }
+                // Read timer.value only inside drawBehind so the 7 s countdown causes zero recompositions.
+                .drawBehind {
+                    val drain = timer.value * timerAlpha
+                    if (drain > 0f) drawRect(Color(0xFFE2DCF2), size = Size(size.width * drain, size.height))
+                }
+                .pressable {
+                    if (last == "Следующая серия") onNext()
+                    else if (lastTargetEnd > 0.0) player.seekTo(lastTargetEnd + 0.1, exact = true)
+                }
                 .padding(horizontal = 18.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -810,7 +950,7 @@ private fun RoundButton(icon: ImageVector, label: String, enabled: Boolean = tru
  * since there is no subtitle track to show for them.
  */
 @Composable
-private fun TranslationChip(stream: StreamUi, subsOn: Boolean, onClick: () -> Unit) {
+private fun TranslationChip(stream: StreamUi, subsOn: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val t = stream.current
     val tint = kindTint(t?.kind)
     val kindText = when {
@@ -819,7 +959,7 @@ private fun TranslationChip(stream: StreamUi, subsOn: Boolean, onClick: () -> Un
         else -> t.kind.inline
     }
     Row(
-        Modifier.height(42.dp).widthIn(max = 300.dp).clip(CircleShape).background(Color(0x26FFFFFF)).border(1.dp, tint.copy(alpha = 0.35f), CircleShape)
+        modifier.height(42.dp).widthIn(max = 300.dp).clip(CircleShape).background(Color(0x26FFFFFF)).border(1.dp, tint.copy(alpha = 0.35f), CircleShape)
             .pressable(0.95f, onClick = onClick).padding(start = 5.dp, end = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -888,20 +1028,45 @@ internal fun chapterLabel(c: Chapter): String? = when (c.kind) {
  * time bubble while scrubbing.
  */
 @Composable
-private fun SeekBar(player: MpvPlayer, scrub: Double?, modifier: Modifier, onScrub: (Double) -> Unit, onCommit: (Double) -> Unit) {
+private fun SeekBar(
+    player: MpvPlayer,
+    scrubProvider: () -> Double?,
+    modifier: Modifier,
+    onScrub: (Double) -> Unit,
+    onCommit: (Double) -> Unit,
+    onCancel: () -> Unit,
+) {
     val view = LocalView.current
     var dragging by remember { mutableStateOf(false) }
     var last by remember { mutableDoubleStateOf(0.0) }
     var barWidth by remember { mutableIntStateOf(1) }
     val grow by animateFloatAsState(if (dragging) 1f else 0f, label = "thumb")
-    val dur by rememberUpdatedState(player.duration)
-    val chaptersNow by rememberUpdatedState(player.chapters)
-    val position = scrub ?: player.position
     val duration = player.duration
     val chapters = player.chapters
+    val dur by rememberUpdatedState(duration)
+    val chaptersNow by rememberUpdatedState(chapters)
     var lastSegment by remember { mutableIntStateOf(-1) }
 
+    // Precompute normalized chapter split fractions and kinds once per episode instead of allocating lists on every Canvas frame.
+    val chapterSplits = remember(chapters, duration) {
+        if (duration <= 0.0 || chapters.isEmpty()) floatArrayOf(0f, 1f) to listOf(ChapterKind.Other)
+        else {
+            val splits = chapters.filter { it.start > 1.0 && it.start < duration - 1.0 }
+            val fracs = FloatArray(splits.size + 2).apply {
+                this[0] = 0f
+                splits.forEachIndexed { i, c -> this[i + 1] = (c.start / duration).toFloat().coerceIn(0f, 1f) }
+                this[splits.size + 1] = 1f
+            }
+            val kinds = buildList(splits.size + 1) {
+                add(chapters.firstOrNull()?.takeIf { it.start <= 1.0 }?.kind ?: ChapterKind.Other)
+                splits.forEach { add(it.kind) }
+            }
+            fracs to kinds
+        }
+    }
+
     fun scrubTo(x: Float, w: Int) {
+        if (dur <= 0.0 || w <= 0) return
         last = (x / w).coerceIn(0f, 1f) * dur
         val seg = chaptersNow.indexOfLast { it.start <= last }
         if (lastSegment != -1 && seg != lastSegment) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -912,36 +1077,38 @@ private fun SeekBar(player: MpvPlayer, scrub: Double?, modifier: Modifier, onScr
     Box(modifier.height(40.dp).onSizeChanged { barWidth = it.width }) {
         Canvas(
             Modifier.fillMaxSize()
-                .pointerInput(Unit) { detectTapGestures { o -> if (dur > 0) onCommit((o.x / size.width).coerceIn(0f, 1f) * dur) } }
+                .pointerInput(Unit) { detectTapGestures { o -> if (dur > 0.0 && size.width > 0) onCommit((o.x / size.width).coerceIn(0f, 1f) * dur) } }
                 .pointerInput(Unit) {
                     detectHorizontalDragGestures(
-                        onDragStart = { o -> dragging = true; lastSegment = -1; scrubTo(o.x, size.width) },
-                        onDragEnd = { dragging = false; onCommit(last) },
-                        onDragCancel = { dragging = false; onCommit(last) },
-                    ) { change, _ -> scrubTo(change.position.x, size.width) }
+                        onDragStart = { o ->
+                            if (dur <= 0.0) return@detectHorizontalDragGestures
+                            dragging = true; lastSegment = -1; scrubTo(o.x, size.width)
+                        },
+                        onDragEnd = {
+                            if (!dragging) return@detectHorizontalDragGestures
+                            dragging = false; onCommit(last)
+                        },
+                        onDragCancel = {
+                            if (!dragging) return@detectHorizontalDragGestures
+                            dragging = false; onCancel()
+                        },
+                    ) { change, _ -> if (dragging) scrubTo(change.position.x, size.width) }
                 }
         ) {
             val base = (4 + 2 * grow).dp.toPx()
             val gap = 3.dp.toPx()
-            val px = if (duration > 0) (position / duration).toFloat().coerceIn(0f, 1f) * size.width else 0f
-            val bx = if (duration > 0) (player.buffered / duration).toFloat().coerceIn(0f, 1f) * size.width else 0f
+            val position = scrubProvider() ?: if (duration > 0.0) player.position else 0.0
+            val px = if (duration > 0.0) (position / duration).toFloat().coerceIn(0f, 1f) * size.width else 0f
+            val bx = if (duration > 0.0) (player.buffered / duration).toFloat().coerceIn(0f, 1f) * size.width else 0f
             val w = size.width
-            val bounds = buildList {
-                add(0f)
-                if (duration > 0) chapters.filter { it.start > 1 && it.start < duration - 1 }.forEach { add((it.start / duration).toFloat() * w) }
-                add(w)
-            }
-            val kinds = buildList {
-                add(chapters.firstOrNull()?.takeIf { it.start <= 1 }?.kind ?: ChapterKind.Other)
-                chapters.filter { it.start > 1 && it.start < duration - 1 }.forEach { add(it.kind) }
-            }
-            for (k in 0 until bounds.size - 1) {
-                val x0 = bounds[k] + if (k > 0) gap / 2 else 0f
-                val x1 = bounds[k + 1] - if (k < bounds.size - 2) gap / 2 else 0f
+            val (fracs, kinds) = chapterSplits
+            for (k in 0 until fracs.size - 1) {
+                val x0 = fracs[k] * w + if (k > 0) gap / 2 else 0f
+                val x1 = fracs[k + 1] * w - if (k < fracs.size - 2) gap / 2 else 0f
                 if (x1 <= x0) continue
                 val special = kinds.getOrNull(k).let { it == ChapterKind.Opening || it == ChapterKind.Ending }
                 // The chapter under the finger grows a little, like on YouTube.
-                val active = dragging && px >= bounds[k] && px <= bounds[k + 1]
+                val active = dragging && px >= fracs[k] * w && px <= fracs[k + 1] * w
                 val h = base + if (active) 2.dp.toPx() else 0f
                 val y = (size.height - h) / 2
                 val r = CornerRadius(h / 2)
@@ -953,9 +1120,10 @@ private fun SeekBar(player: MpvPlayer, scrub: Double?, modifier: Modifier, onScr
             }
             drawCircle(Color.White, (7 + 4 * grow).dp.toPx(), Offset(px, size.height / 2))
         }
-        if (dragging && duration > 0) {
-            val frac = (position / duration).toFloat().coerceIn(0f, 1f)
-            val chapter = player.chapterAt(position)?.first?.let(::chapterLabel)
+        if (dragging && duration > 0.0) {
+            val bubblePos = scrubProvider() ?: last
+            val frac = (bubblePos / duration).toFloat().coerceIn(0f, 1f)
+            val chapter = player.chapterAt(bubblePos)?.first?.let(::chapterLabel)
             Column(
                 Modifier
                     // Zero-size layout node: the bubble floats above the bar without being squeezed into its 40dp.
@@ -970,7 +1138,7 @@ private fun SeekBar(player: MpvPlayer, scrub: Double?, modifier: Modifier, onScr
                     .padding(horizontal = 14.dp, vertical = 7.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text(time(position), style = Type.Title.copy(fontSize = 16.sp), color = Color.White)
+                Text(time(bubblePos), style = Type.Title.copy(fontSize = 16.sp), color = Color.White)
                 if (chapter != null) Text(chapter, style = Type.Caption, color = Color(0xFFC9B8FF), maxLines = 1)
             }
         }

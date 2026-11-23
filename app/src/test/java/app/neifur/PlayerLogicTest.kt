@@ -7,12 +7,21 @@ import app.neifur.data.a365.ListedTitle
 import app.neifur.data.a365.Series
 import app.neifur.player.ChapterKind
 import app.neifur.player.JUMP_SECONDS
+import app.neifur.player.SeekBurst
 import app.neifur.player.SleepTimer
+import app.neifur.player.canAutoEnterPip
+import app.neifur.player.canHoldBoost
 import app.neifur.player.canSkipOpening
+import app.neifur.player.clampSeekTarget
 import app.neifur.player.formatSleepBadge
 import app.neifur.player.formatSleepCountdown
+import app.neifur.player.nextSeekBurst
+import app.neifur.player.playerPanelWidth
+import app.neifur.player.shouldFinishOnStop
+import app.neifur.player.shouldThrottle
 import app.neifur.player.speedLabel
 import app.neifur.player.time
+import androidx.compose.ui.unit.dp
 import app.neifur.ui.screens.continueLine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -75,5 +84,55 @@ class PlayerLogicTest {
         assertEquals("0:42", formatSleepCountdown(41_500L))
         assertEquals("14:32", formatSleepCountdown((14 * 60 + 32) * 1000L))
         assertEquals("1:14:32", formatSleepCountdown((74 * 60 + 32) * 1000L))
+    }
+
+    @Test fun seekClampingAndThrottling() {
+        assertNull(clampSeekTarget(30.0, 0.0))
+        assertNull(clampSeekTarget(30.0, -5.0))
+        assertEquals(0.0, clampSeekTarget(-10.0, 1440.0)!!, 0.001)
+        assertEquals(25.0, clampSeekTarget(25.0, 1440.0)!!, 0.001)
+        assertEquals(1439.5, clampSeekTarget(1500.0, 1440.0)!!, 0.001)
+
+        assertFalse(shouldThrottle(0.0, -1.0, 0.2))
+        assertTrue(shouldThrottle(10.1, 10.0, 0.2))
+        assertFalse(shouldThrottle(10.25, 10.0, 0.2))
+        assertTrue(shouldThrottle(50.3, 50.0, 0.5))
+        assertFalse(shouldThrottle(50.6, 50.0, 0.5))
+    }
+
+    @Test fun seekBurstAccumulatesOnlySameSideWithinWindow() {
+        val first = nextSeekBurst(null, side = 1, stepSec = 5, nowMs = 1_000L)
+        assertEquals(SeekBurst(1, 5, 1_000L), first)
+
+        val second = nextSeekBurst(first, side = 1, stepSec = 5, nowMs = 1_600L)
+        assertEquals(SeekBurst(1, 10, 1_600L), second)
+
+        val flipped = nextSeekBurst(second, side = -1, stepSec = 5, nowMs = 1_900L)
+        assertEquals(SeekBurst(-1, 5, 1_900L), flipped)
+
+        val expired = nextSeekBurst(flipped, side = -1, stepSec = 5, nowMs = 2_800L)
+        assertEquals(SeekBurst(-1, 5, 2_800L), expired)
+    }
+
+    @Test fun holdBoostPipAndPanelWidthRules() {
+        assertTrue(canHoldBoost(holdBoost = true, loaded = true, paused = false, panelOpen = false, currentSpeed = 1.0))
+        assertTrue(canHoldBoost(holdBoost = true, loaded = true, paused = false, panelOpen = false, currentSpeed = 1.5))
+        assertFalse(canHoldBoost(holdBoost = true, loaded = true, paused = false, panelOpen = false, currentSpeed = 2.0))
+        assertFalse(canHoldBoost(holdBoost = true, loaded = true, paused = false, panelOpen = false, currentSpeed = 3.0))
+        assertFalse(canHoldBoost(holdBoost = true, loaded = true, paused = true, panelOpen = false, currentSpeed = 1.0))
+        assertFalse(canHoldBoost(holdBoost = true, loaded = true, paused = false, panelOpen = true, currentSpeed = 1.0))
+
+        assertTrue(canAutoEnterPip(loaded = true, paused = false, ended = false))
+        assertFalse(canAutoEnterPip(loaded = true, paused = false, ended = true))
+        assertFalse(canAutoEnterPip(loaded = true, paused = true, ended = false))
+        assertFalse(canAutoEnterPip(loaded = false, paused = false, ended = false))
+
+        assertTrue(shouldFinishOnStop(inPip = true, isScreenInteractive = true))
+        assertFalse(shouldFinishOnStop(inPip = true, isScreenInteractive = false))
+        assertFalse(shouldFinishOnStop(inPip = false, isScreenInteractive = true))
+
+        assertEquals(420.dp, playerPanelWidth(800))
+        assertEquals(460.dp, playerPanelWidth(1000))
+        assertEquals(336.dp, playerPanelWidth(360))
     }
 }
