@@ -439,11 +439,11 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         if (BuildConfig.DEBUG) android.util.Log.i("NeifurPlayer", "chapters: " + chapters.joinToString { "${it.start.toInt()}s '${it.title}' ${it.kind}" })
     }
 
-    /** Reads dwidth and dheight atomically as a pair so Compose never sees a transient mismatched square aspect. */
+    /** Reads the actual decoded video display size (ignoring mpv's 960x540 idle force-window placeholder). */
     private fun syncVideoDimensions() {
-        if (released || !active) return
-        val w = mpv.getPropertyInt("dwidth") ?: 0
-        val h = mpv.getPropertyInt("dheight") ?: 0
+        if (released || !active || !loaded) return
+        val w = mpv.getPropertyInt("video-params/dw") ?: mpv.getPropertyInt("video-params/w") ?: 0
+        val h = mpv.getPropertyInt("video-params/dh") ?: mpv.getPropertyInt("video-params/h") ?: 0
         if (w > 0 && h > 0 && (w != videoW || h != videoH)) {
             videoW = w
             videoH = h
@@ -538,7 +538,9 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
                     onFileLoaded?.invoke()
                 }
                 readChapters()
-                if (voEnabled && !videoReady) scheduleVideoReveal(320L)
+                // Only use a timed curtain reveal when starting paused; during active playback wait for PLAYBACK_RESTART
+                // so the video never reveals prematurely over an unfinished seek or spinner.
+                if (voEnabled && !videoReady && paused) scheduleVideoReveal(320L)
             }
             MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> main.post {
                 if (released || !active || skipEndFile > 0) return@post
