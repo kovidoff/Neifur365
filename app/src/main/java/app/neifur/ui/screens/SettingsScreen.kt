@@ -161,7 +161,7 @@ class SettingsVm(private val c: Container) : ViewModel() {
     fun checkMirrors() {
         mirrorsBusy = true
         viewModelScope.launch {
-            runCatching { c.a365.resolveMirror(); mirrors = c.a365.probeAll().withActive(c.prefs.mirror.first()) }
+            runCatching { c.a365.ensureMirrorWorking(); mirrors = c.a365.probeAll().withActive(c.prefs.mirror.first()) }
             mirrorsBusy = false
         }
     }

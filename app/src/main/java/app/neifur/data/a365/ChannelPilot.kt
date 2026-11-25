@@ -29,6 +29,21 @@ data class ChannelState(
     val fastest: VideoChannel? get() = setup?.channels?.filter { speeds[it.id]?.works == true }?.maxByOrNull { speeds.getValue(it.id).bytesPerSec }
 }
 
+/** Chooses whether to switch channels: always leaves a broken channel, or moves on open failure to a noticeably faster one. */
+internal fun pickBetterChannel(
+    currentId: Int?,
+    currentSpeed: ChannelSpeed?,
+    best: VideoChannel?,
+    bestSpeed: ChannelSpeed?,
+    preferSwitch: Boolean,
+): VideoChannel? {
+    if (best == null || bestSpeed?.works != true) return null
+    if (best.id == currentId) return null
+    if (currentSpeed?.works != true) return best
+    if (preferSwitch && bestSpeed.bytesPerSec > currentSpeed.bytesPerSec * 1.25) return best
+    return null
+}
+
 /**
  * Looks after the account's Anime 365 video channel. In auto mode (the default) the app checks, once in a while
  * and whenever video won't start, that the channel gets through from this network, and moves the account to the
@@ -76,24 +91,50 @@ class ChannelPilot(
         prefs.setChannelCheckedAt(now)
     }
 
+    /** Re-checks the current channel after switching networks (Wi-Fi <-> VPN <-> another Wi-Fi), locking onto a working one. */
+    fun onNetworkChanged() = scope.launch {
+        if (account.state.value !is AccountState.SignedIn) return@launch
+        if (!prefs.channelAuto.first()) return@launch
+        if (metered()) return@launch
+        ensureWorking(preferSwitch = false)
+        prefs.setChannelCheckedAt(System.currentTimeMillis())
+    }
+
     /**
-     * Makes sure video can come through: samples the current channel and, if it doesn't get through, measures
-     * the rest and switches to the fastest. Returns (old, new) when it switched.
+     * Makes sure video can come through: samples the current channel and, if it doesn't get through (or when
+     * [preferSwitch] is true after an open failure, tests all in parallel and moves if another is clearly better).
+     * Returns (old, new) when it switched.
      */
-    suspend fun ensureWorking(): Pair<VideoChannel?, VideoChannel>? = lock.withLock {
+    suspend fun ensureWorking(preferSwitch: Boolean = false): Pair<VideoChannel?, VideoChannel>? = lock.withLock {
         val setup = load() ?: return@withLock null
         val current = setup.currentChannel
-        if (current != null) {
-            // A second try before blaming the channel: one slow moment of the network is not a reason to switch.
-            if (sample(current, quick = true).works) return@withLock null
-            if (sample(current, quick = true).works) return@withLock null
+        if (!preferSwitch) {
+            if (current != null) {
+                // A second try before blaming the channel: one slow moment of the network is not a reason to switch.
+                if (sample(current, quick = true).works) return@withLock null
+                if (sample(current, quick = true).works) return@withLock null
+            }
+            val others = setup.channels.filter { it.id != setup.current }
+            coroutineScope { others.map { ch -> async { sample(ch, quick = true) } }.awaitAll() }
+            val best = _state.value.fastest ?: return@withLock null
+            if (best.id == setup.current) return@withLock null
+            switchTo(best, byApp = true, why = current?.let { "«${it.label}» не работает в вашей сети" })
+            prefs.setChannelCheckedAt(System.currentTimeMillis())
+            return@withLock current to best
         }
-        val others = setup.channels.filter { it.id != setup.current }
-        coroutineScope { others.map { ch -> async { sample(ch, quick = true) } }.awaitAll() }
-        val best = _state.value.fastest ?: return@withLock null
-        if (best.id == setup.current) return@withLock null
-        switchTo(best, byApp = true, why = current?.let { "«${it.label}» не работает в вашей сети" })
-        current to best
+        coroutineScope { setup.channels.map { ch -> async { sample(ch, quick = true) } }.awaitAll() }
+        val st = _state.value
+        val curSpeed = current?.let { st.speeds[it.id] }
+        val best = st.fastest
+        val bestSpeed = best?.let { st.speeds[it.id] }
+        val target = pickBetterChannel(setup.current, curSpeed, best, bestSpeed, preferSwitch = true) ?: return@withLock null
+        switchTo(
+            target,
+            byApp = true,
+            why = if (curSpeed?.works != true) current?.let { "«${it.label}» не работает в вашей сети" } else null,
+        )
+        prefs.setChannelCheckedAt(System.currentTimeMillis())
+        current to target
     }
 
     /** Measures every channel at once (Settings). In auto mode, then moves to the fastest if it's clearly better. */

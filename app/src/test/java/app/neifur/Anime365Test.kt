@@ -1,6 +1,7 @@
 package app.neifur
 
 import app.neifur.core.AppJson
+import app.neifur.data.a365.ChannelSpeed
 import app.neifur.data.a365.Episode
 import app.neifur.data.a365.ListStatus
 import app.neifur.data.a365.Picker
@@ -8,9 +9,15 @@ import app.neifur.data.a365.Series
 import app.neifur.data.a365.SitePages
 import app.neifur.data.a365.Translation
 import app.neifur.data.a365.TranslationKind
+import app.neifur.data.a365.VideoChannel
+import app.neifur.data.a365.isHardMirrorFailure
+import app.neifur.data.a365.isHtmlResponse
+import app.neifur.data.a365.isMirrorBlockedBody
+import app.neifur.data.a365.pickBetterChannel
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -139,5 +146,44 @@ class Anime365Test {
         val r = SitePages.listRecord(html)
         assertEquals(ListStatus.Watching, r.status); assertEquals(3, r.watched); assertEquals(8, r.score)
         assertNull(SitePages.listRecord("<button>Добавить в список</button>").status)
+    }
+
+    @Test fun mirrorBlockAndHtmlDetection() {
+        assertTrue(isMirrorBlockedBody("<title>Just a moment...</title>"))
+        assertTrue(isMirrorBlockedBody("<script src=\"/cdn-cgi/challenge-platform/cf-chl.js\">"))
+        assertTrue(isMirrorBlockedBody("Checking your browser before accessing"))
+        assertFalse(isMirrorBlockedBody("""{"data":[{"id":1}]}"""))
+
+        assertTrue(isHtmlResponse("<!DOCTYPE html><html><body>Block</body></html>"))
+        assertTrue(isHtmlResponse("  <html><head></head></html>"))
+        assertFalse(isHtmlResponse("""{"error":{"code":403,"message":"login required"}}"""))
+
+        assertTrue(isHardMirrorFailure(java.net.UnknownHostException("nxdomain")))
+        assertTrue(isHardMirrorFailure(java.net.ConnectException("refused")))
+        assertTrue(isHardMirrorFailure(java.net.SocketTimeoutException("timeout")))
+        assertTrue(isHardMirrorFailure(javax.net.ssl.SSLHandshakeException("handshake")))
+        assertFalse(isHardMirrorFailure(java.io.IOException("stream reset")))
+    }
+
+    @Test fun channelSelectionRules() {
+        val ch1 = VideoChannel(1, "Ch1", "(Cloudflare)", "https://a/1", null)
+        val ch2 = VideoChannel(2, "Ch2", "(Bunny)", "https://b/2", null)
+        val broken = ChannelSpeed(10_000.0)
+        val ok = ChannelSpeed(600_000.0)
+        val faster = ChannelSpeed(900_000.0)
+        val slightlyFaster = ChannelSpeed(650_000.0)
+
+        // Broken current -> switch to working best
+        assertEquals(ch2, pickBetterChannel(1, broken, ch2, ok, preferSwitch = false))
+        // Working current in background check -> stay
+        assertNull(pickBetterChannel(1, ok, ch2, faster, preferSwitch = false))
+        // Working slow current on open failure + >1.25x faster -> switch
+        assertEquals(ch2, pickBetterChannel(1, ok, ch2, faster, preferSwitch = true))
+        // Working current on open failure + only slightly faster -> stay
+        assertNull(pickBetterChannel(1, ok, ch2, slightlyFaster, preferSwitch = true))
+        // Same channel -> never switch
+        assertNull(pickBetterChannel(2, ok, ch2, faster, preferSwitch = true))
+        // No working best -> never switch
+        assertNull(pickBetterChannel(1, broken, ch2, broken, preferSwitch = true))
     }
 }

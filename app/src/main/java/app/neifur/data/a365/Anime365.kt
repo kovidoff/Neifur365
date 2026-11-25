@@ -40,6 +40,25 @@ class SubscriptionRequired : ApiError(MESSAGE) {
 
 class InvalidCredentials : ApiError("Неверный e-mail или пароль")
 
+private class MirrorBlockedException(msg: String) : IOException(msg)
+
+internal fun isMirrorBlockedBody(body: String): Boolean =
+    body.contains("Just a moment", ignoreCase = true) ||
+        body.contains("cf-chl", ignoreCase = true) ||
+        body.contains("Checking your browser", ignoreCase = true)
+
+internal fun isHtmlResponse(body: String): Boolean {
+    val t = body.trimStart()
+    return t.startsWith("<!DOCTYPE", ignoreCase = true) || t.startsWith("<html", ignoreCase = true)
+}
+
+internal fun isHardMirrorFailure(e: Throwable): Boolean =
+    e is MirrorBlockedException ||
+        e is java.net.UnknownHostException ||
+        e is java.net.ConnectException ||
+        e is java.net.SocketTimeoutException ||
+        e is javax.net.ssl.SSLHandshakeException
+
 enum class MirrorHealth { Ok, Slow, Blocked, Down }
 enum class MirrorOrigin { Builtin, Custom }
 
@@ -153,16 +172,34 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
         return resolveMirror()
     }
 
-    suspend fun resolveMirror(exclude: String? = null): String = resolveLock.withLock {
-        prefs.mirror.first()?.takeIf { it != exclude }?.let { return it }
+    suspend fun resolveMirror(exclude: String? = null, forceReprobe: Boolean = false): String = resolveLock.withLock {
+        if (!forceReprobe) prefs.mirror.first()?.takeIf { it != exclude }?.let { return it }
         val live = probeAll().filter { it.ok && it.host != exclude }
         val manual = !prefs.mirrorAuto.first()
-        val pick = live.firstOrNull { manual && it.host == prefs.mirror.first() }
+        val cur = prefs.mirror.first()
+        val pick = live.firstOrNull { manual && exclude == null && !forceReprobe && it.host == cur }
             ?: live.filter { it.health == MirrorHealth.Ok }.minByOrNull { it.millis }
             ?: live.minByOrNull { it.millis }
             ?: throw ApiError("Не удалось связаться с Anime 365. Проверьте интернет или VPN")
         prefs.setMirror(pick.host)
         pick.host
+    }
+
+    /** Re-checks the active mirror (e.g. after a network switch) and replaces it quietly if blocked, down, or degraded. */
+    suspend fun ensureMirrorWorking() {
+        val auto = prefs.mirrorAuto.first()
+        val cur = prefs.mirror.first()
+        if (!auto) {
+            if (cur == null) runCatching { resolveMirror() }
+            return
+        }
+        if (cur == null) {
+            runCatching { resolveMirror() }
+            return
+        }
+        val st = probe(cur)
+        if (st.health == MirrorHealth.Ok) return
+        runCatching { resolveMirror(exclude = if (!st.ok) cur else null, forceReprobe = true) }
     }
 
     suspend fun pick(host: String) { prefs.setMirrorAuto(false); prefs.setMirror(host) }
@@ -172,17 +209,19 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
         if (prefs.mirror.first() == host) prefs.setMirror(null)
     }
 
-    /** Runs [block] against the current mirror; a dead mirror is swapped for a live one and the call retried. */
+    /** Runs [block] against the current mirror; a dead or Cloudflare-blocked mirror is swapped for a live one and retried. */
     private suspend fun <T> mirrored(block: suspend (base: String) -> T): T {
         val first = host()
         try {
             return block("https://$first")
         } catch (e: Exception) {
-            val mirrorDown = e is IOException && (e !is HttpError || e.code >= 500)
+            val mirrorDown = e is MirrorBlockedException || (e is IOException && (e !is HttpError || e.code >= 500))
             if (!mirrorDown) throw e
-            // A single dropped request (flaky mobile network, VPN) shouldn't move the app to another address.
-            runCatching { return block("https://$first") }
-            val next = resolveMirror(exclude = first)
+            // Transient socket drop: retry once quickly; hard failures (DNS/connect/timeout/SSL/Cloudflare) fail over immediately.
+            if (!isHardMirrorFailure(e)) {
+                runCatching { return block("https://$first") }
+            }
+            val next = resolveMirror(exclude = first, forceReprobe = true)
             return block("https://$next")
         }
     }
@@ -198,6 +237,7 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
         call.use { r ->
             val body = r.body?.string().orEmpty()
             if (dumpDir != null) android.util.Log.d("A365", "${req.method} ${req.url.encodedPath} → ${r.code} in ${System.currentTimeMillis() - t0} ms")
+            if (isMirrorBlockedBody(body)) throw MirrorBlockedException("Cloudflare challenge on ${req.url.host}")
             if (!r.isSuccessful && r.code != 403) throw HttpError(r.code, body.take(300))
             // Debug builds keep the last copy of each site page, to check the parsers against real markup.
             if (dumpDir != null && !req.url.encodedPath.startsWith("/api")) runCatching {
@@ -213,6 +253,7 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
 
     private suspend fun <T> api(path: String, ser: KSerializer<T>): T = mirrored { base ->
         val raw = text(Request.Builder().url("$base/api$path").header("Accept", "application/json").build())
+        if (isHtmlResponse(raw)) throw MirrorBlockedException("HTML response instead of JSON on $base")
         val root = runCatching { AppJson.parseToJsonElement(raw).jsonObject }.getOrNull()
             ?: throw ApiError("Anime 365 ответил что-то непонятное")
         root["error"]?.jsonObject?.let { err ->

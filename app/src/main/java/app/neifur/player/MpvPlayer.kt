@@ -106,6 +106,9 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     /** Called once per file when its tracks are known — the place to apply remembered language choices. */
     var onFileLoaded: (() -> Unit)? = null
 
+    /** The file failed to open before playback started — lets PlayerActivity try fallback URLs or switch video channel. */
+    var onOpenFailed: (() -> Unit)? = null
+
     /** The stream broke after it had started (expired link, dropped connection). */
     var onStreamError: (() -> Unit)? = null
 
@@ -360,13 +363,23 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     /** Fill the screen by cropping (for 16:9 video on a taller display) instead of letterboxing. */
     fun changeFill(on: Boolean) { fill = on }
 
+    /** Marks the current open attempt as failed once all fallback URLs / channel switches are exhausted. */
+    fun markOpenFailed() {
+        if (released) return
+        active = false
+        loaded = false
+        videoReady = false
+        buffering = false
+        failed = true
+    }
+
     fun release() {
         if (released) return
         released = true
         active = false
         loaded = false
         videoReady = false
-        onFileLoaded = null; onStreamError = null
+        onFileLoaded = null; onOpenFailed = null; onStreamError = null
         runCatching { mpv.removeObserver(this) }
         runCatching { mpv.command(arrayOf("stop")) }
         runCatching { mpv.destroy() }
@@ -546,7 +559,15 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
                         mpvOpenCount = (mpvOpenCount - 1).coerceAtLeast(0)
                         when {
                             !active -> {}
-                            !loaded -> { failed = true; buffering = false; active = false; videoReady = false }
+                            !loaded -> {
+                                val fallback = onOpenFailed
+                                if (fallback != null) {
+                                    active = false; videoReady = false
+                                    fallback()
+                                } else {
+                                    failed = true; buffering = false; active = false; videoReady = false
+                                }
+                            }
                             else -> { active = false; loaded = false; videoReady = false; buffering = true; onStreamError?.invoke() }
                         }
                     }

@@ -244,6 +244,14 @@ fun PlayerScreen(
 
     val vw = player.videoW.takeIf { it > 0 } ?: 1920
     val vh = player.videoH.takeIf { it > 0 } ?: 1080
+    // Keep the SurfaceView buffer fixed to the video's own resolution (capped at 1440p) so PiP, side-panel
+    // slide and fill/fit never resize EGLSurface while paused (which otherwise causes double-frame corner
+    // artifacts on entering PiP and zoom on exiting PiP). Combined with portraitHold + mediacodec-copy,
+    // EGLSurface and android-surface-size stay 1:1 in sync across lockscreen and PiP.
+    val (bufW, bufH) = remember(vw, vh) {
+        val k = minOf(1f, 2560f / maxOf(vw, vh))
+        (vw * k).roundToInt() to (vh * k).roundToInt()
+    }
     val aspect = vw.toFloat() / vh
     val rightCutoutDp = with(density) { WindowInsets.displayCutout.getRight(density, layoutDir).toDp() }
     val targetPanelShift = playerPanelWidth(screenWidthDp) + 12.dp + rightCutoutDp
@@ -257,6 +265,7 @@ fun PlayerScreen(
     var winH by remember { mutableIntStateOf(0) }
     val inPortraitTransition = !inPip && winW > 0 && winH > 0 && winW < winH
     SideEffect { player.setPortraitTransition(inPortraitTransition) }
+    val fixedBuf = remember { intArrayOf(0, 0) }
 
     Box(
         Modifier.fillMaxSize().background(Color.Black)
@@ -265,13 +274,22 @@ fun PlayerScreen(
         AndroidView(
             factory = { c ->
                 SurfaceView(c).apply {
-                    // Use native SurfaceView buffer sizing (no setFixedSize) so EGLSurface and surfaceChanged
-                    // always stay 1:1 in sync across lockscreen rotation, app resume and PiP transitions.
+                    fixedBuf[0] = bufW; fixedBuf[1] = bufH
+                    holder.setFixedSize(bufW, bufH)
                     holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(h: SurfaceHolder) = player.attach(h.surface)
+                        override fun surfaceCreated(h: SurfaceHolder) {
+                            if (fixedBuf[0] > 0 && fixedBuf[1] > 0) h.setFixedSize(fixedBuf[0], fixedBuf[1])
+                            player.attach(h.surface)
+                        }
                         override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) = player.resize(w, hh)
                         override fun surfaceDestroyed(h: SurfaceHolder) = player.detach()
                     })
+                }
+            },
+            update = { v ->
+                if (fixedBuf[0] != bufW || fixedBuf[1] != bufH) {
+                    fixedBuf[0] = bufW; fixedBuf[1] = bufH
+                    v.holder.setFixedSize(bufW, bufH)
                 }
             },
             modifier = Modifier

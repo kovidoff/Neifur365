@@ -45,6 +45,7 @@ import app.neifur.ui.NeifurTheme
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -146,7 +147,13 @@ class PlayerActivity : ComponentActivity() {
         hideSystemBars()
         player = MpvPlayer(this)
         player.onFileLoaded = { reconnecting = false; lifecycleScope.launch { applyTrackPrefs() } }
+        player.onOpenFailed = ::handleOpenFailed
         player.onStreamError = ::recover
+        lifecycleScope.launch {
+            container.networkKey.drop(1).collect { key ->
+                if (key.isNotEmpty()) channelChecked = false
+            }
+        }
         lifecycleScope.launch { player.changeSubScale(container.prefs.subScale()) }
         lifecycleScope.launch {
             container.prefs.savedBrightness()?.let { b ->
@@ -261,7 +268,7 @@ class PlayerActivity : ComponentActivity() {
                     sleep = sleep, sleepRemainingMs = { sleepRemainingMs },
                     autoNextBlocked = sleep == SleepTimer.EndOfEpisode || sleepStoppedEpisode,
                     onTranslation = ::switchTranslation, onHeight = { h -> loadEpisode(index, resumeAt = player.position, height = h, keep = true) },
-                    onBack = { finish() }, onRetry = { loadEpisode(index) }, onEpisode = { loadEpisode(it) }, onPip = { enterPip() },
+                    onBack = { finish() }, onRetry = { channelChecked = false; freshEmbedRetried = false; loadEpisode(index) }, onEpisode = { loadEpisode(it) }, onPip = { enterPip() },
                     onVideoBounds = { r ->
                         val rect = android.graphics.Rect(r.left.toInt(), r.top.toInt(), r.right.toInt(), r.bottom.toInt())
                         if (!inPip && rect.width() > 0 && rect != videoRect) { videoRect = rect; schedulePipUpdate() }
@@ -305,6 +312,10 @@ class PlayerActivity : ComponentActivity() {
         notice = null
         sleepStoppedEpisode = false
         channelChecked = false
+        freshEmbedRetried = false
+        streamUrls = emptyList()
+        streamUrlIndex = 0
+        openFallbackJob?.cancel()
         loadEpisode(next.index)
     }
 
@@ -325,10 +336,12 @@ class PlayerActivity : ComponentActivity() {
         if (resumeAt == null && player.loaded) saveProgress()
         // Always cancel stale background jobs so an old channel-check or reconnect never overrides a manual switch.
         openJob?.cancel()
+        openFallbackJob?.cancel()
         if (!fromRecover) {
             recoverJob?.cancel()
             reconnects = 0
             reconnecting = false
+            freshEmbedRetried = false
         }
         // Another episode (or a fresh start): close the old file now. Left playing while the new links load, it
         // would be saved and marked on the site under the new episode's number.
@@ -358,6 +371,11 @@ class PlayerActivity : ComponentActivity() {
                     val start = resumeAt ?: c.prefs.history.first()
                         .firstOrNull { it.animeId == session.anime.id && it.episode == ep.number }
                         ?.takeIf { !it.finished && it.positionSec > 15 }?.positionSec ?: 0.0
+                    streamUrls = emptyList()
+                    streamUrlIndex = 0
+                    streamSub = sub
+                    streamRef = null
+                    streamStart = start
                     player.preferAudio(if (tr.kind == TranslationKind.VoiceRu) "ru,rus" else if (tr.kind == TranslationKind.VoiceEn) "en,eng" else "ja,jpn,jp")
                     playingIndex = i; playingTr = tr
                     player.load(local.video.absolutePath, start, sub, null, startPaused = !started && !inPip)
@@ -396,8 +414,13 @@ class PlayerActivity : ComponentActivity() {
                     ?.takeIf { !it.finished && it.positionSec > 15 }?.positionSec ?: 0.0
                 player.preferAudio(if (tr.kind == TranslationKind.VoiceRu) "ru,rus" else if (tr.kind == TranslationKind.VoiceEn) "en,eng" else "ja,jpn,jp")
                 val subLang = if (tr.kind == TranslationKind.SubEn) "en" else if (tr.typeLang.isNotBlank()) tr.typeLang else "ru"
+                streamUrls = s.urls.distinct()
+                streamUrlIndex = 0
+                streamSub = subs?.let { Triple(it, tr.author, subLang) }
+                streamRef = c.a365.baseUrl() + "/"
+                streamStart = start
                 playingIndex = i; playingTr = tr
-                player.load(s.urls.first(), start, subs?.let { Triple(it, tr.author, subLang) }, c.a365.baseUrl() + "/", startPaused = !started && !inPip)
+                player.load(streamUrls.first(), start, streamSub, streamRef, startPaused = !started && !inPip)
                 watchOpening(ep.id, start)
             }.onFailure {
                 if (it is kotlinx.coroutines.CancellationException) throw it
@@ -442,27 +465,83 @@ class PlayerActivity : ComponentActivity() {
 
     private var channelChecked = false
     private var openJob: Job? = null
+    private var openFallbackJob: Job? = null
+    private var streamUrls: List<String> = emptyList()
+    private var streamUrlIndex = 0
+    private var streamSub: Triple<String, String, String>? = null
+    private var streamRef: String? = null
+    private var streamStart = 0.0
+    private var freshEmbedRetried = false
+
+    /**
+     * When libmpv fails to open the current video URL: silently walk backup URLs first, then probe & lock
+     * onto the best video channel in the current network, then retry fresh embed links once before showing an error.
+     */
+    private fun handleOpenFailed() {
+        openJob?.cancel()
+        openFallbackJob?.cancel()
+        if (streamUrlIndex + 1 < streamUrls.size) {
+            streamUrlIndex++
+            player.load(streamUrls[streamUrlIndex], streamStart, streamSub, streamRef, startPaused = !started && !inPip)
+            sessionState?.episodes?.getOrNull(index)?.id?.let { watchOpening(it, streamStart) }
+            return
+        }
+        if (stream.offline) {
+            player.markOpenFailed()
+            return
+        }
+        val targetEpId = sessionState?.episodes?.getOrNull(index)?.id ?: run {
+            player.markOpenFailed()
+            return
+        }
+        openFallbackJob = lifecycleScope.launch {
+            reconnecting = true
+            if (!channelChecked) {
+                channelChecked = true
+                notice = "Канал не отвечает — подбираем рабочий…"
+                val fix = runCatching { container.channels.ensureWorking(preferSwitch = true) }.getOrNull()
+                if (sessionState?.episodes?.getOrNull(index)?.id != targetEpId) return@launch
+                if (fix != null) {
+                    val (old, new) = fix
+                    notice = (old?.let { "Канал «${it.label}» не работает, " } ?: "") + "включили «${new.label}»"
+                    freshEmbedRetried = true
+                    loadEpisode(index, resumeAt = streamStart, height = stream.height.takeIf { it > 0 }, keep = true, fromRecover = true)
+                    return@launch
+                }
+                notice = null
+            }
+            if (!freshEmbedRetried) {
+                freshEmbedRetried = true
+                delay(400)
+                if (sessionState?.episodes?.getOrNull(index)?.id != targetEpId) return@launch
+                loadEpisode(index, resumeAt = streamStart, height = stream.height.takeIf { it > 0 }, keep = true, fromRecover = true)
+                return@launch
+            }
+            reconnecting = false
+            player.markOpenFailed()
+        }
+    }
 
     /**
      * Video that never starts usually means the account's Anime 365 channel doesn't get through from this network
-     * (the site's "без CDN" one is blocked by many Russian providers). Ten seconds without the file opening: test
+     * (the site's "без CDN" one is blocked by many Russian providers). Eight seconds without the file opening: test
      * the channels once, switch the account to one that works, and reopen the episode with links from it.
      */
     private fun watchOpening(episodeId: Long, start: Double) {
         openJob?.cancel()
         if (channelChecked) return
         openJob = lifecycleScope.launch {
-            delay(10_000)
+            delay(8_000)
             if (player.loaded || player.failed || error != null || channelChecked) return@launch
             if (session.episodes.getOrNull(index)?.id != episodeId) return@launch
             channelChecked = true
-            notice = "Видео не грузится — проверяем каналы Anime 365…"
-            val fix = runCatching { container.channels.ensureWorking() }.getOrNull()
+            notice = "Видео не грузится — подбираем рабочий канал…"
+            val fix = runCatching { container.channels.ensureWorking(preferSwitch = true) }.getOrNull()
             if (player.loaded || session.episodes.getOrNull(index)?.id != episodeId) return@launch
             if (fix != null) {
                 val (old, new) = fix
-                notice = (old?.let { "Канал «${it.label}» не работает в вашей сети, " } ?: "") + "включили «${new.label}»"
-                loadEpisode(index, resumeAt = start, height = stream.height.takeIf { it > 0 }, keep = true)
+                notice = (old?.let { "Канал «${it.label}» не работает, " } ?: "") + "включили «${new.label}»"
+                loadEpisode(index, resumeAt = start, height = stream.height.takeIf { it > 0 }, keep = true, fromRecover = true)
             } else notice = null
         }
     }

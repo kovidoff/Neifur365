@@ -4,10 +4,15 @@ import android.app.Application
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
@@ -78,17 +83,34 @@ class Container(app: Application) {
         app.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered ?: false
     }
 
-    /** Whether the phone has a network right now. Coming back online, what failed for lack of it is retried. */
-    val online: StateFlow<Boolean> = callbackFlow {
+    /**
+     * Fingerprint of the active network (e.g. Wi-Fi vs LTE vs VPN or network handoff). Empty when offline.
+     * Re-evaluates the best Anime 365 mirror and video channel automatically whenever the user moves to another network.
+     */
+    val networkKey: StateFlow<String> = callbackFlow {
         val cm = app.getSystemService(ConnectivityManager::class.java)
-        val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) { trySend(true) }
-            override fun onLost(network: Network) { trySend(cm.activeNetwork != null) }
+        fun currentKey(): String {
+            val net = cm.activeNetwork ?: return ""
+            val caps = cm.getNetworkCapabilities(net) ?: return net.toString()
+            val wifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+            val cell = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+            val vpn = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            return "$net|wifi=$wifi|cell=$cell|vpn=$vpn"
         }
-        trySend(cm.activeNetwork != null)
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { trySend(currentKey()) }
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) { trySend(currentKey()) }
+            override fun onLost(network: Network) { trySend(currentKey()) }
+        }
+        trySend(currentKey())
         cm.registerDefaultNetworkCallback(cb)
         awaitClose { cm.unregisterNetworkCallback(cb) }
-    }.stateIn(scope, SharingStarted.Eagerly, true)
+    }.stateIn(scope, SharingStarted.Eagerly, "")
+
+    /** Whether the phone has a network right now. Coming back online, what failed for lack of it is retried. */
+    val online: StateFlow<Boolean> = networkKey
+        .map { it.isNotEmpty() }
+        .stateIn(scope, SharingStarted.Eagerly, true)
 
     init {
         // Started offline: confirm the account with the site once there is a network, then load its lists.
@@ -100,6 +122,17 @@ class Container(app: Application) {
                     // Same account as guessed: the state didn't change, so the lists need asking for themselves.
                     if (!account.unconfirmed && account.state.value == before) lists.refresh()
                 }
+            }
+        }
+        // Switched Wi-Fi / LTE / VPN: re-verify the active mirror and video channel in background.
+        scope.launch {
+            var lastKey = networkKey.value
+            networkKey.drop(1).collectLatest { key ->
+                if (key.isEmpty() || key == lastKey) return@collectLatest
+                lastKey = key
+                delay(1500)
+                launch { runCatching { a365.ensureMirrorWorking() } }
+                channels.onNetworkChanged()
             }
         }
     }
