@@ -12,5 +12,6 @@
     <style name="Theme.Neifur.Player" parent="Theme.Neifur">
         <item name="android:windowBackground">@android:color/black</item>
         <item name="android:windowFullscreen">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
     </style>
 </resources>

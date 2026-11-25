@@ -265,6 +265,11 @@ fun PlayerScreen(
     var winH by remember { mutableIntStateOf(0) }
     val inPortraitTransition = !inPip && winW > 0 && winH > 0 && winW < winH
     SideEffect { player.setPortraitTransition(inPortraitTransition) }
+    // Keep the screen pure black for the first ~220 ms while the display finishes rotating from portrait MainActivity
+    // into landscape PlayerActivity so controls never flash sideways mid-rotation (loading starts immediately in parallel).
+    var settled by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { delay(220); settled = true }
+    val hideForRotation = inPortraitTransition || (!settled && !inPip)
     val fixedBuf = remember { intArrayOf(0, 0) }
 
     Box(
@@ -308,14 +313,14 @@ fun PlayerScreen(
                 },
         )
         // Instant black curtain hides stale SurfaceView buffers during episode switches and transient portrait->landscape rotation.
-        val showCurtain = !player.videoReady || resolving || inPortraitTransition
+        val showCurtain = !player.videoReady || resolving || hideForRotation
         val curtainAlpha by animateFloatAsState(
             if (showCurtain) 1f else 0f,
             tween(if (showCurtain) 0 else 180),
             label = "curtain",
         )
         if (curtainAlpha > 0.01f) Box(Modifier.fillMaxSize().graphicsLayer { alpha = curtainAlpha }.background(Color.Black))
-        if (inPip || inPortraitTransition) return@Box
+        if (inPip || hideForRotation) return@Box
 
         // ---- gestures (all disabled while locked) ----
         if (!locked) Box(

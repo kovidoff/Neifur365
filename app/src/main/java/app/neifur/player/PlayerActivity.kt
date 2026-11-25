@@ -134,6 +134,10 @@ class PlayerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(SystemBarStyle.dark(AColor.TRANSPARENT), SystemBarStyle.dark(AColor.TRANSPARENT))
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 34) {
+            overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
+            overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
+        }
         // On Activity recreation (config change / process death), prefer the persisted latest episode/pick over a stale container.session.
         val s = (if (savedInstanceState != null) restoreSession() else null)?.also { container.session = it }
             ?: container.session
@@ -734,6 +738,10 @@ class PlayerActivity : ComponentActivity() {
         WindowCompat.getInsetsController(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
         container.reseatBars = !inPip
         super.finish()
+        if (Build.VERSION.SDK_INT < 34) {
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
