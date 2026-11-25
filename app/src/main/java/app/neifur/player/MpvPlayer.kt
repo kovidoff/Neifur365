@@ -123,7 +123,8 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
             if (font.length() != bundled.size.toLong()) font.writeBytes(bundled)
         }
         fun opt(k: String, v: String) = mpv.setOptionString(k, v)
-        opt("config", "no"); opt("config-dir", dir.absolutePath)
+        // config=yes is required so libmpv loads <config-dir>/subfont.ttf for libass (sub-font-provider=none disables system fonts).
+        opt("config", "yes"); opt("config-dir", dir.absolutePath)
         opt("profile", "fast")
         // Keep vo=null until SurfaceView reports a valid landscape size so OpenGL never renders into a stale/portrait viewport.
         opt("vo", "null"); opt("gpu-context", "android"); opt("opengl-es", "yes")

@@ -573,7 +573,8 @@ class PlayerActivity : ComponentActivity() {
         }
         when (val pref = container.prefs.trackPref("sub")) {
             null -> {}
-            "off" -> if (tracks.any { it.type == "sub" && it.selected }) player.select("sub", null)
+            // Never auto-hide subtitles when the viewer explicitly chose a subtitle translation.
+            "off" -> if (!stream.isSubs && tracks.any { it.type == "sub" && it.selected }) player.select("sub", null)
             else -> {
                 val lang = pref.substringBefore(':')
                 val signs = pref.endsWith(":signs")
