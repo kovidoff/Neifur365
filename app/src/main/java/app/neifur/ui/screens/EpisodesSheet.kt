@@ -1,9 +1,11 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
-
 package app.neifur.ui.screens
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -16,6 +18,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -39,13 +43,9 @@ import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,11 +54,22 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.launch
 import app.neifur.data.WatchEntry
 import app.neifur.data.a365.Episode
 import app.neifur.data.a365.Studio
@@ -122,6 +133,74 @@ fun CoverageBar(studio: Studio, episodes: List<Episode>, accent: Color, modifier
 internal fun isListAtTop(firstVisibleIndex: Int, firstVisibleOffset: Int): Boolean =
     firstVisibleIndex == 0 && firstVisibleOffset <= 8
 
+internal enum class SheetReleaseAction { None, SnapOpen, Dismiss }
+
+internal fun decideRelease(offsetY: Float, velocityY: Float, sheetHeight: Float): SheetReleaseAction {
+    if (offsetY <= 0f) return SheetReleaseAction.None
+    val threshold = (sheetHeight * 0.22f).coerceIn(140f, 360f)
+    return if (offsetY > threshold || velocityY > 950f) SheetReleaseAction.Dismiss else SheetReleaseAction.SnapOpen
+}
+
+/**
+ * Deterministic nested-scroll controller for the bottom sheet:
+ * scrolling inside a list NEVER moves the sheet; only pulling down when the gesture begins cleanly at the
+ * top of the list drags the sheet down and commits either SnapOpen or Dismiss on release.
+ */
+internal class SheetDragController(
+    private val isListAtTop: () -> Boolean,
+    private val getOffset: () -> Float,
+    private val setOffset: (Float) -> Unit,
+    private val getSheetHeight: () -> Float,
+    private val onRelease: (SheetReleaseAction) -> Unit,
+) : NestedScrollConnection {
+    private var gestureStartedScrolled = false
+
+    override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+        val cur = getOffset()
+        if (cur > 0f && source == NestedScrollSource.UserInput) {
+            val next = (cur + available.y).coerceAtLeast(0f)
+            val consumedY = next - cur
+            setOffset(next)
+            return Offset(0f, consumedY)
+        }
+        if (source == NestedScrollSource.UserInput && !isListAtTop()) {
+            gestureStartedScrolled = true
+        }
+        return Offset.Zero
+    }
+
+    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+        if (source == NestedScrollSource.UserInput && available.y > 0f && consumed.y == 0f && !gestureStartedScrolled && isListAtTop()) {
+            val cur = getOffset()
+            setOffset((cur + available.y).coerceAtLeast(0f))
+            return Offset(0f, available.y)
+        }
+        return Offset.Zero
+    }
+
+    override suspend fun onPreFling(available: Velocity): Velocity {
+        gestureStartedScrolled = false
+        val cur = getOffset()
+        if (cur > 0f) {
+            onRelease(decideRelease(cur, available.y, getSheetHeight()))
+            return available
+        }
+        return Velocity.Zero
+    }
+
+    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+        gestureStartedScrolled = false
+        val cur = getOffset()
+        if (cur > 0f) {
+            onRelease(decideRelease(cur, available.y, getSheetHeight()))
+            return available
+        }
+        return Velocity.Zero
+    }
+
+    fun resetGesture() { gestureStartedScrolled = false }
+}
+
 @Composable
 fun EpisodesSheet(
     state: PlayState, history: List<WatchEntry>, isMovie: Boolean, accent: Color, startPage: SheetPage,
@@ -138,95 +217,164 @@ fun EpisodesSheet(
     onDeleteDownload: (Long) -> Unit = {},
     notice: String? = null,
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
     var page by remember { mutableStateOf(startPage) }
     // Which episode the picker is choosing for, when the title has no studio yet.
     var choosingFor by remember { mutableStateOf(startFor) }
     var listAtTop by remember { mutableStateOf(true) }
-    var allowSheetSwipe by remember { mutableStateOf(true) }
-    var expandedOffset by remember(sheetState) { mutableStateOf<Float?>(null) }
-    val currentOffset by remember(sheetState) {
-        derivedStateOf { runCatching { sheetState.requireOffset() }.getOrNull() }
-    }
-    val sheetSettledExpanded by remember(sheetState) {
-        derivedStateOf {
-            sheetState.currentValue == SheetValue.Expanded &&
-                sheetState.targetValue == SheetValue.Expanded &&
-                !sheetState.isAnimationRunning
-        }
-    }
-    LaunchedEffect(sheetSettledExpanded, currentOffset) {
-        val off = currentOffset
-        if (sheetSettledExpanded && off != null) {
-            val cur = expandedOffset
-            if (cur == null || off < cur) expandedOffset = off
-        }
-    }
-    val sheetAtRest by remember(sheetState) {
-        derivedStateOf {
-            if (!sheetSettledExpanded) false
-            else {
-                val off = currentOffset
-                val base = expandedOffset
-                off == null || base == null || off <= base + 2f
-            }
-        }
-    }
-    LaunchedEffect(listAtTop, sheetAtRest) {
-        if (sheetAtRest) allowSheetSwipe = listAtTop
-    }
-    val openedOnPicker = startPage == SheetPage.Translations
-    ModalBottomSheet(
-        onDismissRequest = onDismiss, sheetState = sheetState, sheetGesturesEnabled = allowSheetSwipe,
-        containerColor = Nf.Surface, contentColor = Nf.Text,
-        dragHandle = { Box(Modifier.padding(top = 10.dp, bottom = 6.dp).size(40.dp, 4.dp).clip(CircleShape).background(Nf.Line)) },
-    ) {
-        Box(Modifier.fillMaxWidth().fillMaxHeight(0.88f)) {
-            AnimatedContent(
-                page, label = "page",
-                transitionSpec = {
-                    val dir = if (targetState == SheetPage.Translations) 1 else -1
-                    (slideInHorizontally(tween(280)) { it / 4 * dir } + fadeIn(tween(220))) togetherWith
-                        (slideOutHorizontally(tween(220)) { -it / 4 * dir } + fadeOut(tween(140)))
-                },
-            ) { p ->
-                when (p) {
-                    SheetPage.Episodes -> EpisodesPage(
-                        state, history, isMovie, accent, downloads,
-                        onPlay = { i ->
-                            if ((state as? PlayState.Ready)?.started == false) { choosingFor = i; page = SheetPage.Translations } else onPlay(i)
-                        },
-                        onRetry = onRetry, onRange = onRange,
-                        onDownload = onDownload, onDownloadBatch = onDownloadBatch, onCancelDownload = onCancelDownload,
-                        onRetryDownload = onRetryDownload, onDeleteDownload = onDeleteDownload,
-                        onSwipeDismissAllowed = { listAtTop = it },
-                    ) { choosingFor = null; page = SheetPage.Translations }
-                    SheetPage.Translations -> TranslationsPage(
-                        state as? PlayState.Ready, accent, choosingFor, preferred,
-                        showBack = !(openedOnPicker && choosingFor == startFor),
-                        onSwipeDismissAllowed = { listAtTop = it },
-                        onBack = { choosingFor = null; page = SheetPage.Episodes },
-                        onPick = { s ->
-                            val i = choosingFor
-                            if (i != null) onStart(s, i) else { onPick(s); page = SheetPage.Episodes }
-                        },
-                    )
-                }
-            }
+    var sheetHeightPx by remember { mutableFloatStateOf(0f) }
+    var entered by remember { mutableStateOf(false) }
+    var dismissing by remember { mutableStateOf(false) }
+    val offsetY = remember { Animatable(0f) }
 
-            var lastNotice by remember { mutableStateOf("") }
-            if (notice != null) lastNotice = notice
-            androidx.compose.animation.AnimatedVisibility(
-                notice != null,
-                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(20.dp),
-                enter = slideInVertically { it } + fadeIn(),
-                exit = slideOutVertically { it } + fadeOut(),
+    fun dismissAnimated() {
+        if (dismissing) return
+        dismissing = true
+        scope.launch {
+            val target = sheetHeightPx.takeIf { it > 0f } ?: 1200f
+            offsetY.animateTo(target, tween(210, easing = FastOutSlowInEasing))
+            onDismiss()
+        }
+    }
+
+    fun snapOpen() {
+        scope.launch {
+            offsetY.animateTo(0f, spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow))
+        }
+    }
+
+    fun handleRelease(action: SheetReleaseAction) {
+        when (action) {
+            SheetReleaseAction.Dismiss -> dismissAnimated()
+            SheetReleaseAction.SnapOpen -> snapOpen()
+            SheetReleaseAction.None -> {}
+        }
+    }
+
+    val dragController = remember(scope) {
+        SheetDragController(
+            isListAtTop = { listAtTop },
+            getOffset = { offsetY.value },
+            setOffset = { v -> if (!dismissing) scope.launch { offsetY.snapTo(v) } },
+            getSheetHeight = { sheetHeightPx },
+            onRelease = ::handleRelease,
+        )
+    }
+
+    LaunchedEffect(page) { dragController.resetGesture() }
+    LaunchedEffect(sheetHeightPx) {
+        if (!entered && sheetHeightPx > 0f) {
+            entered = true
+            offsetY.snapTo(sheetHeightPx)
+            offsetY.animateTo(0f, spring(dampingRatio = 0.88f, stiffness = Spring.StiffnessMediumLow))
+        }
+    }
+
+    val openFraction = if (!entered || sheetHeightPx <= 0f) 0f else (1f - offsetY.value / sheetHeightPx).coerceIn(0f, 1f)
+    val openedOnPicker = startPage == SheetPage.Translations
+
+    Dialog(
+        onDismissRequest = ::dismissAnimated,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        Box(Modifier.fillMaxSize()) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.62f * openFraction))
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { dismissAnimated() }
+            )
+            Column(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.88f)
+                    .onSizeChanged { if (it.height > 0) sheetHeightPx = it.height.toFloat() }
+                    .graphicsLayer {
+                        translationY = if (!entered) sheetHeightPx.takeIf { it > 0f } ?: 2000f else offsetY.value
+                        alpha = if (entered) 1f else 0f
+                    }
+                    .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+                    .background(Nf.Surface)
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
+                    .navigationBarsPadding()
             ) {
-                Text(
-                    lastNotice, style = Type.Label, color = Nf.Text,
-                    modifier = Modifier.clip(RoundedCornerShape(18.dp)).background(Nf.SurfaceHi)
-                        .border(1.dp, Nf.Line, RoundedCornerShape(18.dp)).padding(horizontal = 18.dp, vertical = 14.dp),
-                )
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .pointerInput(Unit) {
+                            val tracker = VelocityTracker()
+                            detectVerticalDragGestures(
+                                onDragStart = { tracker.resetTracking() },
+                                onDragEnd = {
+                                    val v = tracker.calculateVelocity().y
+                                    handleRelease(decideRelease(offsetY.value, v, sheetHeightPx))
+                                },
+                                onDragCancel = {
+                                    handleRelease(decideRelease(offsetY.value, 0f, sheetHeightPx))
+                                },
+                                onVerticalDrag = { change, dragAmount ->
+                                    change.consume()
+                                    tracker.addPosition(change.uptimeMillis, change.position)
+                                    if (!dismissing) scope.launch {
+                                        offsetY.snapTo((offsetY.value + dragAmount).coerceAtLeast(0f))
+                                    }
+                                },
+                            )
+                        }
+                        .padding(top = 12.dp, bottom = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(Modifier.size(40.dp, 4.dp).clip(CircleShape).background(Nf.Line))
+                }
+                Box(Modifier.fillMaxWidth().weight(1f).nestedScroll(dragController)) {
+                    AnimatedContent(
+                        page, label = "page",
+                        transitionSpec = {
+                            val dir = if (targetState == SheetPage.Translations) 1 else -1
+                            (slideInHorizontally(tween(280)) { it / 4 * dir } + fadeIn(tween(220))) togetherWith
+                                (slideOutHorizontally(tween(220)) { -it / 4 * dir } + fadeOut(tween(140)))
+                        },
+                    ) { p ->
+                        when (p) {
+                            SheetPage.Episodes -> EpisodesPage(
+                                state, history, isMovie, accent, downloads,
+                                onPlay = { i ->
+                                    if ((state as? PlayState.Ready)?.started == false) { choosingFor = i; page = SheetPage.Translations } else onPlay(i)
+                                },
+                                onRetry = onRetry, onRange = onRange,
+                                onDownload = onDownload, onDownloadBatch = onDownloadBatch, onCancelDownload = onCancelDownload,
+                                onRetryDownload = onRetryDownload, onDeleteDownload = onDeleteDownload,
+                                onSwipeDismissAllowed = { listAtTop = it },
+                            ) { choosingFor = null; page = SheetPage.Translations }
+                            SheetPage.Translations -> TranslationsPage(
+                                state as? PlayState.Ready, accent, choosingFor, preferred,
+                                showBack = !(openedOnPicker && choosingFor == startFor),
+                                onSwipeDismissAllowed = { listAtTop = it },
+                                onBack = { choosingFor = null; page = SheetPage.Episodes },
+                                onPick = { s ->
+                                    val i = choosingFor
+                                    if (i != null) onStart(s, i) else { onPick(s); page = SheetPage.Episodes }
+                                },
+                            )
+                        }
+                    }
+
+                    var lastNotice by remember { mutableStateOf("") }
+                    if (notice != null) lastNotice = notice
+                    androidx.compose.animation.AnimatedVisibility(
+                        notice != null,
+                        Modifier.align(Alignment.BottomCenter).padding(20.dp),
+                        enter = slideInVertically { it } + fadeIn(),
+                        exit = slideOutVertically { it } + fadeOut(),
+                    ) {
+                        Text(
+                            lastNotice, style = Type.Label, color = Nf.Text,
+                            modifier = Modifier.clip(RoundedCornerShape(18.dp)).background(Nf.SurfaceHi)
+                                .border(1.dp, Nf.Line, RoundedCornerShape(18.dp)).padding(horizontal = 18.dp, vertical = 14.dp),
+                        )
+                    }
+                }
             }
         }
     }
@@ -304,9 +452,7 @@ private fun Episodes(
     var range by remember { mutableIntStateOf(if (ranges.size > 1 && resume >= 0) resume / chunk else 0) }
     val list = rememberLazyListState()
     val atTop by remember { derivedStateOf { isListAtTop(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset) } }
-    LaunchedEffect(atTop, list.isScrollInProgress) {
-        if (!list.isScrollInProgress) onSwipeDismissAllowed(atTop)
-    }
+    LaunchedEffect(atTop) { onSwipeDismissAllowed(atTop) }
     LaunchedEffect(range) {
         if (ranges.size > 1) onRange(ranges[range].map { eps[it] })
         val pos = ranges.getOrNull(range).orEmpty().indexOf(resume)
@@ -652,9 +798,7 @@ private fun TranslationsPage(
         // A newly starred studio moves into "Любимые" at the top: follow it there instead of leaving it off screen.
         val listState = rememberLazyListState()
         val atTop by remember { derivedStateOf { isListAtTop(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset) } }
-        LaunchedEffect(atTop, listState.isScrollInProgress) {
-            if (!listState.isScrollInProgress) onSwipeDismissAllowed(atTop)
-        }
+        LaunchedEffect(atTop) { onSwipeDismissAllowed(atTop) }
         val favKeys = favs.map { it.key }
         var seenFavs by remember(kind) { mutableStateOf(favKeys) }
         LaunchedEffect(favKeys) {

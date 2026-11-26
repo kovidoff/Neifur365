@@ -14,8 +14,15 @@ import app.neifur.data.shikimori.IncDate
 import app.neifur.data.shikimori.RelatedRef
 import app.neifur.data.shikimori.sortFranchiseEntries
 import app.neifur.player.ChapterKind
+import app.neifur.ui.screens.SheetDragController
+import app.neifur.ui.screens.SheetReleaseAction
+import app.neifur.ui.screens.decideRelease
 import app.neifur.ui.screens.filterContinueWatching
 import app.neifur.ui.screens.isListAtTop
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.unit.Velocity
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -138,5 +145,50 @@ class Wave3LogicTest {
         assertTrue(isListAtTop(0, 8))
         assertFalse(isListAtTop(0, 9))
         assertFalse(isListAtTop(1, 0))
+    }
+
+    @Test
+    fun sheetDragControllerOnlyDragsWhenGestureStartsAtTopAndReleasesCleanly() = runBlocking {
+        var atTop = false
+        var offset = 0f
+        var release: SheetReleaseAction? = null
+        val ctrl = SheetDragController(
+            isListAtTop = { atTop },
+            getOffset = { offset },
+            setOffset = { offset = it },
+            getSheetHeight = { 1000f },
+            onRelease = { release = it },
+        )
+
+        // 1. Mid-list scroll down + bottom overscroll -> sheet never moves.
+        assertEquals(Offset.Zero, ctrl.onPreScroll(Offset(0f, -120f), NestedScrollSource.UserInput))
+        assertEquals(Offset.Zero, ctrl.onPostScroll(Offset(0f, -20f), Offset(0f, -80f), NestedScrollSource.UserInput))
+        assertEquals(Velocity.Zero, ctrl.onPostFling(Velocity(0f, -400f), Velocity(0f, -600f)))
+        assertEquals(0f, offset, 0.01f)
+        assertEquals(null, release)
+
+        // 2. Mid-list drag UP hitting top -> atTop flips true mid-gesture, leftover + fling still ignored.
+        assertEquals(Offset.Zero, ctrl.onPreScroll(Offset(0f, 90f), NestedScrollSource.UserInput))
+        atTop = true
+        assertEquals(Offset.Zero, ctrl.onPostScroll(Offset(0f, 30f), Offset(0f, 60f), NestedScrollSource.UserInput))
+        assertEquals(Offset.Zero, ctrl.onPostScroll(Offset.Zero, Offset(0f, 50f), NestedScrollSource.SideEffect))
+        assertEquals(Velocity.Zero, ctrl.onPostFling(Velocity(0f, 200f), Velocity(0f, 700f)))
+        assertEquals(0f, offset, 0.01f)
+        assertEquals(null, release)
+
+        // 3. Pull down cleanly from top -> follows finger, pushes back up, snaps open below threshold.
+        assertEquals(Offset.Zero, ctrl.onPreScroll(Offset(0f, 120f), NestedScrollSource.UserInput))
+        assertEquals(Offset(0f, 120f), ctrl.onPostScroll(Offset.Zero, Offset(0f, 120f), NestedScrollSource.UserInput))
+        assertEquals(120f, offset, 0.01f)
+        assertEquals(Offset(0f, -30f), ctrl.onPreScroll(Offset(0f, -30f), NestedScrollSource.UserInput))
+        assertEquals(90f, offset, 0.01f)
+        ctrl.onPreFling(Velocity(0f, 100f))
+        assertEquals(SheetReleaseAction.SnapOpen, release)
+
+        // 4. Threshold & fast velocity decide Dismiss.
+        assertEquals(SheetReleaseAction.None, decideRelease(0f, 2000f, 1000f))
+        assertEquals(SheetReleaseAction.SnapOpen, decideRelease(150f, 200f, 1000f))
+        assertEquals(SheetReleaseAction.Dismiss, decideRelease(260f, 100f, 1000f))
+        assertEquals(SheetReleaseAction.Dismiss, decideRelease(60f, 1200f, 1000f))
     }
 }
