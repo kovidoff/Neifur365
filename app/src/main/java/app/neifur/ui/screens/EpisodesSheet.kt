@@ -42,6 +42,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -54,12 +55,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.neifur.data.WatchEntry
@@ -121,46 +118,9 @@ fun CoverageBar(studio: Studio, episodes: List<Episode>, accent: Color, modifier
  * episodes it hasn't uploaded are marked, with what plays instead. The translation page picks a studio for the
  * whole title, showing how many episodes each one has.
  */
-/**
- * Prevents ModalBottomSheet from collapsing when a list inside it is scrolled or flung back up to index 0:
- * leftover drag/fling inertia hitting the top of the list is absorbed here so only an intentional pull
- * starting cleanly from the top collapses the sheet.
- */
-internal class SheetScrollGuardConnection(
-    private val canScrollBackward: () -> Boolean,
-    private val isScrollInProgress: () -> Boolean,
-) : NestedScrollConnection {
-    private var blockOverscrollUntilRelease = false
-
-    override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-        if (!isScrollInProgress()) blockOverscrollUntilRelease = false
-        if (source == NestedScrollSource.UserInput && canScrollBackward()) {
-            blockOverscrollUntilRelease = true
-        }
-        return Offset.Zero
-    }
-
-    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-        if (available.y < 0f) return Offset(0f, available.y)
-        if (available.y == 0f) return Offset.Zero
-        if (source == NestedScrollSource.SideEffect) return Offset(0f, available.y)
-        if (blockOverscrollUntilRelease || consumed.y > 0f) {
-            blockOverscrollUntilRelease = true
-            return Offset(0f, available.y)
-        }
-        return Offset.Zero
-    }
-
-    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-        val startedInList = blockOverscrollUntilRelease || consumed.y != 0f || canScrollBackward()
-        blockOverscrollUntilRelease = false
-        return when {
-            available.y < 0f -> Velocity(0f, available.y)
-            startedInList && available.y > 0f -> Velocity(0f, available.y)
-            else -> Velocity.Zero
-        }
-    }
-}
+/** Small 8px tolerance so a 1–2px thumb jitter on Episode 1 never blocks an intentional pull-to-dismiss. */
+internal fun isListAtTop(firstVisibleIndex: Int, firstVisibleOffset: Int): Boolean =
+    firstVisibleIndex == 0 && firstVisibleOffset <= 8
 
 @Composable
 fun EpisodesSheet(
@@ -182,7 +142,39 @@ fun EpisodesSheet(
     var page by remember { mutableStateOf(startPage) }
     // Which episode the picker is choosing for, when the title has no studio yet.
     var choosingFor by remember { mutableStateOf(startFor) }
+    var listAtTop by remember { mutableStateOf(true) }
     var allowSheetSwipe by remember { mutableStateOf(true) }
+    var expandedOffset by remember(sheetState) { mutableStateOf<Float?>(null) }
+    val currentOffset by remember(sheetState) {
+        derivedStateOf { runCatching { sheetState.requireOffset() }.getOrNull() }
+    }
+    val sheetSettledExpanded by remember(sheetState) {
+        derivedStateOf {
+            sheetState.currentValue == SheetValue.Expanded &&
+                sheetState.targetValue == SheetValue.Expanded &&
+                !sheetState.isAnimationRunning
+        }
+    }
+    LaunchedEffect(sheetSettledExpanded, currentOffset) {
+        val off = currentOffset
+        if (sheetSettledExpanded && off != null) {
+            val cur = expandedOffset
+            if (cur == null || off < cur) expandedOffset = off
+        }
+    }
+    val sheetAtRest by remember(sheetState) {
+        derivedStateOf {
+            if (!sheetSettledExpanded) false
+            else {
+                val off = currentOffset
+                val base = expandedOffset
+                off == null || base == null || off <= base + 2f
+            }
+        }
+    }
+    LaunchedEffect(listAtTop, sheetAtRest) {
+        if (sheetAtRest) allowSheetSwipe = listAtTop
+    }
     val openedOnPicker = startPage == SheetPage.Translations
     ModalBottomSheet(
         onDismissRequest = onDismiss, sheetState = sheetState, sheetGesturesEnabled = allowSheetSwipe,
@@ -207,12 +199,12 @@ fun EpisodesSheet(
                         onRetry = onRetry, onRange = onRange,
                         onDownload = onDownload, onDownloadBatch = onDownloadBatch, onCancelDownload = onCancelDownload,
                         onRetryDownload = onRetryDownload, onDeleteDownload = onDeleteDownload,
-                        onSwipeDismissAllowed = { allowSheetSwipe = it },
+                        onSwipeDismissAllowed = { listAtTop = it },
                     ) { choosingFor = null; page = SheetPage.Translations }
                     SheetPage.Translations -> TranslationsPage(
                         state as? PlayState.Ready, accent, choosingFor, preferred,
                         showBack = !(openedOnPicker && choosingFor == startFor),
-                        onSwipeDismissAllowed = { allowSheetSwipe = it },
+                        onSwipeDismissAllowed = { listAtTop = it },
                         onBack = { choosingFor = null; page = SheetPage.Episodes },
                         onPick = { s ->
                             val i = choosingFor
@@ -311,7 +303,7 @@ private fun Episodes(
     val resume = state.target
     var range by remember { mutableIntStateOf(if (ranges.size > 1 && resume >= 0) resume / chunk else 0) }
     val list = rememberLazyListState()
-    val atTop by remember { derivedStateOf { !list.canScrollBackward } }
+    val atTop by remember { derivedStateOf { isListAtTop(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset) } }
     LaunchedEffect(atTop, list.isScrollInProgress) {
         if (!list.isScrollInProgress) onSwipeDismissAllowed(atTop)
     }
@@ -344,9 +336,7 @@ private fun Episodes(
         LazyColumn(
             state = list,
             contentPadding = PaddingValues(top = 12.dp, bottom = 28.dp),
-            modifier = Modifier
-                .weight(1f)
-                .nestedScroll(remember(list) { SheetScrollGuardConnection({ list.canScrollBackward }, { list.isScrollInProgress }) }),
+            modifier = Modifier.weight(1f),
         ) {
             items(ranges.getOrNull(range).orEmpty(), key = { eps[it].id }) { i ->
                 val ep = eps[i]
@@ -661,7 +651,7 @@ private fun TranslationsPage(
         val rest = list.filterNot { it.key in fav }
         // A newly starred studio moves into "Любимые" at the top: follow it there instead of leaving it off screen.
         val listState = rememberLazyListState()
-        val atTop by remember { derivedStateOf { !listState.canScrollBackward } }
+        val atTop by remember { derivedStateOf { isListAtTop(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset) } }
         LaunchedEffect(atTop, listState.isScrollInProgress) {
             if (!listState.isScrollInProgress) onSwipeDismissAllowed(atTop)
         }
@@ -674,9 +664,7 @@ private fun TranslationsPage(
         LazyColumn(
             state = listState,
             contentPadding = PaddingValues(top = 6.dp, bottom = 28.dp),
-            modifier = Modifier
-                .weight(1f)
-                .nestedScroll(remember(listState) { SheetScrollGuardConnection({ listState.canScrollBackward }, { listState.isScrollInProgress }) }),
+            modifier = Modifier.weight(1f),
         ) {
             if (favs.isNotEmpty()) {
                 item(key = "h-fav") {

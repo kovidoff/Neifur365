@@ -14,13 +14,10 @@ import app.neifur.data.shikimori.IncDate
 import app.neifur.data.shikimori.RelatedRef
 import app.neifur.data.shikimori.sortFranchiseEntries
 import app.neifur.player.ChapterKind
-import app.neifur.ui.screens.SheetScrollGuardConnection
 import app.neifur.ui.screens.filterContinueWatching
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.unit.Velocity
-import kotlinx.coroutines.runBlocking
+import app.neifur.ui.screens.isListAtTop
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -136,30 +133,10 @@ class Wave3LogicTest {
     }
 
     @Test
-    fun sheetScrollGuardBlocksMidListOverscrollAndFlingButAllowsTopDismiss() = runBlocking {
-        var canBackward = true
-        var inProgress = true
-        val guard = SheetScrollGuardConnection({ canBackward }, { inProgress })
-
-        // Dragging back up from mid-list: pre-scroll latches, list hits top, leftover post-scroll + fling are absorbed.
-        assertEquals(Offset.Zero, guard.onPreScroll(Offset(0f, 80f), NestedScrollSource.UserInput))
-        canBackward = false
-        assertEquals(Offset(0f, 40f), guard.onPostScroll(Offset(0f, 40f), Offset(0f, 40f), NestedScrollSource.UserInput))
-        assertEquals(Velocity(0f, 900f), guard.onPostFling(Velocity(0f, 500f), Velocity(0f, 900f)))
-
-        // Fling inertia (SideEffect) hitting the top of the list is always absorbed so it never snaps the sheet shut.
-        assertEquals(Offset(0f, 55f), guard.onPostScroll(Offset(0f, 10f), Offset(0f, 55f), NestedScrollSource.SideEffect))
-
-        // Bottom overscroll / downward fling velocity (available.y < 0f) is absorbed so ModalBottomSheet never settles/locks.
-        assertEquals(Offset(0f, -45f), guard.onPostScroll(Offset(0f, -15f), Offset(0f, -45f), NestedScrollSource.UserInput))
-        assertEquals(Velocity(0f, -750f), guard.onPostFling(Velocity(0f, -300f), Velocity(0f, -750f)))
-
-        // Reset between gestures: a fresh downward pull starting right at index 0 passes through to dismiss the sheet.
-        inProgress = false
-        canBackward = false
-        assertEquals(Offset.Zero, guard.onPreScroll(Offset(0f, 60f), NestedScrollSource.UserInput))
-        inProgress = true
-        assertEquals(Offset.Zero, guard.onPostScroll(Offset.Zero, Offset(0f, 60f), NestedScrollSource.UserInput))
-        assertEquals(Velocity.Zero, guard.onPostFling(Velocity.Zero, Velocity(0f, 600f)))
+    fun listAtTopUsesSmallToleranceOnFirstItemOnly() {
+        assertTrue(isListAtTop(0, 0))
+        assertTrue(isListAtTop(0, 8))
+        assertFalse(isListAtTop(0, 9))
+        assertFalse(isListAtTop(1, 0))
     }
 }
