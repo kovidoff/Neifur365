@@ -1,9 +1,13 @@
 package app.neifur.player
 
 import android.content.Context
+import android.media.AudioManager
+import android.media.audiofx.DynamicsProcessing
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Surface
+import androidx.annotation.RequiresApi
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -114,7 +118,17 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     /** The stream broke after it had started (expired link, dropped connection). */
     var onStreamError: (() -> Unit)? = null
 
+    private val audioSessionId: Int
+    private var normalizer: DynamicsProcessing? = null
+
     init {
+        audioSessionId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            runCatching {
+                (context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+                    ?.generateAudioSessionId()
+                    ?.takeIf { it != AudioManager.ERROR && it > 0 } ?: 0
+            }.getOrDefault(0)
+        } else 0
         // libass needs a fallback font for subtitles that don't embed their own: <config-dir>/subfont.ttf.
         val dir = File(context.filesDir, "mpv").apply { mkdirs() }
         // A static SemiBold cut of Manrope: libass mis-spaces a variable font when a style asks for bold (words ran
@@ -133,7 +147,12 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         // mediacodec-copy keeps the decoded frame in mpv memory so pausing, locking the screen or recreating the surface
         // redraws the exact paused frame immediately without waiting for a new decoder keyframe.
         opt("hwdec", "mediacodec-copy"); opt("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1")
-        opt("ao", "audiotrack,opensles")
+        if (audioSessionId > 0) {
+            opt("ao", "aaudio,audiotrack,opensles")
+            opt("aaudio-session-id", audioSessionId.toString())
+        } else {
+            opt("ao", "audiotrack,opensles")
+        }
         opt("force-window", "no"); opt("idle", "yes"); opt("keep-open", "yes")
         opt("hr-seek", "yes"); opt("hr-seek-framedrop", "yes")
         opt("cache", "yes"); opt("cache-secs", "120"); opt("demuxer-max-bytes", "64MiB"); opt("demuxer-max-back-bytes", "24MiB")
@@ -383,13 +402,70 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         mpv.setPropertyInt("sub-pos", clamped)
     }
 
-    /** Dynamic audio normalization (dynaudnorm) to balance quiet speech and loud openings. */
+    /** Dynamic range compression via Android's native DynamicsProcessing DSP (libmpv's stripped libavfilter has no audio filters). */
     fun setAudioNormalize(on: Boolean) {
         if (released || lastNormalize == on) return
         lastNormalize = on
-        runCatching {
-            mpv.setPropertyString("af", if (on) "lavfi=[dynaudnorm=f=150:g=15:p=0.9:m=10]" else "")
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P || audioSessionId <= 0) return
+        applyNormalizerApi28(on)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun applyNormalizerApi28(on: Boolean) {
+        if (!on) {
+            runCatching { normalizer?.enabled = false }
+            runCatching { normalizer?.release() }
+            normalizer = null
+            return
         }
+        runCatching {
+            val dp = normalizer ?: buildNormalizerApi28(audioSessionId).also { normalizer = it }
+            dp.enabled = true
+        }.onFailure {
+            runCatching { normalizer?.release() }
+            normalizer = null
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun buildNormalizerApi28(sessionId: Int): DynamicsProcessing {
+        val cfg = DynamicsProcessing.Config.Builder(
+            DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
+            2,
+            false, 0,
+            true, 1,
+            false, 0,
+            true,
+        ).build()
+        val band = DynamicsProcessing.MbcBand(
+            /* enabled = */ true,
+            /* cutoffFrequency = */ 20_000f,
+            /* attackTime = */ 15f,
+            /* releaseTime = */ 220f,
+            /* ratio = */ 3.5f,
+            /* threshold = */ -26f,
+            /* kneeWidth = */ 8f,
+            /* noiseGateThreshold = */ -65f,
+            /* expanderRatio = */ 1.5f,
+            /* preGain = */ 0f,
+            /* postGain = */ 8f,
+        )
+        val mbc = DynamicsProcessing.Mbc(/* inUse = */ true, /* enabled = */ true, /* bandCount = */ 1)
+        mbc.setBand(0, band)
+        cfg.setMbcAllChannelsTo(mbc)
+        cfg.setLimiterAllChannelsTo(
+            DynamicsProcessing.Limiter(
+                /* inUse = */ true,
+                /* enabled = */ true,
+                /* linkGroup = */ 0,
+                /* attackTime = */ 1f,
+                /* releaseTime = */ 60f,
+                /* ratio = */ 10f,
+                /* threshold = */ -1.5f,
+                /* postGain = */ 0f,
+            ),
+        )
+        return DynamicsProcessing(0, sessionId, cfg)
     }
 
     /** Supplies verified external skip chapters (AniSkip); embedded MKV chapters always take priority. */
@@ -416,6 +492,9 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         loaded = false
         videoReady = false
         onFileLoaded = null; onOpenFailed = null; onStreamError = null
+        runCatching { normalizer?.enabled = false }
+        runCatching { normalizer?.release() }
+        normalizer = null
         runCatching { mpv.removeObserver(this) }
         runCatching { mpv.command(arrayOf("stop")) }
         runCatching { mpv.destroy() }

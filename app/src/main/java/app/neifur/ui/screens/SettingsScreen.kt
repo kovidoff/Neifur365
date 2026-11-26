@@ -554,11 +554,13 @@ fun SettingsSectionScreen(
                     Spacer(Modifier.height(12.dp))
                     Card {
                         SettingTitle("Звук и заставки", "Дополнительные возможности плеера")
-                        ToggleRow(
-                            Icons.Rounded.GraphicEq, "Нормализация громкости",
-                            "Выравнивает тихие диалоги и громкие опенинги (dynaudnorm)", normalizeAudio,
-                        ) { vm.setNormalizeAudio(it) }
-                        Divider()
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                            ToggleRow(
+                                Icons.Rounded.GraphicEq, "Нормализация громкости",
+                                "Выравнивает тихие диалоги и громкие опенинги", normalizeAudio,
+                            ) { vm.setNormalizeAudio(it) }
+                            Divider()
+                        }
                         ToggleRow(
                             Icons.Rounded.SkipNext, "Умный пропуск заставок (AniSkip)",
                             "Метки опенинга и эндинга по точному хронометражу серии. Если студия добавила своё интро — остаётся +85",
