@@ -54,24 +54,27 @@ object Type {
     val Overline = TextStyle(fontFamily = Manrope, fontWeight = FontWeight(800), fontSize = 10.5.sp, lineHeight = 14.sp, letterSpacing = 0.14.em)
 }
 
-@Composable
-fun NeifurTheme(content: @Composable () -> Unit) {
-    val scheme = darkColorScheme(
-        primary = Nf.Violet, onPrimary = Color(0xFF14102A), secondary = Nf.Pink, tertiary = Nf.Mint,
-        background = Nf.Ink, onBackground = Nf.Text, surface = Nf.Surface, onSurface = Nf.Text,
-        surfaceVariant = Nf.SurfaceHi, onSurfaceVariant = Nf.TextDim, outline = Nf.Line, error = Nf.Red,
-        surfaceContainer = Nf.Surface, surfaceContainerHigh = Nf.SurfaceHi, surfaceContainerLow = Nf.Surface,
-        surfaceContainerHighest = Nf.SurfaceHi,
-    )
-    val base = Typography()
-    val typography = Typography(
+private val NeifurColorScheme = darkColorScheme(
+    primary = Nf.Violet, onPrimary = Color(0xFF14102A), secondary = Nf.Pink, tertiary = Nf.Mint,
+    background = Nf.Ink, onBackground = Nf.Text, surface = Nf.Surface, onSurface = Nf.Text,
+    surfaceVariant = Nf.SurfaceHi, onSurfaceVariant = Nf.TextDim, outline = Nf.Line, error = Nf.Red,
+    surfaceContainer = Nf.Surface, surfaceContainerHigh = Nf.SurfaceHi, surfaceContainerLow = Nf.Surface,
+    surfaceContainerHighest = Nf.SurfaceHi,
+)
+
+private val NeifurTypography = Typography().let { base ->
+    Typography(
         bodyLarge = Type.Body, bodyMedium = Type.Body, bodySmall = Type.Caption,
         titleLarge = Type.Display, titleMedium = Type.Title, titleSmall = Type.Label,
         labelLarge = Type.Label, labelMedium = Type.Caption, labelSmall = Type.Caption,
         headlineSmall = Type.Display, headlineMedium = Type.Hero,
         displaySmall = base.displaySmall.copy(fontFamily = Unbounded),
     )
-    MaterialTheme(colorScheme = scheme, typography = typography) {
+}
+
+@Composable
+fun NeifurTheme(content: @Composable () -> Unit) {
+    MaterialTheme(colorScheme = NeifurColorScheme, typography = NeifurTypography) {
         CompositionLocalProvider(LocalAccent provides Nf.Violet, content = content)
     }
 }

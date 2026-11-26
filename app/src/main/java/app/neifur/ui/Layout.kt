@@ -1,6 +1,7 @@
 package app.neifur.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -62,5 +63,5 @@ internal fun layoutFor(widthDp: Int, heightDp: Int): ScreenLayout {
 @Composable
 fun rememberScreenLayout(): ScreenLayout {
     val cfg = LocalConfiguration.current
-    return layoutFor(cfg.screenWidthDp, cfg.screenHeightDp)
+    return remember(cfg.screenWidthDp, cfg.screenHeightDp) { layoutFor(cfg.screenWidthDp, cfg.screenHeightDp) }
 }

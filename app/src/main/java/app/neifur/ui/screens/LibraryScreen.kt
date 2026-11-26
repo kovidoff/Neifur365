@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -149,7 +150,7 @@ class LibraryVm(private val c: Container) : ViewModel() {
  * show here at once; a long press edits an entry in place.
  */
 @Composable
-fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
+fun LibraryScreen(open: OpenAnime, scrollTopSignal: Int = 0, onDownloads: () -> Unit = {}) {
     val vm = nfViewModel { LibraryVm(it) }
     val account by vm.account.collectAsStateWithLifecycle()
     val expired by vm.expired.collectAsStateWithLifecycle()
@@ -186,13 +187,16 @@ fun LibraryScreen(open: OpenAnime, onDownloads: () -> Unit = {}) {
     val showTools = signedIn && lists.loaded && (lists.count(vm.status) > 0 || vm.query.isNotBlank() || vm.sort != ListSort.Default)
     val wide = vm.status != ListStatus.Planned && vm.status != ListStatus.Completed
 
+    val gridState = rememberLazyGridState()
+    LaunchedEffect(scrollTopSignal) { if (scrollTopSignal > 0) gridState.animateScrollToItem(0) }
+
     Box(Modifier.fillMaxSize()) {
         PullToRefreshBox(
             isRefreshing = signedIn && lists.loading && lists.loaded, onRefresh = { if (signedIn) vm.refresh() },
             modifier = Modifier.fillMaxSize(),
         ) {
             LazyVerticalGrid(
-                GridCells.Fixed(cols), modifier = Modifier.fillMaxSize().statusBarsPadding().imePadding(),
+                GridCells.Fixed(cols), state = gridState, modifier = Modifier.fillMaxSize().statusBarsPadding().imePadding(),
                 contentPadding = PaddingValues(start = padH, end = padH, bottom = 120.dp),
                 horizontalArrangement = Arrangement.spacedBy(if (layout.isTablet) 14.dp else 12.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -606,7 +610,11 @@ private fun WideRow(t: ListedTitle, modifier: Modifier, onOpen: () -> Unit, onEd
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box {
-            PosterImage(t.series?.posterUrlSmall ?: t.series?.posterUrl, Modifier.width(62.dp).aspectRatio(0.7f).clip(RoundedCornerShape(12.dp)))
+            val shape = RoundedCornerShape(12.dp)
+            PosterImage(
+                t.series?.posterUrlSmall ?: t.series?.posterUrl,
+                Modifier.sharedPoster("poster/lists/${t.entry.seriesId}", shape).width(62.dp).aspectRatio(0.7f).clip(shape),
+            )
             if (t.status == ListStatus.Watching && t.behind > 0) Text(
                 "+${t.behind}", style = Type.Caption.copy(fontSize = 11.sp), color = Nf.Ink,
                 modifier = Modifier.align(Alignment.TopStart).padding(4.dp).clip(RoundedCornerShape(7.dp)).background(Nf.Mint).padding(horizontal = 5.dp, vertical = 1.dp),
@@ -651,7 +659,10 @@ private fun GridCard(t: ListedTitle, modifier: Modifier, onOpen: () -> Unit, onE
     val haptic = LocalHapticFeedback.current
     Column(modifier.combinedClickable(onClick = onOpen, onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onEdit() })) {
         Box {
-            PosterImage(t.series?.posterUrl ?: t.series?.posterUrlSmall, Modifier.fillMaxWidth().aspectRatio(0.7f).clip(PosterShape))
+            PosterImage(
+                t.series?.posterUrl ?: t.series?.posterUrlSmall,
+                Modifier.sharedPoster("poster/lists/${t.entry.seriesId}", PosterShape).fillMaxWidth().aspectRatio(0.7f).clip(PosterShape),
+            )
             val mine = t.entry.score
             if (t.status == ListStatus.Completed && mine != null) Row(
                 Modifier.align(Alignment.TopStart).padding(7.dp).clip(RoundedCornerShape(9.dp)).background(Color(0xD9090910))

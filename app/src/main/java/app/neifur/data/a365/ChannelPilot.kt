@@ -24,6 +24,7 @@ data class ChannelState(
     val note: String? = null,
     /** The current channel was chosen by the app, not by hand. */
     val pickedByApp: Boolean = false,
+    val loadError: String? = null,
 ) {
     val testing: Boolean get() = measuring.isNotEmpty()
     val fastest: VideoChannel? get() = setup?.channels?.filter { speeds[it.id]?.works == true }?.maxByOrNull { speeds.getValue(it.id).bytesPerSec }
@@ -75,9 +76,13 @@ class ChannelPilot(
     }
 
     suspend fun load(): ChannelSetup? {
-        val s = runCatching { api.channels() }.getOrNull()
-        if (s != null) _state.update { it.copy(setup = s) }
-        return s
+        return runCatching { api.channels() }
+            .onSuccess { s -> _state.update { it.copy(setup = s, loadError = null) } }
+            .onFailure { e ->
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _state.update { it.copy(loadError = e.userMessage()) }
+            }
+            .getOrNull()
     }
 
     /** At most every few hours: is the channel still getting through? Fix it quietly if not. */
@@ -87,8 +92,9 @@ class ChannelPilot(
         if (now - prefs.channelCheckedAt() < BACKGROUND_EVERY) { load(); return@launch }
         // Not on the viewer's mobile data: the check waits for Wi-Fi (video that won't start is still fixed at once).
         if (metered()) { load(); return@launch }
-        ensureWorking()
-        prefs.setChannelCheckedAt(now)
+        if (ensureWorking() != null || _state.value.setup != null) {
+            prefs.setChannelCheckedAt(now)
+        }
     }
 
     /** Re-checks the current channel after switching networks (Wi-Fi <-> VPN <-> another Wi-Fi), locking onto a working one. */
@@ -97,7 +103,7 @@ class ChannelPilot(
         if (!prefs.channelAuto.first()) return@launch
         if (metered()) return@launch
         ensureWorking(preferSwitch = false)
-        prefs.setChannelCheckedAt(System.currentTimeMillis())
+        if (_state.value.setup != null) prefs.setChannelCheckedAt(System.currentTimeMillis())
     }
 
     /**
@@ -116,6 +122,7 @@ class ChannelPilot(
             }
             val others = setup.channels.filter { it.id != setup.current }
             coroutineScope { others.map { ch -> async { sample(ch, quick = true) } }.awaitAll() }
+            if (!prefs.channelAuto.first()) return@withLock null
             val best = _state.value.fastest ?: return@withLock null
             if (best.id == setup.current) return@withLock null
             switchTo(best, byApp = true, why = current?.let { "«${it.label}» не работает в вашей сети" })
@@ -140,7 +147,7 @@ class ChannelPilot(
     /** Measures every channel at once (Settings). In auto mode, then moves to the fastest if it's clearly better. */
     fun testAll() = scope.launch {
         lock.withLock {
-            val setup = _state.value.setup ?: load() ?: return@withLock
+            val setup = load() ?: _state.value.setup ?: return@withLock
             _state.update { it.copy(speeds = emptyMap(), note = null) }
             val light = metered()
             coroutineScope { setup.channels.map { ch -> async { sample(ch, quick = light) } }.awaitAll() }
@@ -191,9 +198,13 @@ class ChannelPilot(
 
     private suspend fun sample(ch: VideoChannel, quick: Boolean): ChannelSpeed {
         _state.update { it.copy(measuring = it.measuring + ch.id) }
-        val sp = if (quick) api.measure(ch, seconds = 3, maxBytes = 2_000_000) else api.measure(ch)
-        _state.update { it.copy(measuring = it.measuring - ch.id, speeds = it.speeds + (ch.id to sp)) }
-        return sp
+        return try {
+            val sp = if (quick) api.measure(ch, seconds = 3, maxBytes = 2_000_000) else api.measure(ch)
+            _state.update { it.copy(speeds = it.speeds + (ch.id to sp)) }
+            sp
+        } finally {
+            _state.update { it.copy(measuring = it.measuring - ch.id) }
+        }
     }
 
     private companion object { const val BACKGROUND_EVERY = 6 * 60 * 60 * 1000L }

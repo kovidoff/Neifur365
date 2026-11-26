@@ -1,7 +1,9 @@
 package app.neifur.data
 
 import android.content.Context
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -15,7 +17,10 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 
-private val Context.store by preferencesDataStore("neifur")
+private val Context.store by preferencesDataStore(
+    name = "neifur",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+)
 
 /** One episode's watch progress. The newest entry per anime drives "Continue watching". */
 @Serializable
@@ -216,12 +221,15 @@ class Prefs(private val context: Context) {
      * (pick key, display name) of the studios the viewer starred. They come first in every translation list and
      * are what a new title starts in. Kept under a new key: the old list filled itself with every studio tried.
      */
-    val favouriteStudios: Flow<List<Pair<String, String>>> = context.store.data.map { p ->
-        p[KEY_FAVOURITE_STUDIOS]?.lines().orEmpty().filter { it.isNotBlank() }.map { l ->
-            val key = l.substringBefore('\t')
-            key to (l.substringAfter('\t', "").ifBlank { key.substringAfter('|').replaceFirstChar { it.uppercase() } })
+    val favouriteStudios: Flow<List<Pair<String, String>>> = context.store.data
+        .map { it[KEY_FAVOURITE_STUDIOS] }
+        .distinctUntilChanged()
+        .map { raw ->
+            raw?.lines().orEmpty().filter { it.isNotBlank() }.map { l ->
+                val key = l.substringBefore('\t')
+                key to (l.substringAfter('\t', "").ifBlank { key.substringAfter('|').replaceFirstChar { it.uppercase() } })
+            }
         }
-    }.distinctUntilChanged()
 
     /** Stars or unstars a studio ([name] is how it's shown in Settings). */
     suspend fun toggleFavouriteStudio(key: String, name: String) = context.store.edit { p ->
@@ -243,13 +251,15 @@ class Prefs(private val context: Context) {
     suspend fun clearPicks() = context.store.edit { it.remove(KEY_PICKS); it.remove(KEY_FAVOURITE_AUTHORS) }
 
     // --- history and favourites ----------------------------------------------------------------------
-    val history: Flow<List<WatchEntry>> = context.store.data.map { p ->
-        p[KEY_HISTORY]?.let { runCatching { AppJson.decodeFromString(historySer, it) }.getOrNull() } ?: emptyList()
-    }.distinctUntilChanged()
+    val history: Flow<List<WatchEntry>> = context.store.data
+        .map { it[KEY_HISTORY] }
+        .distinctUntilChanged()
+        .map { raw -> raw?.let { runCatching { AppJson.decodeFromString(historySer, it) }.getOrNull() } ?: emptyList() }
 
-    val favorites: Flow<List<SavedAnime>> = context.store.data.map { p ->
-        p[KEY_FAVORITES]?.let { runCatching { AppJson.decodeFromString(favSer, it) }.getOrNull() } ?: emptyList()
-    }.distinctUntilChanged()
+    val favorites: Flow<List<SavedAnime>> = context.store.data
+        .map { it[KEY_FAVORITES] }
+        .distinctUntilChanged()
+        .map { raw -> raw?.let { runCatching { AppJson.decodeFromString(favSer, it) }.getOrNull() } ?: emptyList() }
 
     suspend fun saveProgress(e: WatchEntry) = context.store.edit { p ->
         val cur = p[KEY_HISTORY]?.let { runCatching { AppJson.decodeFromString(historySer, it) }.getOrNull() } ?: emptyList()

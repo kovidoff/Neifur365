@@ -134,6 +134,7 @@ fun AlertsSettings(signedIn: Boolean) {
     val permitted = rememberPermitted()
     val autostart = rememberAutostart()
     var denied by remember { mutableStateOf(false) }
+    LaunchedEffect(permitted) { if (permitted) denied = false }
     val toggle = rememberAlertsSwitch(onDenied = { denied = true })
     val active = on && signedIn
 
@@ -262,7 +263,8 @@ private fun RowScope.ModeTile(icon: ImageVector, title: String, caption: String,
 }
 
 private fun timeOf(ms: Long): String {
-    val today = System.currentTimeMillis() / 86_400_000L == ms / 86_400_000L
+    val zone = java.time.ZoneId.systemDefault()
+    val today = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDate() == java.time.LocalDate.now(zone)
     return SimpleDateFormat(if (today) "'в' HH:mm" else "d MMM 'в' HH:mm", Locale.forLanguageTag("ru")).format(Date(ms))
 }
 

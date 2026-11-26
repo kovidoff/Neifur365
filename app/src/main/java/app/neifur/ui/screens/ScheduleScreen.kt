@@ -1,15 +1,11 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package app.neifur.ui.screens
 
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -17,6 +13,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -28,6 +26,7 @@ import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -161,20 +160,26 @@ private val FULL_DAY_FMT = DateTimeFormatter.ofPattern("EEEE, d MMMM", RU)
 class ScheduleVm(private val c: Container) : ViewModel() {
     val lists = c.lists.state
     val state = MutableStateFlow<Load<List<Anime>>>(Load.Loading)
+    var refreshing by mutableStateOf(false)
+        private set
     var onlyMine by mutableStateOf(false)
     var selectedIdx by mutableIntStateOf(0)
 
     init { load() }
 
-    fun load() {
-        state.value = Load.Loading
+    fun load(pull: Boolean = false) {
+        if (pull && state.value is Load.Ready) refreshing = true else state.value = Load.Loading
         viewModelScope.launch {
-            state.value = runCatching {
+            runCatching {
                 val extra = c.lists.state.value.titles.values
                     .filter { it.airing && (it.status == ListStatus.Watching || it.status == ListStatus.Planned) }
                     .mapNotNull { it.series?.myAnimeListId?.takeIf { id -> id > 0 } }
                 c.shikimori.ongoingSchedule(extra)
-            }.fold({ Load.Ready(it) }, { Load.Error(it.userMessage()) })
+            }.fold(
+                { state.value = Load.Ready(it) },
+                { if (!pull || state.value !is Load.Ready) state.value = Load.Error(it.userMessage()) },
+            )
+            refreshing = false
         }
     }
 }
@@ -291,54 +296,63 @@ fun ScheduleScreen(open: OpenAnime, onBack: () -> Unit) {
             }
             is Load.Ready -> {
                 val now = remember(selectedIdx) { ZonedDateTime.now(zone) }
-                AnimatedContent(
-                    targetState = selectedIdx,
-                    label = "day",
-                    modifier = Modifier.weight(1f),
-                    transitionSpec = {
-                        val dir = if (targetState > initialState) 1 else -1
-                        (slideInHorizontally(tween(240, easing = FastOutSlowInEasing)) { dir * it / 6 } + fadeIn(tween(180))) togetherWith
-                            (slideOutHorizontally(tween(180)) { -dir * it / 8 } + fadeOut(tween(120)))
-                    },
-                ) { idx ->
-                    val day = days[idx]
-                    val dayList = schedule[day].orEmpty().let { l -> if (vm.onlyMine) l.filter { it.isMine } else l }
-                    val heading = when (idx) {
-                        0 -> "Сегодня, ${day.format(DATE_FMT)}"
-                        1 -> "Завтра, ${day.format(DATE_FMT)}"
-                        else -> day.format(FULL_DAY_FMT).replaceFirstChar { it.uppercase() }
+                val pagerState = rememberPagerState(initialPage = selectedIdx) { days.size }
+                LaunchedEffect(pagerState) {
+                    snapshotFlow { pagerState.currentPage }.collect { page ->
+                        if (vm.selectedIdx != page) vm.selectedIdx = page
                     }
-                    if (dayList.isEmpty()) {
-                        Column(
-                            Modifier.fillMaxSize().padding(top = 56.dp, start = 32.dp, end = 32.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            Box(Modifier.size(62.dp).clip(CircleShape).background(Nf.Surface), contentAlignment = Alignment.Center) {
-                                Icon(Icons.Rounded.EventBusy, null, tint = Nf.TextMute, modifier = Modifier.size(28.dp))
-                            }
-                            Text(heading, style = Type.Title, color = Nf.Text, modifier = Modifier.padding(top = 16.dp))
-                            Text(
-                                if (vm.onlyMine) "В этот день нет серий из ваших списков" else "На этот день нет запланированных серий",
-                                style = Type.Body, color = Nf.TextDim, modifier = Modifier.padding(top = 6.dp),
-                            )
+                }
+                LaunchedEffect(selectedIdx) {
+                    if (pagerState.currentPage != selectedIdx) pagerState.animateScrollToPage(selectedIdx)
+                }
+                PullToRefreshBox(
+                    isRefreshing = vm.refreshing,
+                    onRefresh = { vm.load(pull = true) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    HorizontalPager(
+                        state = pagerState,
+                        modifier = Modifier.fillMaxSize(),
+                    ) { idx ->
+                        val day = days[idx]
+                        val dayList = schedule[day].orEmpty().let { l -> if (vm.onlyMine) l.filter { it.isMine } else l }
+                        val heading = when (idx) {
+                            0 -> "Сегодня, ${day.format(DATE_FMT)}"
+                            1 -> "Завтра, ${day.format(DATE_FMT)}"
+                            else -> day.format(FULL_DAY_FMT).replaceFirstChar { it.uppercase() }
                         }
-                    } else {
-                        LazyColumn(
-                            Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            item(key = "day-head") {
-                                Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text(heading, style = Type.Section, color = Nf.Text, modifier = Modifier.weight(1f))
-                                    Text(
-                                        "${dayList.size} ${plural(dayList.size, "серия", "серии", "серий")}",
-                                        style = Type.Caption, color = Nf.TextMute,
-                                    )
+                        if (dayList.isEmpty()) {
+                            Column(
+                                Modifier.fillMaxSize().padding(top = 56.dp, start = 32.dp, end = 32.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Box(Modifier.size(62.dp).clip(CircleShape).background(Nf.Surface), contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Rounded.EventBusy, null, tint = Nf.TextMute, modifier = Modifier.size(28.dp))
                                 }
+                                Text(heading, style = Type.Title, color = Nf.Text, modifier = Modifier.padding(top = 16.dp))
+                                Text(
+                                    if (vm.onlyMine) "В этот день нет серий из ваших списков" else "На этот день нет запланированных серий",
+                                    style = Type.Body, color = Nf.TextDim, modifier = Modifier.padding(top = 6.dp),
+                                )
                             }
-                            items(dayList, key = { it.malId }) { item ->
-                                ScheduleCard(item, now, onLongClick = { quick = item }) { open(item.stub(), "schedule") }
+                        } else {
+                            LazyColumn(
+                                Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                item(key = "day-head") {
+                                    Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(heading, style = Type.Section, color = Nf.Text, modifier = Modifier.weight(1f))
+                                        Text(
+                                            "${dayList.size} ${plural(dayList.size, "серия", "серии", "серий")}",
+                                            style = Type.Caption, color = Nf.TextMute,
+                                        )
+                                    }
+                                }
+                                items(dayList, key = { it.malId }) { item ->
+                                    ScheduleCard(item, now, onLongClick = { quick = item }) { open(item.stub(), "schedule") }
+                                }
                             }
                         }
                     }
@@ -385,7 +399,11 @@ private fun ScheduleCard(item: ScheduleItem, now: ZonedDateTime, onLongClick: ()
             .padding(11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PosterImage(item.poster, Modifier.width(56.dp).aspectRatio(0.7f).clip(RoundedCornerShape(12.dp)))
+        val posterShape = RoundedCornerShape(12.dp)
+        PosterImage(
+            item.poster,
+            Modifier.sharedPoster("poster/schedule/${item.stub().id}", posterShape).width(56.dp).aspectRatio(0.7f).clip(posterShape),
+        )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(item.title, style = Type.Title.copy(fontSize = 15.sp), color = Nf.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)

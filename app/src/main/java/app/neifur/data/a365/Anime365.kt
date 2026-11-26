@@ -194,7 +194,12 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
             ?: live.filter { it.health == MirrorHealth.Ok }.minByOrNull { it.millis }
             ?: live.minByOrNull { it.millis }
             ?: throw ApiError("Не удалось связаться с Anime 365. Проверьте интернет или VPN")
-        prefs.setMirror(pick.host)
+        if (!manual && exclude != null) {
+            // Auto mode: save new working mirror; manual mode keeps user's pick unless cur == null.
+            prefs.setMirror(pick.host)
+        } else if (cur == null || (manual && exclude == null)) {
+            prefs.setMirror(pick.host)
+        }
         pick.host
     }
 
@@ -231,14 +236,21 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
         val first = host()
         try {
             return block("https://$first")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             val mirrorDown = e is MirrorBlockedException || (e is IOException && (e !is HttpError || e.code >= 500))
             if (!mirrorDown) throw e
             // Transient socket drop: retry once quickly; hard failures (DNS/connect/timeout/SSL/Cloudflare) fail over immediately.
             if (!isHardMirrorFailure(e)) {
-                runCatching { return block("https://$first") }
+                try {
+                    return block("https://$first")
+                } catch (c: kotlinx.coroutines.CancellationException) {
+                    throw c
+                } catch (_: Exception) {
+                }
             }
-            val next = resolveMirror(exclude = first, forceReprobe = true)
+            val next = resolveMirror(exclude = first, forceReprobe = false)
             return block("https://$next")
         }
     }
@@ -342,7 +354,13 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
     /** Cards for many titles in one request (lists from the site carry only ids and names). */
     suspend fun cards(ids: List<Long>): List<Series> = coroutineScope {
         ids.distinct().chunked(40).map { chunk ->
-            async { api("/series?fields=$CARD_FIELDS&limit=${chunk.size}&" + chunk.joinToString("&") { "id[]=$it" }, seriesList) }
+            async {
+                translationGate.withPermit {
+                    runCatching {
+                        api("/series?fields=$CARD_FIELDS&limit=${chunk.size}&" + chunk.joinToString("&") { "id[]=$it" }, seriesList)
+                    }.getOrDefault(emptyList())
+                }
+            }
         }.awaitAll().flatten()
     }
 

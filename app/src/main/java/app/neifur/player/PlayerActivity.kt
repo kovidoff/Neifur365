@@ -233,10 +233,21 @@ class PlayerActivity : ComponentActivity() {
         lifecycleScope.launch {
             snapshotFlow { listOf(player.paused, player.loaded, player.ended, player.speed, index, player.duration.toInt(), stream.current?.id, sessionState?.anime?.id) }.collect { syncMedia() }
         }
-
-        // Progress is saved on a timer so a crash or a swipe-away never loses more than a few seconds.
         lifecycleScope.launch {
-            while (isActive) { delay(5000); syncMedia(); if (!player.paused) { saveProgress(); markIfWatched() } }
+            snapshotFlow { player.paused }.drop(1).collect { paused -> if (paused && player.loaded) saveProgress() }
+        }
+
+        // Progress is persisted every 20 s during playback (plus immediately on pause, EOF, stop, and episode switch).
+        lifecycleScope.launch {
+            var tick = 0
+            while (isActive) {
+                delay(5000)
+                syncMedia()
+                if (!player.paused) {
+                    markIfWatched()
+                    if (++tick >= 4) { tick = 0; saveProgress() }
+                }
+            }
         }
         // Stall watchdog: Anime 365's video servers sometimes drop the extra connection a seek opens, and the
         // picture freezes for good. After 8 s stuck, reopen the episode at the same spot with fresh links.

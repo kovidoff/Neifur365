@@ -168,6 +168,11 @@ private fun AppRoot() {
         nav.navigate("downloads") { launchSingleTop = true }
     }
 
+    var homeTop by remember { mutableIntStateOf(0) }
+    var catalogTop by remember { mutableIntStateOf(0) }
+    var listsTop by remember { mutableIntStateOf(0) }
+    var catalogFocusSearch by remember { mutableStateOf(false) }
+
     SharedTransitionLayout {
         CompositionLocalProvider(LocalSharedScope provides this) {
             Box(Modifier.fillMaxSize().background(Nf.Ink)) {
@@ -206,19 +211,26 @@ private fun AppRoot() {
                         CompositionLocalProvider(LocalNavAnimScope provides this) {
                             HomeScreen(
                                 open,
-                                onSearch = { nav.switchTab("catalog") },
+                                scrollTopSignal = homeTop,
+                                onSearch = { catalogFocusSearch = true; nav.switchTab("catalog") },
                                 onDownloads = { nav.navigate("downloads") { launchSingleTop = true } },
                             )
                         }
                     }
                     composable("catalog") {
                         CompositionLocalProvider(LocalNavAnimScope provides this) {
-                            CatalogScreen(open, onSchedule = { nav.navigate("schedule") { launchSingleTop = true } })
+                            CatalogScreen(
+                                open,
+                                focusSearch = catalogFocusSearch,
+                                onSearchFocused = { catalogFocusSearch = false },
+                                scrollTopSignal = catalogTop,
+                                onSchedule = { nav.navigate("schedule") { launchSingleTop = true } },
+                            )
                         }
                     }
                     composable("library") {
                         CompositionLocalProvider(LocalNavAnimScope provides this) {
-                            LibraryScreen(open, onDownloads = { nav.navigate("downloads") { launchSingleTop = true } })
+                            LibraryScreen(open, scrollTopSignal = listsTop, onDownloads = { nav.navigate("downloads") { launchSingleTop = true } })
                         }
                     }
                     composable("settings") {
@@ -291,7 +303,17 @@ private fun AppRoot() {
                     exit = slideOutVertically(tween(220)) { it } + fadeOut(tween(160)),
                     modifier = Modifier.align(Alignment.BottomCenter),
                 ) {
-                    BottomBar(route ?: "home") { nav.switchTab(it) }
+                    BottomBar(route ?: "home") { target ->
+                        if (route == target) {
+                            when (target) {
+                                "home" -> homeTop++
+                                "catalog" -> catalogTop++
+                                "library" -> listsTop++
+                            }
+                        } else {
+                            nav.switchTab(target)
+                        }
+                    }
                 }
 
                 // The welcome flow sits over the app, so Home is already loaded underneath when it lifts away.

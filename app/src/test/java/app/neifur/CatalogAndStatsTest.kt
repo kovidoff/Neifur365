@@ -48,6 +48,9 @@ class CatalogAndStatsTest {
 
         // When everything is excluded, returns null so caller can start a new cycle.
         assertNull(pickRandomSeries(pool, excludeIds = setOf(1, 2, 3), listedIds = emptySet(), hideListed = false, random = rng))
+
+        // Strictly hiding listed titles returns null when all unseen items in pool are already listed.
+        assertNull(pickRandomSeries(pool, excludeIds = setOf(1), listedIds = setOf(2, 3), hideListed = true, random = rng, strictHideListed = true))
     }
 
     @Test

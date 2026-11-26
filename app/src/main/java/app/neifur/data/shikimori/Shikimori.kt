@@ -9,7 +9,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -21,6 +23,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.ConcurrentHashMap
 
 @Serializable
 data class Poster(val originalUrl: String? = null, val mainUrl: String? = null, val main2xUrl: String? = null) {
@@ -157,6 +160,8 @@ fun cleanDescription(raw: String?): String {
 class ShikimoriApi(private val http: OkHttpClient) {
     private val endpoint = "https://shikimori.io/api/graphql"
     private val media = "application/json".toMediaType()
+    private val detailCache = ConcurrentHashMap<String, Pair<Long, Anime>>()
+    private val castCache = ConcurrentHashMap<String, Pair<Long, AnimeCast>>()
 
     // Shikimori allows 5 rps / 90 rpm. A small gate keeps bursts (home + detail + franchise) polite.
     private val gate = Mutex()
@@ -178,12 +183,13 @@ class ShikimoriApi(private val http: OkHttpClient) {
                 val text = http.newCall(
                     Request.Builder().url(endpoint).post(payload.toRequestBody(media)).build()
                 ).awaitText()
-                val root = AppJson.parseToJsonElement(text).jsonObject
+                val root = runCatching { AppJson.parseToJsonElement(text) as? JsonObject }.getOrNull()
+                    ?: throw ApiError("Shikimori ответил некорректно")
                 root["errors"]?.let { errs ->
-                    val msg = runCatching { errs.jsonArray.first().jsonObject["message"].toString().trim('"') }.getOrNull()
+                    val msg = runCatching { (errs as? JsonArray)?.firstOrNull()?.jsonObject?.get("message")?.toString()?.trim('"') }.getOrNull()
                     throw ApiError("Shikimori: ${msg ?: "ошибка запроса"}")
                 }
-                return@withContext root["data"]!!.jsonObject
+                return@withContext (root["data"] as? JsonObject) ?: throw ApiError("Shikimori вернул пустой ответ")
             } catch (e: app.neifur.core.HttpError) {
                 if (e.code == 429 && attempt++ < 3) delay(900L * attempt) else throw e
             }
@@ -191,9 +197,21 @@ class ShikimoriApi(private val http: OkHttpClient) {
         @Suppress("UNREACHABLE_CODE") error("unreachable")
     }
 
-    private inline fun <reified T> JsonElement?.decode(): T = AppJson.decodeFromJsonElement(this!!)
+    private inline fun <reified T> JsonElement?.decodeList(): List<T> {
+        val el = this ?: return emptyList()
+        if (el is JsonNull) return emptyList()
+        return runCatching { AppJson.decodeFromJsonElement<List<T>>(el) }.getOrDefault(emptyList())
+    }
+
+    private fun <V> trimCache(cache: ConcurrentHashMap<String, Pair<Long, V>>) {
+        if (cache.size <= 64) return
+        val oldest = cache.entries.minByOrNull { it.value.first }?.key ?: return
+        cache.remove(oldest)
+    }
 
     suspend fun detail(id: String): Anime {
+        val now = System.currentTimeMillis()
+        detailCache[id]?.takeIf { now - it.first < 5 * 60_000L }?.let { return it.second }
         val d = query(
             """
             { animes(ids: "$id", limit: 1, censored: false) {
@@ -209,10 +227,15 @@ class ShikimoriApi(private val http: OkHttpClient) {
             } }
             """.trimIndent()
         )
-        return d["animes"].decode<List<Anime>>().firstOrNull() ?: throw ApiError("Тайтл не найден")
+        return d["animes"].decodeList<Anime>().firstOrNull()?.also {
+            trimCache(detailCache)
+            detailCache[id] = System.currentTimeMillis() to it
+        } ?: throw ApiError("Тайтл не найден")
     }
 
     suspend fun cast(id: String): AnimeCast {
+        val now = System.currentTimeMillis()
+        castCache[id]?.takeIf { now - it.first < 5 * 60_000L }?.let { return it.second }
         val d = query(
             """
             { animes(ids: "$id", limit: 1, censored: false) {
@@ -221,11 +244,15 @@ class ShikimoriApi(private val http: OkHttpClient) {
             } }
             """.trimIndent()
         )
-        val a = d["animes"]!!.jsonArray.firstOrNull()?.jsonObject ?: return AnimeCast(emptyList(), emptyList())
-        val chars = a["characterRoles"].decode<List<CharacterRole>>().filter { it.character != null }
+        val a = (d["animes"] as? JsonArray)?.firstOrNull() as? JsonObject
+            ?: return AnimeCast(emptyList(), emptyList())
+        val chars = a["characterRoles"].decodeList<CharacterRole>().filter { it.character != null }
             .sortedByDescending { it.isMain }.take(24)
-        val staff = a["personRoles"].decode<List<PersonRole>>().filter { it.person != null }
-        return AnimeCast(chars, staff)
+        val staff = a["personRoles"].decodeList<PersonRole>().filter { it.person != null }
+        return AnimeCast(chars, staff).also {
+            trimCache(castCache)
+            castCache[id] = System.currentTimeMillis() to it
+        }
     }
 
     /** Currently airing anime with their next episode timestamps; merges any extra MAL IDs from the user's lists. */
@@ -235,13 +262,13 @@ class ShikimoriApi(private val http: OkHttpClient) {
             airedOn { year } poster { originalUrl mainUrl main2xUrl }
         """.trimIndent()
         val popular = query("""{ animes(status: "ongoing", order: popularity, limit: 50, censored: false) { $fields } }""")["animes"]
-            .decode<List<Anime>>()
+            .decodeList<Anime>()
         val have = popular.mapTo(HashSet()) { it.id }
         val missing = extraMalIds.filter { it > 0L && it.toString() !in have }.distinct().take(50)
         val extra = if (missing.isEmpty()) emptyList() else runCatching {
             val ids = missing.joinToString(",")
             query("""{ animes(ids: "$ids", limit: ${missing.size}, censored: false) { $fields } }""")["animes"]
-                .decode<List<Anime>>()
+                .decodeList<Anime>()
         }.getOrDefault(emptyList())
         return (popular + extra).distinctBy { it.id }
     }

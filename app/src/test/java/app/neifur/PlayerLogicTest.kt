@@ -23,6 +23,7 @@ import app.neifur.player.shouldAutoAdvance
 import app.neifur.player.shouldFinishOnStop
 import app.neifur.player.shouldThrottle
 import app.neifur.player.speedLabel
+import app.neifur.player.subPosForFill
 import app.neifur.player.time
 import androidx.compose.ui.unit.dp
 import app.neifur.ui.screens.continueLine
@@ -170,5 +171,13 @@ class PlayerLogicTest {
         val (cappedW, cappedH) = fixedSurfaceBufferSize(3840, 1600)
         assertEquals(2560, cappedW)
         assertEquals(0, cappedH % 2)
+    }
+
+    @Test fun subPosLiftsOnTallDisplaysInFillMode() {
+        assertEquals(100, subPosForFill(fill = false, videoAspect = 16f / 9f, areaW = 2400, areaH = 1080))
+        assertEquals(100, subPosForFill(fill = true, videoAspect = 16f / 9f, areaW = 1920, areaH = 1080))
+        val lifted = subPosForFill(fill = true, videoAspect = 16f / 9f, areaW = 2400, areaH = 1080)
+        assertTrue(lifted in 85..92)
+        assertEquals(72, subPosForFill(fill = true, videoAspect = 16f / 9f, areaW = 5000, areaH = 1080))
     }
 }

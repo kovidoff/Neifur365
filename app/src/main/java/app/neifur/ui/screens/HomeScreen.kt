@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package app.neifur.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
@@ -29,6 +31,7 @@ import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,6 +88,8 @@ data class HomeFeed(val ongoing: List<Series>, val popular: List<Series>, val th
 
 class HomeVm(private val c: Container) : ViewModel() {
     val feed = MutableStateFlow<Load<HomeFeed>>(Load.Loading)
+    var refreshing by mutableStateOf(false)
+        private set
     /** Rows that already played their entrance: scrolling back to them must not replay it. */
     val appeared = HashSet<String>()
     /** The viewer's Anime 365 lists: what's new in "Смотрю", and which posters are already in a list. */
@@ -104,10 +109,10 @@ class HomeVm(private val c: Container) : ViewModel() {
 
     fun forgetHistory(animeId: String) = viewModelScope.launch { c.prefs.removeFromHistory(animeId) }
 
-    fun load() {
-        feed.value = Load.Loading
+    fun load(pull: Boolean = false) {
+        if (pull && feed.value is Load.Ready) refreshing = true else feed.value = Load.Loading
         viewModelScope.launch {
-            feed.value = runCatching {
+            runCatching {
                 coroutineScope {
                     val year = java.time.LocalDate.now().year
                     val ongoing = async { c.a365.catalog(airing = true, limit = 30) }
@@ -116,13 +121,17 @@ class HomeVm(private val c: Container) : ViewModel() {
                     val movies = async { c.a365.catalog(type = "movie", limit = 24) }
                     HomeFeed(ongoing.await(), popular.await(), thisYear.await().filterNot { it.airing }, movies.await())
                 }
-            }.fold({ Load.Ready(it) }, { Load.Error(it.userMessage()) })
+            }.fold(
+                { feed.value = Load.Ready(it) },
+                { if (!pull || feed.value !is Load.Ready) feed.value = Load.Error(it.userMessage()) },
+            )
+            refreshing = false
         }
     }
 }
 
 @Composable
-fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = {}) {
+fun HomeScreen(open: OpenAnime, scrollTopSignal: Int = 0, onSearch: () -> Unit, onDownloads: () -> Unit = {}) {
     val vm = nfViewModel { HomeVm(it) }
     val ctx = LocalContext.current
     val feed by vm.feed.collectAsStateWithLifecycle()
@@ -136,6 +145,7 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = 
     val marks = remember(lists) { lists.titles.mapValues { it.value.status } }
     LifecycleResumeEffect(Unit) { vm.refreshLists(); onPauseOrDispose {} }
     val listState = rememberLazyListState()
+    LaunchedEffect(scrollTopSignal) { if (scrollTopSignal > 0) listState.animateScrollToItem(0) }
     val layout = rememberScreenLayout()
     val padH = layout.horizontalPadding
     var quick by remember { mutableStateOf<Triple<AnimeStub, Series?, Boolean>?>(null) }
@@ -167,27 +177,33 @@ fun HomeScreen(open: OpenAnime, onSearch: () -> Unit, onDownloads: () -> Unit = 
             }
             else -> {
                 val data = (f as? Load.Ready)?.value
-                LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 120.dp)) {
-                    item(key = "hero", contentType = "hero") {
-                        val heroVisible by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
-                        if (data == null) HeroSkeleton(layout) else Hero(data.ongoing.take(7), visible = heroVisible, layout = layout, open = open) { a -> showQuick(a.stub(), a, "hero", false) }
-                    }
-                    if (cont.isNotEmpty()) item(key = "continue", contentType = "continue") {
-                        Appear("continue", 0, vm.appeared) { ContinueRow(cont, lists.titles, padH, open) { s -> showQuick(s, null, "continue", true) } }
-                    }
-                    if (fresh.isNotEmpty()) item(key = "fresh", contentType = "fresh") {
-                        Appear("fresh", 1, vm.appeared) { FreshRow(fresh, layout, open) { s -> showQuick(s.stub(), s, "fresh", false) } }
-                    }
-                    val rows = listOf(
-                        "ongoing" to "Сейчас выходит", "year" to "Новинки года", "popular" to "Самое популярное", "movies" to "Полнометражные",
-                    )
-                    rows.forEachIndexed { i, (key, title) ->
-                        item(key = key, contentType = "row") {
-                            val list = when (key) {
-                                "ongoing" -> data?.ongoing?.drop(7); "year" -> data?.thisYear; "popular" -> data?.popular
-                                else -> data?.movies
+                PullToRefreshBox(
+                    isRefreshing = vm.refreshing,
+                    onRefresh = { vm.load(pull = true); vm.refreshLists() },
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 120.dp)) {
+                        item(key = "hero", contentType = "hero") {
+                            val heroVisible by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
+                            if (data == null) HeroSkeleton(layout) else Hero(data.ongoing.take(7), visible = heroVisible, layout = layout, open = open) { a -> showQuick(a.stub(), a, "hero", false) }
+                        }
+                        if (cont.isNotEmpty()) item(key = "continue", contentType = "continue") {
+                            Appear("continue", 0, vm.appeared) { ContinueRow(cont, lists.titles, padH, open) { s -> showQuick(s, null, "continue", true) } }
+                        }
+                        if (fresh.isNotEmpty()) item(key = "fresh", contentType = "fresh") {
+                            Appear("fresh", 1, vm.appeared) { FreshRow(fresh, layout, open) { s -> showQuick(s.stub(), s, "fresh", false) } }
+                        }
+                        val rows = listOf(
+                            "ongoing" to "Сейчас выходит", "year" to "Новинки года", "popular" to "Самое популярное", "movies" to "Полнометражные",
+                        )
+                        rows.forEachIndexed { i, (key, title) ->
+                            item(key = key, contentType = "row") {
+                                val list = when (key) {
+                                    "ongoing" -> data?.ongoing?.drop(7); "year" -> data?.thisYear; "popular" -> data?.popular
+                                    else -> data?.movies
+                                }
+                                Appear(key, i + 2, vm.appeared, ready = list != null) { AnimeRow(title, key, list, marks, layout, open) { a -> showQuick(a.stub(), a, key, false) } }
                             }
-                            Appear(key, i + 2, vm.appeared, ready = list != null) { AnimeRow(title, key, list, marks, layout, open) { a -> showQuick(a.stub(), a, key, false) } }
                         }
                     }
                 }
@@ -367,13 +383,13 @@ private fun Hero(items: List<Series>, visible: Boolean, layout: ScreenLayout, op
     Box(Modifier.fillMaxWidth().height(height)) {
         HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
             val a = items[page]
-            val offset = (pager.currentPage - page) + pager.currentPageOffsetFraction
             Box(Modifier.fillMaxSize().clipToBounds().pressable(0.985f, onLongClick = { onLongPress(a) }) { open(a.stub(), "hero") }) {
                 if (layout.isTablet) {
                     // Wide screens: ambient blurred backdrop + crisp full vertical poster on the right, so characters are never brutally cropped.
                     PosterImage(
                         a.posterUrl, cacheKey = a.posterUrl,
                         modifier = Modifier.fillMaxSize().graphicsLayer {
+                            val offset = (pager.currentPage - page) + pager.currentPageOffsetFraction
                             translationX = offset * size.width * 0.24f
                             scaleX = 1.28f; scaleY = 1.28f
                         }.blur(38.dp).alpha(0.52f),
@@ -407,12 +423,17 @@ private fun Hero(items: List<Series>, visible: Boolean, layout: ScreenLayout, op
                             open = open,
                             titleSize = 30.sp,
                             modifier = Modifier.weight(1f).padding(end = 36.dp).widthIn(max = 560.dp)
-                                .graphicsLayer { alpha = 1f - (offset.absoluteValue * 1.6f).coerceIn(0f, 1f); translationX = -offset * 52.dp.toPx() },
+                                .graphicsLayer {
+                                    val offset = (pager.currentPage - page) + pager.currentPageOffsetFraction
+                                    alpha = 1f - (offset.absoluteValue * 1.6f).coerceIn(0f, 1f)
+                                    translationX = -offset * 52.dp.toPx()
+                                },
                         )
                         PosterImage(
                             a.posterUrl, cacheKey = a.posterUrl,
                             modifier = Modifier
                                 .graphicsLayer {
+                                    val offset = (pager.currentPage - page) + pager.currentPageOffsetFraction
                                     alpha = 1f - (offset.absoluteValue * 1.2f).coerceIn(0f, 1f)
                                     translationX = offset * 48.dp.toPx()
                                 }
@@ -426,6 +447,7 @@ private fun Hero(items: List<Series>, visible: Boolean, layout: ScreenLayout, op
                     PosterImage(
                         a.posterUrl, cacheKey = a.posterUrl,
                         modifier = Modifier.fillMaxSize().graphicsLayer {
+                            val offset = (pager.currentPage - page) + pager.currentPageOffsetFraction
                             // Parallax: the artwork lags behind the page, the text doesn't.
                             translationX = offset * size.width * 0.32f
                             val s = 1.08f + offset.absoluteValue * 0.06f
@@ -445,7 +467,11 @@ private fun Hero(items: List<Series>, visible: Boolean, layout: ScreenLayout, op
                         open = open,
                         titleSize = Type.Hero.fontSize,
                         modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = 20.dp).padding(bottom = 44.dp)
-                            .graphicsLayer { alpha = 1f - (offset.absoluteValue * 1.6f).coerceIn(0f, 1f); translationX = -offset * 60.dp.toPx() },
+                            .graphicsLayer {
+                                val offset = (pager.currentPage - page) + pager.currentPageOffsetFraction
+                                alpha = 1f - (offset.absoluteValue * 1.6f).coerceIn(0f, 1f)
+                                translationX = -offset * 60.dp.toPx()
+                            },
                     )
                 }
             }

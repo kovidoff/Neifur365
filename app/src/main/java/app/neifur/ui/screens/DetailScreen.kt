@@ -580,6 +580,8 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                 }
                 .background(Nf.Ink)
         ) {
+            val desc = remember(anime?.description) { anime?.description?.let(::cleanDescription).orEmpty() }
+            val genres = remember(anime?.genres) { anime?.genres?.filter { it.kind != "theme" || anime.genres.size < 6 }.orEmpty() }
             if (layout.isExpanded) {
                 // Wide tablet layout: full-width cinematic Hero, balanced 2-column Bento body, full-width media carousels.
                 val padH = 36.dp
@@ -590,7 +592,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                 ) {
                     item(key = "hero") {
                         TabletHero(
-                            stub = stub, anime = anime, origin = origin, accent = accent,
+                            stub = stub, anime = anime, origin = origin, sharedId = id, accent = accent,
                             listState = listState, pending = vm.extrasPending,
                             play = play, history = history, isMovie = isMovie, signedIn = signedIn,
                             isTargetDownloaded = isTargetDownloaded, favorite = favorite, vm = vm, padH = padH,
@@ -622,9 +624,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
 
                     if (anime != null) {
                         item(key = "bento") {
-                            val desc = cleanDescription(anime.description)
-                            val genres = anime.genres.filter { it.kind != "theme" || anime.genres.size < 6 }
-                            val hasScores = anime.scoresStats.sumOf { it.count } > 20
+                            val hasScores = remember(anime.scoresStats) { anime.scoresStats.sumOf { it.count } > 20 }
                             Row(
                                 Modifier.fillMaxWidth().padding(horizontal = padH).padding(top = 22.dp),
                                 horizontalArrangement = Arrangement.spacedBy(28.dp),
@@ -657,7 +657,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                         contentPadding = PaddingValues(bottom = 56.dp),
                         modifier = (if (layout.isTablet) Modifier.widthIn(max = 720.dp) else Modifier).fillMaxSize(),
                     ) {
-                        item(key = "hero") { Hero(stub, anime, origin, accent, listState) }
+                        item(key = "hero") { Hero(stub, anime, origin, id, accent, listState) }
 
                         item(key = "meta") { MetaChips(anime, vm.extrasPending, Modifier.reveal(1)) }
 
@@ -675,17 +675,39 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                             )
                         }
 
-                        detailInfoItems(vm, anime, id, accent, open, ctx, includeMeta = false)
+                        detailInfoItems(vm, anime, id, desc, genres, accent, open, ctx, includeMeta = false)
                     }
                 }
             }
 
-            CollapsingBar(stub?.title.orEmpty(), listState, onBack)
+            val shareScope = rememberCoroutineScope()
+            val canShare = vm.seriesId != null && stub != null
+            CollapsingBar(
+                stub?.title.orEmpty(),
+                listState,
+                onBack = onBack,
+                onShare = if (canShare) ({
+                    val sid = vm.seriesId!!
+                    val title = stub!!.title
+                    shareScope.launch {
+                        val base = runCatching { ctx.container.a365.baseUrl() }.getOrDefault("https://anime365.ru")
+                        val shareText = "$title\n$base/catalog/$sid"
+                        runCatching {
+                            ctx.startActivity(
+                                Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, shareText),
+                                    "Поделиться",
+                                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    }
+                }) else null,
+            )
 
             var lastNotice by remember { mutableStateOf("") }
             if (vm.notice != null) lastNotice = vm.notice!!
             AnimatedVisibility(
-                vm.notice != null, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(20.dp),
+                vm.notice != null && sheet == null, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(20.dp),
                 enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut(),
             ) {
                 Text(
@@ -705,6 +727,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                 preferred = runCatching { TranslationKind.valueOf(preferred) }.getOrDefault(TranslationKind.VoiceRu),
                 onStart = { s, i -> sheet = null; startFor = null; vm.start(ctx, s, i) },
                 downloads = downloads,
+                notice = vm.notice,
                 onDownload = vm::download,
                 onDownloadBatch = vm::downloadBatch,
                 onCancelDownload = vm::cancelDownload,
@@ -764,7 +787,7 @@ private fun DetailActionsBlock(
 }
 
 private fun LazyListScope.detailInfoItems(
-    vm: DetailVm, anime: Anime?, id: String, accent: Color, open: OpenAnime, ctx: Context,
+    vm: DetailVm, anime: Anime?, id: String, desc: String, genres: List<Genre>, accent: Color, open: OpenAnime, ctx: Context,
     includeMeta: Boolean = true,
 ) {
     if (includeMeta) item(key = "meta") { MetaChips(anime, vm.extrasPending, Modifier.reveal(1)) }
@@ -786,10 +809,8 @@ private fun LazyListScope.detailInfoItems(
     if (anime == null && vm.error == null && !vm.offlineFallback) item(key = "skeleton") { SectionsSkeleton(Modifier.reveal(3)) }
 
     if (anime != null) {
-        val desc = cleanDescription(anime.description)
         if (desc.isNotBlank()) item(key = "desc") { Description(desc, Modifier.animateItem().reveal(3)) }
 
-        val genres = anime.genres.filter { it.kind != "theme" || anime.genres.size < 6 }
         if (genres.isNotEmpty()) item(key = "genres") {
             FlowRow(
                 Modifier.animateItem().reveal(4).padding(horizontal = 20.dp).padding(top = 16.dp),
@@ -858,7 +879,7 @@ private fun LazyListScope.detailMediaItems(
 
 @Composable
 private fun TabletHero(
-    stub: AnimeStub?, anime: Anime?, origin: String, accent: Color,
+    stub: AnimeStub?, anime: Anime?, origin: String, sharedId: String, accent: Color,
     listState: LazyListState, pending: Boolean,
     play: PlayState, history: List<WatchEntry>, isMovie: Boolean, signedIn: Boolean, isTargetDownloaded: Boolean,
     favorite: Boolean, vm: DetailVm, padH: androidx.compose.ui.unit.Dp,
@@ -874,7 +895,7 @@ private fun TabletHero(
         ) {
             PosterImage(
                 stub?.poster,
-                Modifier.sharedPoster("poster/$origin/${stub?.id}", HeroShape).size(164.dp, 234.dp)
+                Modifier.sharedPoster("poster/$origin/$sharedId", HeroShape).size(164.dp, 234.dp)
                     .shadow(28.dp, HeroShape, ambientColor = accent, spotColor = accent).clip(HeroShape)
                     .border(1.dp, Color(0x26FFFFFF), HeroShape),
             )
@@ -979,7 +1000,7 @@ private fun DetailTitleBlock(stub: AnimeStub?, anime: Anime?, titleSize: android
 }
 
 @Composable
-private fun Hero(stub: AnimeStub?, anime: Anime?, origin: String, accent: Color, listState: LazyListState) {
+private fun Hero(stub: AnimeStub?, anime: Anime?, origin: String, sharedId: String, accent: Color, listState: LazyListState) {
     val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val backdropH = 250.dp + top
     Box(Modifier.fillMaxWidth()) {
@@ -992,7 +1013,7 @@ private fun Hero(stub: AnimeStub?, anime: Anime?, origin: String, accent: Color,
         ) {
             PosterImage(
                 stub?.poster,
-                Modifier.sharedPoster("poster/$origin/${stub?.id}", HeroShape).size(PosterW, PosterH)
+                Modifier.sharedPoster("poster/$origin/$sharedId", HeroShape).size(PosterW, PosterH)
                     .shadow(28.dp, HeroShape, ambientColor = accent, spotColor = accent).clip(HeroShape)
                     .border(1.dp, Color(0x1FFFFFFF), HeroShape),
             )
@@ -1413,28 +1434,40 @@ private fun Videos(videos: List<Video>, modifier: Modifier, padH: androidx.compo
     }
 }
 
+private val YT_REGEX = Regex("""(?:youtu\.be/|youtube\.com/(?:watch\?v=|embed/))([\w-]{11})""")
+
 /** Shikimori gives scheme-less thumbnail URLs ("//img.youtube.com/..."); YouTube ones get a sharper variant. */
 private fun thumb(v: Video): String? {
-    val yt = Regex("""(?:youtu\.be/|youtube\.com/(?:watch\?v=|embed/))([\w-]{11})""").find(v.url.orEmpty())?.groupValues?.get(1)
+    val yt = YT_REGEX.find(v.url.orEmpty())?.groupValues?.get(1)
     if (yt != null) return "https://i.ytimg.com/vi/$yt/hqdefault.jpg"
     val u = v.imageUrl ?: return null
     return when { u.startsWith("//") -> "https:$u"; u.startsWith("http://") -> "https://" + u.removePrefix("http://"); else -> u }
 }
 
 @Composable
-private fun CollapsingBar(title: String, listState: LazyListState, onBack: () -> Unit) {
+private fun CollapsingBar(title: String, listState: LazyListState, onBack: () -> Unit, onShare: (() -> Unit)? = null) {
     val collapsed by remember { derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 520 } }
     val barAlpha by animateFloatAsState(if (collapsed) 1f else 0f, tween(220), label = "bar")
     Box(
         Modifier.fillMaxWidth().graphicsLayer { alpha = barAlpha }.background(Nf.Ink.copy(alpha = 0.96f))
-            .statusBarsPadding().height(58.dp).padding(start = 70.dp, end = 20.dp),
+            .then(if (collapsed) Modifier.clickable(remember { MutableInteractionSource() }, null) {} else Modifier)
+            .statusBarsPadding().height(58.dp).padding(start = 70.dp, end = if (onShare != null) 70.dp else 20.dp),
         contentAlignment = Alignment.CenterStart,
     ) { Text(title, style = Type.Title, color = Nf.Text, maxLines = 1, overflow = TextOverflow.Ellipsis) }
     Box(
-        Modifier.statusBarsPadding().padding(start = 14.dp, top = 8.dp).size(42.dp).clip(CircleShape)
-            .background(Color(0x99090910)).border(1.dp, Color(0x14FFFFFF), CircleShape).pressable(0.88f, onClick = onBack),
-        contentAlignment = Alignment.Center,
-    ) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад", tint = Nf.Text, modifier = Modifier.size(22.dp)) }
+        Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 14.dp, vertical = 8.dp),
+    ) {
+        Box(
+            Modifier.align(Alignment.CenterStart).size(42.dp).clip(CircleShape)
+                .background(Color(0x99090910)).border(1.dp, Color(0x14FFFFFF), CircleShape).pressable(0.88f, onClick = onBack),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад", tint = Nf.Text, modifier = Modifier.size(22.dp)) }
+        if (onShare != null) Box(
+            Modifier.align(Alignment.CenterEnd).size(42.dp).clip(CircleShape)
+                .background(Color(0x99090910)).border(1.dp, Color(0x14FFFFFF), CircleShape).pressable(0.88f, onClick = onShare),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Rounded.Share, "Поделиться", tint = Nf.Text, modifier = Modifier.size(20.dp)) }
+    }
 }
 
 

@@ -5,8 +5,10 @@ import app.neifur.downloads.DownloadStatus
 import app.neifur.downloads.DownloadedEpisode
 import app.neifur.downloads.DownloadsState
 import app.neifur.downloads.formatBytes
+import app.neifur.downloads.parseContentRangeTotal
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -78,5 +80,13 @@ class DownloadsTest {
             assertTrue(tr.shown)
         }
         assertEquals("AniLibria", ep(1, "1", "A", 1, kind = TranslationKind.VoiceRu).toTranslation().author)
+    }
+
+    @Test fun parsesContentRangeTotalForHttpResume() {
+        assertEquals(500L, parseContentRangeTotal("bytes 100-199/500"))
+        assertEquals(314572800L, parseContentRangeTotal("bytes 1048576-314572799/314572800"))
+        assertNull(parseContentRangeTotal("bytes 0-10/*"))
+        assertNull(parseContentRangeTotal(null))
+        assertNull(parseContentRangeTotal("invalid"))
     }
 }

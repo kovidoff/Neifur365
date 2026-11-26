@@ -8,7 +8,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -128,6 +130,7 @@ fun EpisodesSheet(
     onCancelDownload: (Long) -> Unit = {},
     onRetryDownload: (Long) -> Unit = {},
     onDeleteDownload: (Long) -> Unit = {},
+    notice: String? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var page by remember { mutableStateOf(startPage) }
@@ -167,6 +170,21 @@ fun EpisodesSheet(
                         },
                     )
                 }
+            }
+
+            var lastNotice by remember { mutableStateOf("") }
+            if (notice != null) lastNotice = notice
+            androidx.compose.animation.AnimatedVisibility(
+                notice != null,
+                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(20.dp),
+                enter = slideInVertically { it } + fadeIn(),
+                exit = slideOutVertically { it } + fadeOut(),
+            ) {
+                Text(
+                    lastNotice, style = Type.Label, color = Nf.Text,
+                    modifier = Modifier.clip(RoundedCornerShape(18.dp)).background(Nf.SurfaceHi)
+                        .border(1.dp, Nf.Line, RoundedCornerShape(18.dp)).padding(horizontal = 18.dp, vertical = 14.dp),
+                )
             }
         }
     }

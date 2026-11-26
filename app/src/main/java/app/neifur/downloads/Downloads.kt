@@ -175,6 +175,12 @@ fun formatBytes(bytes: Long): String = when {
     else -> String.format(Locale.forLanguageTag("ru"), "%.1f ГБ", bytes / (1024.0 * 1024.0 * 1024.0))
 }
 
+/** Parses total entity length from an HTTP `Content-Range` header (e.g. `"bytes 100-199/500"` → `500L`). */
+internal fun parseContentRangeTotal(header: String?): Long? {
+    val totalStr = header?.substringAfter('/', "")?.trim()?.takeIf { it.isNotEmpty() && it != "*" } ?: return null
+    return totalStr.toLongOrNull()?.takeIf { it > 0L }
+}
+
 private data class PendingDownload(
     val anime: AnimeStub,
     val episode: Episode,
@@ -441,50 +447,78 @@ class DownloadManager(
             if (dir.usableSpace < 120L shl 20) throw ApiError("Недостаточно свободного места на телефоне")
 
             val referer = a365.baseUrl() + "/"
-            val httpReq = Request.Builder()
-                .url(chosenStream.urls.first())
-                .header("Referer", referer)
-                .header("User-Agent", a365.userAgent)
-                .build()
-
-            val call = http.newCall(httpReq)
-            activeCall = call
-            try {
-                call.execute().use { resp ->
-                    if (!resp.isSuccessful) throw ApiError("Сервер видео ответил ${resp.code}")
-                    val body = resp.body ?: throw ApiError("Пустой ответ видеосервера")
-                    val total = body.contentLength().coerceAtLeast(0L)
-                    if (total > 0L && dir.usableSpace < total + (40L shl 20)) {
-                        throw ApiError("Не хватает места: нужно ${formatBytes(total)}")
-                    }
-                    var written = 0L
-                    var lastEmit = 0L
-
-                    body.byteStream().use { input ->
-                        videoPart.outputStream().use { out ->
-                            val buf = ByteArray(64 * 1024)
-                            while (true) {
-                                if (!currentCoroutineContext().isActive) throw CancellationException()
-                                val n = input.read(buf)
-                                if (n < 0) break
-                                out.write(buf, 0, n)
-                                written += n
-                                val now = System.currentTimeMillis()
-                                if (now - lastEmit >= 350L) {
-                                    lastEmit = now
-                                    val p = if (total > 0L) (written.toFloat() / total).coerceIn(0f, 1f) else 0f
-                                    setRunning(p, written, total)
-                                }
-                            }
-                            out.flush()
+            val urls = chosenStream.urls.distinct()
+            var lastErr: Throwable? = null
+            var completed = false
+            for (url in urls) {
+                if (!currentCoroutineContext().isActive) throw CancellationException()
+                val existing = if (videoPart.exists()) videoPart.length() else 0L
+                val reqBuilder = Request.Builder()
+                    .url(url)
+                    .header("Referer", referer)
+                    .header("User-Agent", a365.userAgent)
+                if (existing > 0L) reqBuilder.header("Range", "bytes=$existing-")
+                val call = http.newCall(reqBuilder.build())
+                activeCall = call
+                try {
+                    call.execute().use { resp ->
+                        if (resp.code == 416 && existing > 0L) {
+                            runCatching { videoPart.delete() }
+                            throw ApiError("Сервер сбросил позицию докачки")
                         }
+                        if (!resp.isSuccessful) throw ApiError("Сервер видео ответил ${resp.code}")
+                        val body = resp.body ?: throw ApiError("Пустой ответ видеосервера")
+                        val isPartial = resp.code == 206 && existing > 0L
+                        val bodyLen = body.contentLength().coerceAtLeast(0L)
+                        val total = if (isPartial) {
+                            parseContentRangeTotal(resp.header("Content-Range"))
+                                ?: if (bodyLen > 0L) existing + bodyLen else 0L
+                        } else {
+                            bodyLen
+                        }
+                        val remainingNeed = if (total > 0L) (total - if (isPartial) existing else 0L).coerceAtLeast(0L) else 0L
+                        if (remainingNeed > 0L && dir.usableSpace < remainingNeed + (40L shl 20)) {
+                            throw ApiError("Не хватает места: нужно ${formatBytes(remainingNeed)}")
+                        }
+                        var written = if (isPartial) existing else 0L
+                        var lastEmit = 0L
+
+                        body.byteStream().use { input ->
+                            java.io.FileOutputStream(videoPart, isPartial).use { out ->
+                                val buf = ByteArray(64 * 1024)
+                                while (true) {
+                                    if (!currentCoroutineContext().isActive) throw CancellationException()
+                                    val n = input.read(buf)
+                                    if (n < 0) break
+                                    out.write(buf, 0, n)
+                                    written += n
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastEmit >= 350L) {
+                                        lastEmit = now
+                                        val p = if (total > 0L) (written.toFloat() / total).coerceIn(0f, 1f) else 0f
+                                        setRunning(p, written, total)
+                                    }
+                                }
+                                out.flush()
+                            }
+                        }
+                        if (written <= 0L) {
+                            runCatching { videoPart.delete() }
+                            throw ApiError("Скачан пустой файл")
+                        }
+                        if (total > 0L && written < total) throw ApiError("Загрузка оборвалась раньше времени")
+                        completed = true
                     }
-                    if (written <= 0L) throw ApiError("Скачан пустой файл")
-                    if (total > 0L && written < total) throw ApiError("Загрузка оборвалась раньше времени")
+                    if (completed) break
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    lastErr = e
+                } finally {
+                    if (activeCall === call) activeCall = null
                 }
-            } finally {
-                if (activeCall === call) activeCall = null
             }
+            if (!completed) throw (lastErr ?: ApiError("Не удалось скачать видео"))
 
             if (videoFinal.exists()) videoFinal.delete()
             if (!videoPart.renameTo(videoFinal)) {
@@ -532,7 +566,8 @@ class DownloadManager(
         } catch (e: Throwable) {
             val stillCurrent = activeTokens.remove(ep.id, req.token)
             if (stillCurrent || activeTokens[ep.id] == null) {
-                runCatching { videoPart.delete() }
+                // Keep non-empty .part files on network failures so Retry resumes with HTTP Range.
+                if (videoPart.exists() && videoPart.length() == 0L) runCatching { videoPart.delete() }
                 subFinal?.let { runCatching { it.delete() } }
             }
             if (stillCurrent) {

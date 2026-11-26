@@ -151,6 +151,7 @@ class SettingsVm(private val c: Container) : ViewModel() {
     val channel = c.channels.state
     val channelAuto = c.prefs.channelAuto
     fun loadChannels() = viewModelScope.launch { if (c.channels.state.value.setup == null) c.channels.load() }
+    fun reloadChannels() = viewModelScope.launch { c.channels.load() }
     fun testChannels() = c.channels.testAll()
     fun pickChannel(ch: VideoChannel) = c.channels.pick(ch)
     fun setChannelAuto(on: Boolean) = c.channels.setAuto(on)
@@ -416,15 +417,19 @@ fun SettingsSectionScreen(
                         Divider()
                         SettingTitle("Размер субтитров", null)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf(0.8, 1.0, 1.25, 1.5).forEachIndexed { i, v ->
+                            listOf(0.8 to "80%", 1.0 to "100%", 1.25 to "125%", 1.5 to "150%").forEachIndexed { i, (v, pct) ->
                                 val on = kotlin.math.abs(subScale - v) < 0.01
                                 val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.2f) else Nf.Ink, label = "sz")
-                                Box(
-                                    Modifier.weight(1f).height(52.dp).clip(RoundedCornerShape(14.dp)).background(bg)
+                                Column(
+                                    Modifier.weight(1f).height(58.dp).clip(RoundedCornerShape(14.dp)).background(bg)
                                         .border(1.dp, if (on) Nf.Violet.copy(alpha = 0.55f) else Nf.Line, RoundedCornerShape(14.dp))
                                         .clickable { vm.setSubScale(v) },
-                                    contentAlignment = Alignment.Center,
-                                ) { Text("Аа", style = Type.Title.copy(fontSize = (13 + i * 3).sp), color = if (on) Nf.Violet else Nf.Text) }
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                ) {
+                                    Text("Аа", style = Type.Title.copy(fontSize = (13 + i * 2.5f).sp), color = if (on) Nf.Violet else Nf.Text)
+                                    Text(pct, style = Type.Caption.copy(fontSize = 10.sp), color = if (on) Nf.Violet.copy(alpha = 0.85f) else Nf.TextMute)
+                                }
                             }
                         }
                     }
@@ -561,7 +566,13 @@ fun SettingsSectionScreen(
                         RowDivider()
                         ActionRow(
                             Icons.Rounded.Image, "Кэш обложек",
-                            vm.cacheBytes?.let { if (it < 1L shl 20) "Меньше 1 МБ" else "${it / (1L shl 20)} МБ" } ?: "…",
+                            vm.cacheBytes?.let {
+                                when {
+                                    it == 0L -> "Пусто"
+                                    it < 1L shl 20 -> "Меньше 1 МБ"
+                                    else -> "${it / (1L shl 20)} МБ"
+                                }
+                            } ?: "…",
                             "Очистить", enabled = (vm.cacheBytes ?: 0) > 0,
                         ) { vm.clearCache(ctx) }
                     }
@@ -1052,13 +1063,27 @@ private fun ChannelCard(vm: SettingsVm) {
             style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 8.dp, bottom = 10.dp),
         )
         Column(Modifier.animateContentSize()) {
-            if (setup == null) Box(Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(14.dp)).shimmer())
-            else setup.channels.forEach { ch ->
-                ChannelRow(
-                    ch, active = ch.id == setup.current, auto = auto, byApp = st.pickedByApp, speed = st.speeds[ch.id],
-                    measuring = ch.id in st.measuring, switching = st.switching == ch.id,
-                    fastest = allMeasured && working > 1 && st.fastest?.id == ch.id,
-                ) { vm.pickChannel(ch) }
+            when {
+                setup == null && st.loadError != null -> Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Nf.Ink)
+                        .border(1.dp, Nf.Line, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(st.loadError!!, style = Type.Caption, color = Nf.TextDim, modifier = Modifier.weight(1f))
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        "Повторить", style = Type.Label, color = Nf.Violet,
+                        modifier = Modifier.clip(CircleShape).background(Nf.SurfaceHi).pressable(0.94f) { vm.reloadChannels() }.padding(horizontal = 12.dp, vertical = 7.dp),
+                    )
+                }
+                setup == null -> Box(Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(14.dp)).shimmer())
+                else -> setup.channels.forEach { ch ->
+                    ChannelRow(
+                        ch, active = ch.id == setup.current, auto = auto, byApp = st.pickedByApp, speed = st.speeds[ch.id],
+                        measuring = ch.id in st.measuring, switching = st.switching == ch.id,
+                        fastest = allMeasured && working > 1 && st.fastest?.id == ch.id,
+                    ) { vm.pickChannel(ch) }
+                }
             }
         }
         var lastNote by remember { mutableStateOf("") }

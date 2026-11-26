@@ -156,7 +156,7 @@ internal fun playerPanelWidth(screenWidthDp: Int): androidx.compose.ui.unit.Dp {
 
 @Composable
 fun PlayerPanel(
-    tab: PanelTab?, tabs: List<PanelTab>, player: MpvPlayer, stream: StreamUi,
+    tab: PanelTab?, tabs: List<PanelTab>, hasAudioChoice: Boolean = false, player: MpvPlayer, stream: StreamUi,
     episodes: List<Episode>, index: Int, watched: Set<Int>,
     onTab: (PanelTab) -> Unit, onClose: () -> Unit,
     onSelectTrack: (String, Track?) -> Unit, onSubScale: (Double) -> Unit,
@@ -188,7 +188,7 @@ fun PlayerPanel(
                     .clip(RoundedCornerShape(28.dp)).background(PanelBg).border(1.dp, Color(0x14FFFFFF), RoundedCornerShape(28.dp))
                     .clickable(remember { MutableInteractionSource() }, null) {}
             ) {
-                if (tabs.size > 1) Tabs(tabs, shown, onTab, Modifier.padding(start = 14.dp, end = 14.dp, top = 14.dp))
+                if (tabs.size > 1) Tabs(tabs, shown, hasAudioChoice, onTab, Modifier.padding(start = 14.dp, end = 14.dp, top = 14.dp))
                 Spacer(Modifier.height(10.dp))
                 AnimatedContent(
                     shown, label = "tab", modifier = Modifier.weight(1f),
@@ -211,7 +211,7 @@ fun PlayerPanel(
 
 /** Segmented tabs with an indicator that slides between them. */
 @Composable
-private fun Tabs(tabs: List<PanelTab>, current: PanelTab, onTab: (PanelTab) -> Unit, modifier: Modifier) {
+private fun Tabs(tabs: List<PanelTab>, current: PanelTab, hasAudioChoice: Boolean, onTab: (PanelTab) -> Unit, modifier: Modifier) {
     val density = LocalDensity.current
     var w by remember { mutableIntStateOf(0) }
     val inner = 5.dp
@@ -229,13 +229,14 @@ private fun Tabs(tabs: List<PanelTab>, current: PanelTab, onTab: (PanelTab) -> U
             tabs.forEach { t ->
                 val on = t == current
                 val c by animateColorAsState(if (on) Color.White else Color(0x8CFFFFFF), label = "tabc")
+                val label = if (t == PanelTab.Subs && hasAudioChoice) "Дорожки" else t.title
                 Row(
                     Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(14.dp)).clickable { onTab(t) }.padding(horizontal = 4.dp),
                     horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(t.icon, null, tint = c, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(5.dp))
-                    Text(t.title, style = Type.Label.copy(fontSize = 13.sp), color = c, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(label, style = Type.Label.copy(fontSize = 13.sp), color = c, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -352,7 +353,12 @@ private fun EpisodesTab(episodes: List<Episode>, index: Int, watched: Set<Int>, 
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(e.label, style = Type.Title.copy(fontSize = 15.sp), color = Color.White, maxLines = 1)
-                    val sub = when { now -> "Сейчас смотрите"; seen -> "Просмотрено"; else -> e.episodeTitle?.takeIf { it.isNotBlank() } }
+                    val epTitle = e.episodeTitle?.takeIf { it.isNotBlank() }
+                    val sub = when {
+                        now -> listOfNotNull("Сейчас смотрите", epTitle).joinToString(" · ")
+                        seen -> listOfNotNull("Просмотрено", epTitle).joinToString(" · ")
+                        else -> epTitle
+                    }
                     if (sub != null) Text(sub, style = Type.Caption, color = if (now) Nf.Violet else Color(0x80FFFFFF), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
@@ -362,54 +368,69 @@ private fun EpisodesTab(episodes: List<Episode>, index: Int, watched: Set<Int>, 
 
 @Composable
 private fun SubsTab(player: MpvPlayer, onSelect: (String, Track?) -> Unit, onSubScale: (Double) -> Unit) {
+    val audioTracks = remember(player.tracks) { player.tracks.filter { it.type == "audio" } }
     val subs = remember(player.tracks) { player.tracks.filter { it.type == "sub" }.sortedBy { TrackNames.sortKey(it) } }
     LazyColumn(contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        item(key = "off") {
-            OptionRow(selected = subs.none { it.selected }, onClick = { onSelect("sub", null) }) {
-                Icon(Icons.Rounded.SubtitlesOff, null, tint = Color(0x99FFFFFF), modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(12.dp))
-                Text("Без субтитров", style = Type.Title.copy(fontSize = 15.sp), color = Color.White, modifier = Modifier.weight(1f))
-            }
+        if (audioTracks.size > 1) {
+            item(key = "audio-hdr") { Box(Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) { SectionLabel("Аудиодорожка") } }
+            items(audioTracks, key = { "a${it.id}" }) { t -> TrackRow(t) { onSelect("audio", t) } }
+            if (subs.isNotEmpty()) item(key = "audio-gap") { Spacer(Modifier.height(10.dp)) }
         }
-        items(subs, key = { "s${it.id}" }) { t -> TrackRow(t) { onSelect("sub", t) } }
+        if (subs.isNotEmpty()) {
+            if (audioTracks.size > 1) item(key = "sub-hdr") { Box(Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) { SectionLabel("Субтитры") } }
+            item(key = "off") {
+                OptionRow(selected = subs.none { it.selected }, onClick = { onSelect("sub", null) }) {
+                    Icon(Icons.Rounded.SubtitlesOff, null, tint = Color(0x99FFFFFF), modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text("Без субтитров", style = Type.Title.copy(fontSize = 15.sp), color = Color.White, modifier = Modifier.weight(1f))
+                }
+            }
+            items(subs, key = { "s${it.id}" }) { t -> TrackRow(t) { onSelect("sub", t) } }
 
-        item(key = "look") {
-            Column(Modifier.padding(horizontal = 8.dp).padding(top = 18.dp)) {
-                SectionLabel("Размер")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(0.8, 1.0, 1.25, 1.5).forEachIndexed { i, v ->
-                        val on = abs(player.subScale - v) < 0.01
-                        Box(
-                            Modifier.weight(1f).height(52.dp).clip(RoundedCornerShape(14.dp))
-                                .background(if (on) RowOn else Color(0x0FFFFFFF))
-                                .border(1.dp, if (on) Nf.Violet.copy(alpha = 0.6f) else Color.Transparent, RoundedCornerShape(14.dp))
-                                .clickable { onSubScale(v) },
-                            contentAlignment = Alignment.Center,
-                        ) { Text("Аа", style = Type.Title.copy(fontSize = (13 + i * 3).sp), color = if (on) Nf.Violet else Color.White) }
+            item(key = "look") {
+                Column(Modifier.padding(horizontal = 8.dp).padding(top = 18.dp)) {
+                    SectionLabel("Размер")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(0.8 to "80%", 1.0 to "100%", 1.25 to "125%", 1.5 to "150%").forEachIndexed { i, (v, pct) ->
+                            val on = abs(player.subScale - v) < 0.01
+                            Column(
+                                Modifier.weight(1f).height(58.dp).clip(RoundedCornerShape(14.dp))
+                                    .background(if (on) RowOn else Color(0x0FFFFFFF))
+                                    .border(1.dp, if (on) Nf.Violet.copy(alpha = 0.6f) else Color.Transparent, RoundedCornerShape(14.dp))
+                                    .clickable { onSubScale(v) },
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                            ) {
+                                Text("Аа", style = Type.Title.copy(fontSize = (13 + i * 2.5f).sp), color = if (on) Nf.Violet else Color.White)
+                                Text(pct, style = Type.Caption.copy(fontSize = 10.sp), color = if (on) Nf.Violet.copy(alpha = 0.85f) else Color(0x80FFFFFF))
+                            }
+                        }
                     }
-                }
-                Spacer(Modifier.height(18.dp))
-                SectionLabel("Синхронизация")
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    StepButton(Icons.Rounded.Remove, "Раньше на 0,1 с") { player.changeSubDelay(player.subDelay - 0.1) }
-                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                        val d = player.subDelay
+                    Spacer(Modifier.height(18.dp))
+                    SectionLabel("Синхронизация")
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        StepPill("−0,5") { player.changeSubDelay(player.subDelay - 0.5) }
+                        StepButton(Icons.Rounded.Remove, "Раньше на 0,1 с") { player.changeSubDelay(player.subDelay - 0.1) }
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                            val d = player.subDelay
+                            Text(
+                                if (d == 0.0) "0,0 с" else String.format(Locale.forLanguageTag("ru"), "%+.1f с", d),
+                                style = Type.Title.copy(fontFeatureSettings = "tnum"), color = if (d == 0.0) Color.White else Nf.Amber, maxLines = 1,
+                            )
+                            Text(
+                                when { d > 0 -> "позже"; d < 0 -> "раньше"; else -> "как в файле" },
+                                style = Type.Caption, color = Color(0x80FFFFFF), maxLines = 1,
+                            )
+                        }
+                        StepButton(Icons.Rounded.Add, "Позже на 0,1 с") { player.changeSubDelay(player.subDelay + 0.1) }
+                        StepPill("+0,5") { player.changeSubDelay(player.subDelay + 0.5) }
+                    }
+                    AnimatedVisibility(player.subDelay != 0.0) {
                         Text(
-                            if (d == 0.0) "0,0 с" else String.format(Locale.forLanguageTag("ru"), "%+.1f с", d),
-                            style = Type.Title, color = if (d == 0.0) Color.White else Nf.Amber,
-                        )
-                        Text(
-                            when { d > 0 -> "субтитры позже"; d < 0 -> "субтитры раньше"; else -> "как в файле" },
-                            style = Type.Caption, color = Color(0x80FFFFFF),
+                            "Сбросить", style = Type.Label, color = Nf.Violet,
+                            modifier = Modifier.padding(top = 10.dp).clip(CircleShape).clickable { player.changeSubDelay(0.0) }.padding(horizontal = 10.dp, vertical = 6.dp),
                         )
                     }
-                    StepButton(Icons.Rounded.Add, "Позже на 0,1 с") { player.changeSubDelay(player.subDelay + 0.1) }
-                }
-                AnimatedVisibility(player.subDelay != 0.0) {
-                    Text(
-                        "Сбросить", style = Type.Label, color = Nf.Violet,
-                        modifier = Modifier.padding(top = 10.dp).clip(CircleShape).clickable { player.changeSubDelay(0.0) }.padding(horizontal = 10.dp, vertical = 6.dp),
-                    )
                 }
             }
         }
@@ -639,7 +660,14 @@ private fun Hint(text: String, padding: androidx.compose.ui.unit.Dp = 14.dp) =
 
 @Composable
 private fun StepButton(icon: ImageVector, label: String, onClick: () -> Unit) {
-    Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0x14FFFFFF)).pressable(0.88f, onClick = onClick), contentAlignment = Alignment.Center) {
-        Icon(icon, label, tint = Color.White, modifier = Modifier.size(22.dp))
+    Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0x14FFFFFF)).pressable(0.88f, onClick = onClick), contentAlignment = Alignment.Center) {
+        Icon(icon, label, tint = Color.White, modifier = Modifier.size(20.dp))
+    }
+}
+
+@Composable
+private fun StepPill(text: String, onClick: () -> Unit) {
+    Box(Modifier.height(38.dp).clip(CircleShape).background(Color(0x14FFFFFF)).pressable(0.9f, onClick = onClick).padding(horizontal = 11.dp), contentAlignment = Alignment.Center) {
+        Text(text, style = Type.Caption, color = Color(0xCCFFFFFF))
     }
 }

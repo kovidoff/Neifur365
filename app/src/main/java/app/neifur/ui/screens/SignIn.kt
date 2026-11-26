@@ -8,6 +8,7 @@ import android.net.Uri
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.expandVertically
@@ -89,11 +90,19 @@ class SignInVm(private val c: Container) : ViewModel() {
     init {
         viewModelScope.launch { base = runCatching { c.a365.baseUrl() }.getOrNull() }
         viewModelScope.launch {
+            c.online.collect { on -> if (on && base == null) ensureBase() }
+        }
+        viewModelScope.launch {
             c.account.state.collect { st ->
                 profile = (st as? AccountState.SignedIn)?.profile
                 if (st is AccountState.SignedOut) error = null
             }
         }
+    }
+
+    fun ensureBase() {
+        if (base != null) return
+        viewModelScope.launch { base = runCatching { c.a365.baseUrl() }.getOrNull() }
     }
 
     fun login() {
@@ -291,8 +300,21 @@ private fun SiteSignIn(base: String, vm: SignInVm, onClose: () -> Unit) {
         onClose()
     }
 
+    DisposableEffect(Unit) {
+        onDispose {
+            web?.stopLoading()
+            web?.destroy()
+            web = null
+        }
+    }
+
+    BackHandler {
+        val w = web
+        if (w != null && w.canGoBack()) w.goBack() else close()
+    }
+
     Dialog(onDismissRequest = ::close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        Column(Modifier.fillMaxSize().background(Nf.Ink).systemBarsPadding()) {
+        Column(Modifier.fillMaxSize().background(Nf.Ink).systemBarsPadding().imePadding()) {
             Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Rounded.Close, "Закрыть", tint = Nf.Text, modifier = Modifier.size(44.dp).clip(CircleShape).clickable(onClick = ::close).padding(10.dp))
                 Column(Modifier.weight(1f).padding(start = 6.dp)) {

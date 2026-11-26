@@ -367,6 +367,17 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     /** Fill the screen by cropping (for 16:9 video on a taller display) instead of letterboxing. */
     fun changeFill(on: Boolean) { fill = on }
 
+    private var lastSubPos = 100
+
+    /** Lifts subtitles cleanly above the cropped bottom edge when Fill crops a 16:9 picture on a taller display. */
+    fun setSubPos(pos: Int) {
+        if (released) return
+        val clamped = pos.coerceIn(50, 100)
+        if (clamped == lastSubPos) return
+        lastSubPos = clamped
+        mpv.setPropertyInt("sub-pos", clamped)
+    }
+
     /** Marks the current open attempt as failed once all fallback URLs / channel switches are exhausted. */
     fun markOpenFailed() {
         if (released) return

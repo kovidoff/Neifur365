@@ -55,6 +55,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -127,6 +129,7 @@ class CatalogVm(private val c: Container) : ViewModel() {
         private set
 
     private var end = false
+    private var nextOffset = 0
     private var job: Job? = null
     private var randomJob: Job? = null
     private var randomPoolQuery: CatalogQuery? = null
@@ -149,6 +152,9 @@ class CatalogVm(private val c: Container) : ViewModel() {
         resetRandomPool()
         reload(if (typing) 380 else 0)
     }
+
+    fun clearFilters(clearSearch: Boolean = false) =
+        update(if (clearSearch) CatalogQuery() else CatalogQuery(search = query.search))
 
     fun rememberSearch(raw: String = query.search) {
         val trimmed = raw.trim()
@@ -203,7 +209,9 @@ class CatalogVm(private val c: Container) : ViewModel() {
                 }
             }
             val listedIds = lists.value.titles.keys
-            val hasFreshInPool = pickRandomSeries(randomPool, randomSeen, listedIds, randomHideListed) != null
+            val hasFreshInPool = pickRandomSeries(
+                randomPool, randomSeen, listedIds, randomHideListed, strictHideListed = randomHideListed,
+            ) != null
             val wideCatalog = snap == CatalogQuery() || (items.size >= PAGE && !end)
             val shouldFetchExtra = randomPool.isEmpty() || !hasFreshInPool || (wideCatalog && randomPool.size <= PAGE)
             if (shouldFetchExtra) {
@@ -264,11 +272,11 @@ class CatalogVm(private val c: Container) : ViewModel() {
 
     private fun reload(debounce: Long) {
         job?.cancel()
-        end = false; loading = true; error = null; moreError = null
+        end = false; nextOffset = 0; loading = true; error = null; moreError = null
         job = viewModelScope.launch {
             if (debounce > 0) delay(debounce)
             runCatching { fetch(0) }
-                .onSuccess { items = it; end = it.size < PAGE }
+                .onSuccess { items = it; nextOffset = it.size; end = it.size < PAGE }
                 .onFailure {
                     if (it is kotlinx.coroutines.CancellationException) throw it
                     error = it.userMessage(); items = emptyList()
@@ -282,10 +290,11 @@ class CatalogVm(private val c: Container) : ViewModel() {
         moreError = null
         job = viewModelScope.launch {
             loading = true
-            runCatching { fetch(items.size) }
+            runCatching { fetch(nextOffset) }
                 .onSuccess { more ->
                     val known = items.mapTo(HashSet()) { it.id }
                     items = items + more.filter { it.id !in known }
+                    nextOffset += more.size
                     end = more.size < PAGE
                 }
                 .onFailure {
@@ -299,7 +308,7 @@ class CatalogVm(private val c: Container) : ViewModel() {
 
 /**
  * Picks a random title from [pool], avoiding [excludeIds] and (when [hideListed] is on) titles already in
- * [listedIds]. Falls back to listed titles only when every unseen candidate in the pool is already listed.
+ * [listedIds]. Falls back to listed titles unless [strictHideListed] is true (used to decide whether to fetch a fresh page).
  */
 internal fun pickRandomSeries(
     pool: List<Series>,
@@ -307,12 +316,14 @@ internal fun pickRandomSeries(
     listedIds: Set<Long>,
     hideListed: Boolean,
     random: Random = Random.Default,
+    strictHideListed: Boolean = false,
 ): Series? {
     if (pool.isEmpty()) return null
     val unseen = pool.filterNot { it.id in excludeIds }
     if (unseen.isEmpty()) return null
     val primary = if (hideListed) unseen.filterNot { it.id in listedIds } else unseen
-    val source = primary.ifEmpty { unseen }
+    val source = if (hideListed && strictHideListed) primary else primary.ifEmpty { unseen }
+    if (source.isEmpty()) return null
     return source[random.nextInt(source.size)]
 }
 
@@ -335,12 +346,19 @@ private val years: List<Pair<Int?, String>> = listOf<Pair<Int?, String>>(null to
     (java.time.LocalDate.now().year + 1 downTo 1980).map { it to it.toString() }
 
 @Composable
-fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
+fun CatalogScreen(
+    open: OpenAnime,
+    focusSearch: Boolean = false,
+    onSearchFocused: () -> Unit = {},
+    scrollTopSignal: Int = 0,
+    onSchedule: () -> Unit = {},
+) {
     val vm = nfViewModel { CatalogVm(it) }
     val lists by vm.lists.collectAsStateWithLifecycle()
     val recentSearches by vm.recentSearches.collectAsStateWithLifecycle(emptyList())
     val marks = remember(lists) { lists.titles.mapValues { it.value.status } }
     val q = vm.query
+    val hasFilters = q.kind != null || q.airing || q.genreId != null || q.year != null
     var sheet by remember { mutableStateOf<String?>(null) }
     var quick by remember { mutableStateOf<Series?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -350,9 +368,23 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
     val cols = layout.posterColumns
     val padH = layout.horizontalPadding
     val grid = rememberLazyGridState()
+    val searchFocus = remember { FocusRequester() }
     val focus = LocalFocusManager.current
     val haptic = LocalHapticFeedback.current
     var handledQueryVersion by rememberSaveable { mutableIntStateOf(vm.queryVersion) }
+
+    LaunchedEffect(focusSearch) {
+        if (focusSearch) {
+            searchFocus.requestFocus()
+            onSearchFocused()
+        }
+    }
+    LaunchedEffect(scrollTopSignal) {
+        if (scrollTopSignal > 0) {
+            if (grid.firstVisibleItemIndex == 0 && grid.firstVisibleItemScrollOffset < 40) searchFocus.requestFocus()
+            else grid.animateScrollToItem(0)
+        }
+    }
 
     val nearEnd by remember(cols) {
         derivedStateOf {
@@ -416,6 +448,7 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
                 CatalogSearchBox(
                     value = q.search,
                     focused = searchFocused,
+                    focusRequester = searchFocus,
                     onFocusChange = { searchFocused = it },
                     onValue = { vm.update(q.copy(search = it)) },
                     onSearch = { vm.rememberSearch(); focus.clearFocus() },
@@ -425,6 +458,7 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.weight(1f),
                 ) {
+                    if (hasFilters) item { FilterResetPill { vm.clearFilters() } }
                     item { FilterPill(kinds.first { it.first == q.kind }.second, q.kind != null) { sheet = "kind" } }
                     item { FilterPill(statuses.first { it.first == q.airing }.second, q.airing) { sheet = "status" } }
                     item { FilterPill(A365Genres.firstOrNull { it.first == q.genreId }?.second ?: "Жанр", q.genreId != null) { sheet = "genre" } }
@@ -445,6 +479,7 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
             CatalogSearchBox(
                 value = q.search,
                 focused = searchFocused,
+                focusRequester = searchFocus,
                 onFocusChange = { searchFocused = it },
                 onValue = { vm.update(q.copy(search = it)) },
                 onSearch = { vm.rememberSearch(); focus.clearFocus() },
@@ -466,6 +501,7 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
                 contentPadding = PaddingValues(horizontal = padH), horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.padding(vertical = 12.dp),
             ) {
+                if (hasFilters) item { FilterResetPill { vm.clearFilters() } }
                 item { FilterPill(kinds.first { it.first == q.kind }.second, q.kind != null) { sheet = "kind" } }
                 item { FilterPill(statuses.first { it.first == q.airing }.second, q.airing) { sheet = "status" } }
                 item { FilterPill(A365Genres.firstOrNull { it.first == q.genreId }?.second ?: "Жанр", q.genreId != null) { sheet = "genre" } }
@@ -473,10 +509,17 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
             }
         }
 
-        Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().imePadding()) {
             when {
                 vm.error != null -> EmptyState("Не получилось загрузить", vm.error, Icons.Rounded.WifiOff, Modifier.padding(top = 40.dp), "Повторить", vm::retry)
-                !vm.loading && vm.items.isEmpty() -> EmptyState("Ничего не нашлось", "Попробуйте другое название или уберите фильтры", Icons.Rounded.SearchOff, Modifier.padding(top = 40.dp))
+                !vm.loading && vm.items.isEmpty() -> EmptyState(
+                    "Ничего не нашлось",
+                    "Попробуйте другое название или уберите фильтры",
+                    Icons.Rounded.SearchOff,
+                    Modifier.padding(top = 40.dp),
+                    action = if (hasFilters || q.search.isNotBlank()) "Сбросить фильтры" else null,
+                    onAction = if (hasFilters || q.search.isNotBlank()) ({ vm.clearFilters(clearSearch = true) }) else null,
+                )
                 else -> LazyVerticalGrid(
                     GridCells.Fixed(cols), state = grid,
                     contentPadding = PaddingValues(start = padH, end = padH, top = 4.dp, bottom = 120.dp),
@@ -588,6 +631,7 @@ fun CatalogScreen(open: OpenAnime, onSchedule: () -> Unit = {}) {
 private fun CatalogSearchBox(
     value: String,
     focused: Boolean,
+    focusRequester: FocusRequester,
     onFocusChange: (Boolean) -> Unit,
     onValue: (String) -> Unit,
     onSearch: () -> Unit,
@@ -608,13 +652,28 @@ private fun CatalogSearchBox(
                 textStyle = Type.Body.copy(color = Nf.Text), cursorBrush = SolidColor(Nf.Violet),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onSearch() }),
-                modifier = Modifier.fillMaxWidth().onFocusChanged { onFocusChange(it.isFocused) },
+                modifier = Modifier.fillMaxWidth().focusRequester(focusRequester).onFocusChanged { onFocusChange(it.isFocused) },
             )
         }
         if (value.isNotEmpty()) Icon(
             Icons.Rounded.Close, "Очистить", tint = Nf.TextDim,
             modifier = Modifier.size(30.dp).clip(CircleShape).clickable { onValue("") }.padding(5.dp),
         )
+    }
+}
+
+@Composable
+private fun FilterResetPill(onClick: () -> Unit) {
+    Row(
+        Modifier.height(36.dp).clip(CircleShape).background(Nf.Red.copy(alpha = 0.12f))
+            .border(1.dp, Nf.Red.copy(alpha = 0.35f), CircleShape)
+            .pressable(0.94f, onClick = onClick)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.Close, null, tint = Nf.Red, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(4.dp))
+        Text("Сбросить", style = Type.Label, color = Nf.Red)
     }
 }
 

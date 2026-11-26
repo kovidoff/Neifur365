@@ -2,6 +2,7 @@ package app.neifur.player
 
 import android.content.Context
 import android.media.AudioManager
+import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.outlined.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FitScreen
 import androidx.compose.material.icons.rounded.KeyboardDoubleArrowLeft
@@ -176,6 +178,30 @@ internal fun fixedSurfaceBufferSize(videoW: Int, videoH: Int): Pair<Int, Int> {
     }
 }
 
+/** Lifts ASS subtitles cleanly out of the bottom overscan when Fill crops a 16:9 picture on 20:9/21:9 screens. */
+internal fun subPosForFill(fill: Boolean, videoAspect: Float, areaW: Int, areaH: Int): Int {
+    if (!fill || areaW <= 0 || areaH <= 0 || videoAspect <= 0f) return 100
+    val renderedH = areaW / videoAspect
+    if (renderedH <= areaH + 1f) return 100
+    val croppedBottomPct = (renderedH - areaH) / (2f * renderedH) * 100f
+    return (100 - croppedBottomPct.roundToInt() - 2).coerceIn(72, 100)
+}
+
+private fun readSystemBrightness(ctx: Context): Float = runCatching {
+    val cr = ctx.contentResolver
+    val floatVal = Settings.System.getFloat(cr, "screen_brightness_float", -1f)
+    if (floatVal in 0f..1f) return floatVal.coerceIn(0.02f, 1f)
+    val raw = Settings.System.getInt(cr, Settings.System.SCREEN_BRIGHTNESS, -1)
+    if (raw < 0) return 0.5f
+    val max = when {
+        raw > 4095 -> 8191f
+        raw > 2047 -> 4095f
+        raw > 255 -> 2047f
+        else -> 255f
+    }
+    (raw / max).coerceIn(0.02f, 1f)
+}.getOrDefault(0.5f)
+
 /** Brightness / volume while a vertical swipe is in progress. */
 private data class Level(val volume: Boolean, val value: Float)
 
@@ -208,8 +234,9 @@ fun PlayerScreen(
     var panel by remember { mutableStateOf<PanelTab?>(null) }
     var menu by remember { mutableStateOf<QuickMenu?>(null) }
     val hasSubTracks by remember(player) { derivedStateOf { player.tracks.any { it.type == "sub" } } }
-    val tabs = remember(episodes.size, hasSubTracks) {
-        listOfNotNull(PanelTab.Translation, PanelTab.Episodes.takeIf { episodes.size > 1 }, PanelTab.Subs.takeIf { hasSubTracks })
+    val hasAudioChoice by remember(player) { derivedStateOf { player.tracks.count { it.type == "audio" } > 1 } }
+    val tabs = remember(episodes.size, hasSubTracks, hasAudioChoice) {
+        listOfNotNull(PanelTab.Translation, PanelTab.Episodes.takeIf { episodes.size > 1 }, PanelTab.Subs.takeIf { hasSubTracks || hasAudioChoice })
     }
     var burst by remember { mutableStateOf<SeekBurst?>(null) }
     // Keep high-frequency gesture state inside State holders read only by leaf overlays so PlayerScreen doesn't recompose at 60–120 FPS.
@@ -300,6 +327,10 @@ fun PlayerScreen(
     val fillNow = player.fill && panel == null && !inPip
     var winW by remember { mutableIntStateOf(0) }
     var winH by remember { mutableIntStateOf(0) }
+    val subPos = remember(fillNow, aspect, winW, winH) {
+        subPosForFill(fillNow, aspect, maxOf(winW, winH), minOf(winW, winH))
+    }
+    LaunchedEffect(subPos) { player.setSubPos(subPos) }
     val inPortraitTransition = !inPip && winW > 0 && winH > 0 && winW < winH
     SideEffect { player.setPortraitTransition(inPortraitTransition) }
     // Keep the screen pure black for the first ~220 ms while the display finishes rotating from portrait MainActivity
@@ -357,7 +388,12 @@ fun PlayerScreen(
             label = "curtain",
         )
         if (curtainAlpha > 0.01f) Box(Modifier.fillMaxSize().graphicsLayer { alpha = curtainAlpha }.background(Color.Black))
-        if (inPip || hideForRotation) return@Box
+        if (inPip) {
+            if (failure != null) Icon(Icons.Rounded.ErrorOutline, null, tint = Nf.Red, modifier = Modifier.align(Alignment.Center).size(28.dp))
+            else if (busy) CircularProgressIndicator(Modifier.align(Alignment.Center).size(26.dp), color = Color.White, strokeWidth = 2.5.dp)
+            return@Box
+        }
+        if (hideForRotation) return@Box
 
         // ---- gestures (all disabled while locked) ----
         if (!locked) Box(
@@ -426,6 +462,7 @@ fun PlayerScreen(
                         var dy = 0f
                         var startPos = 0.0
                         var startLevel = 0f
+                        var lastAppliedVol = -1
                         var completedCleanly = false
                         val slop = viewConfiguration.touchSlop
                         try {
@@ -453,8 +490,13 @@ fun PlayerScreen(
                                         if (mode == -1) break
                                         dragActive.value = true
                                         startPos = player.position
-                                        startLevel = if (mode == 2) window.attributes.screenBrightness.let { if (it < 0) 0.5f else it }
-                                        else audio.getStreamVolume(AudioManager.STREAM_MUSIC) / maxVol.toFloat()
+                                        startLevel = if (mode == 2) {
+                                            window.attributes.screenBrightness.let { if (it < 0) readSystemBrightness(ctx) else it }
+                                        } else {
+                                            val curVol = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                            lastAppliedVol = curVol
+                                            curVol / maxVol.toFloat()
+                                        }
                                     }
                                 }
                                 if (mode in 1..3) {
@@ -474,8 +516,12 @@ fun PlayerScreen(
                                         3 -> {
                                             acc -= delta.y
                                             val v = (startLevel + acc / (size.height * 0.75f)).coerceIn(0f, 1f)
-                                            audio.setStreamVolume(AudioManager.STREAM_MUSIC, (v * maxVol).roundToInt(), 0)
-                                            levelState.value = Level(true, v)
+                                            val targetVol = (v * maxVol).roundToInt().coerceIn(0, maxVol)
+                                            if (targetVol != lastAppliedVol) {
+                                                lastAppliedVol = targetVol
+                                                audio.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
+                                            }
+                                            levelState.value = Level(true, targetVol / maxVol.toFloat())
                                         }
                                     }
                                 }
@@ -561,7 +607,7 @@ fun PlayerScreen(
                         remaining = remaining,
                         onToggleRemaining = { remaining = !remaining; interaction++ },
                         onScrub = { scrubState.value = it; interaction++ },
-                        onCommit = { player.seekTo(it, exact = true); scrubState.value = null },
+                        onCommit = { player.seekTo(it, exact = true); scrubState.value = null; interaction++ },
                         onCancel = { scrubState.value = null },
                     )
                     // Left group shrinks gracefully on narrow screens so right-side pills (Speed, FitScreen) never clip off-screen.
@@ -687,13 +733,18 @@ fun PlayerScreen(
 
         // ---- failure ----
         if (failure == app.neifur.data.a365.SubscriptionRequired.MESSAGE) Paywall(Modifier.align(Alignment.Center), onBack)
-        else if (failure != null) Column(Modifier.align(Alignment.Center).padding(40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Не получилось запустить", style = Type.Display, color = Color.White)
+        else if (failure != null) Column(Modifier.align(Alignment.Center).padding(40.dp).widthIn(max = 520.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("Не получилось запустить", style = Type.Display, color = Color.White, textAlign = TextAlign.Center)
             Spacer(Modifier.height(8.dp))
-            Text(failure, style = Type.Body, color = Color(0xB3FFFFFF))
+            Text(failure, style = Type.Body, color = Color(0xB3FFFFFF), textAlign = TextAlign.Center)
             Spacer(Modifier.height(20.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Box(Modifier.clip(CircleShape).background(Color.White).pressable(onClick = onRetry).padding(horizontal = 22.dp, vertical = 12.dp)) { Text("Повторить", style = Type.Label, color = Color.Black) }
+                if (stream.options.values.sumOf { it.size } > 1) {
+                    Box(Modifier.clip(CircleShape).background(Color(0x33FFFFFF)).pressable { panel = PanelTab.Translation }.padding(horizontal = 20.dp, vertical = 12.dp)) {
+                        Text("Другой перевод", style = Type.Label, color = Color.White)
+                    }
+                }
                 Box(Modifier.clip(CircleShape).background(Color(0x33FFFFFF)).pressable(onClick = onBack).padding(horizontal = 22.dp, vertical = 12.dp)) { Text("Назад", style = Type.Label, color = Color.White) }
             }
         }
@@ -707,7 +758,7 @@ fun PlayerScreen(
             onClose = { menu = null },
         )
         PlayerPanel(
-            tab = panel, tabs = tabs, player = player, stream = stream, episodes = episodes, index = index, watched = watched,
+            tab = panel, tabs = tabs, hasAudioChoice = hasAudioChoice, player = player, stream = stream, episodes = episodes, index = index, watched = watched,
             onTab = { panel = it }, onClose = { panel = null },
             onSelectTrack = onSelectTrack, onSubScale = onSubScale,
             onTranslation = { onTranslation(it); panel = null }, onEpisode = { onEpisode(it); panel = null },
@@ -760,7 +811,7 @@ private fun SleepTopPill(sleep: SleepTimer, sleepRemainingMs: () -> Long, menuOp
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.width(6.dp))
-                Text(lastSleepBadge, style = Type.Label, color = Color.White, maxLines = 1, softWrap = false)
+                Text(lastSleepBadge, style = Type.Label.copy(fontFeatureSettings = "tnum"), color = Color.White, maxLines = 1, softWrap = false)
                 Spacer(Modifier.width(2.dp))
             }
         }
@@ -779,8 +830,9 @@ private fun TimelineRow(
 ) {
     val dur = player.duration
     val pos = scrubProvider() ?: if (dur > 0.0) player.position else 0.0
+    val tnumStyle = Type.Label.copy(fontFeatureSettings = "tnum")
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(time(pos), style = Type.Label, color = Color.White, modifier = Modifier.widthIn(min = 44.dp))
+        Text(time(pos), style = tnumStyle, color = Color.White, maxLines = 1, softWrap = false, modifier = Modifier.widthIn(min = 44.dp))
         SeekBar(
             player = player, scrubProvider = scrubProvider, modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
             onScrub = onScrub, onCommit = onCommit, onCancel = onCancel,
@@ -791,8 +843,8 @@ private fun TimelineRow(
                 remaining -> "−" + time((dur - pos).coerceAtLeast(0.0))
                 else -> time(dur)
             },
-            style = Type.Label, color = Color(0xCCFFFFFF),
-            modifier = Modifier.widthIn(min = 44.dp).clip(RoundedCornerShape(6.dp)).pressable(0.92f, onClick = onToggleRemaining),
+            style = tnumStyle, color = Color(0xCCFFFFFF), maxLines = 1, softWrap = false, textAlign = TextAlign.End,
+            modifier = Modifier.widthIn(min = 48.dp).clip(RoundedCornerShape(8.dp)).pressable(0.92f, onClick = onToggleRemaining).padding(horizontal = 4.dp, vertical = 8.dp),
         )
     }
 }

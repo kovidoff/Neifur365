@@ -205,7 +205,7 @@ class Lists(private val api: Anime365, private val account: Account, private val
      * an episode. Without it the row would show up blank.
      */
     private fun fill(seriesId: Long) = scope.launch {
-        val full = runCatching { api.series(seriesId) }.getOrNull() ?: return@launch
+        val full = gate.withPermit { runCatching { api.series(seriesId) }.getOrNull() } ?: return@launch
         val aired = if (full.airing) full.playable.count { it.episodeType != "preview" } else null
         _state.update { s ->
             val t = s.titles[seriesId] ?: return@update s
