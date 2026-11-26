@@ -265,7 +265,7 @@ private fun Episodes(
                 val counted = state.studios != null && state.scope.any { it.id == ep.id }
                 val missing = studio != null && counted && !studio.has(ep.id)
                 EpisodeRow(
-                    ep, isMovie, history.firstOrNull { it.episode == ep.number }, i < state.watchedOnSite, accent, i == resume,
+                    ep, isMovie, history.firstOrNull { it.episode == ep.number }, ep.number in 1..state.watchedOnSite, accent, i == resume,
                     missingNote = if (missing) "Нет у ${studio!!.author}" + (state.fallbackFor(ep)?.let { " · включится ${it.author}" } ?: "") else null,
                     downloaded = downloads.find(ep.id),
                     downloadStatus = downloads.active[ep.id],

@@ -72,14 +72,11 @@ class DownloadsTest {
     }
 
     @Test fun downloadedEpisodeBuildsMatchingTranslationKind() {
-        val voice = ep(1, "1", "A", 1, kind = TranslationKind.VoiceRu).toTranslation()
-        assertEquals(TranslationKind.VoiceRu, voice.kind)
-        assertEquals("AniLibria", voice.author)
-
-        val sub = ep(2, "1", "A", 2, kind = TranslationKind.SubRu).toTranslation()
-        assertEquals(TranslationKind.SubRu, sub.kind)
-
-        val raw = ep(3, "1", "A", 3, kind = TranslationKind.Raw).toTranslation()
-        assertEquals(TranslationKind.Raw, raw.kind)
+        for (kind in TranslationKind.shown) {
+            val tr = ep(1, "1", "A", 1, kind = kind).toTranslation()
+            assertEquals(kind, tr.kind)
+            assertTrue(tr.shown)
+        }
+        assertEquals("AniLibria", ep(1, "1", "A", 1, kind = TranslationKind.VoiceRu).toTranslation().author)
     }
 }

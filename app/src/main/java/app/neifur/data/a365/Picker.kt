@@ -8,8 +8,9 @@ object Picker {
     /** Same studio, several uploads (TV, BD, other heights): the best one for the viewer's quality setting. */
     fun best(variants: List<Translation>, quality: Int): Translation? = variants.maxWithOrNull(
         compareBy<Translation>(
-            { if (it.height in 1..quality) 1 else 0 },          // never exceed the chosen quality if avoidable
-            { if (it.height <= quality) it.height else -it.height },
+            { if (it.streamHeight in 1..quality) 1 else 0 },          // never exceed the chosen quality if avoidable
+            { val h = it.streamHeight; when { h <= 0 -> Int.MIN_VALUE; h <= quality -> h; else -> -h } },
+            { if (it.height <= quality) 1 else 0 },                   // prefer native 1080p over 4K source when both stream at 1080p
             { if (it.qualityType == "bd") 1 else 0 },
             { it.priority },
         )

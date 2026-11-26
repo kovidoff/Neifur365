@@ -1,9 +1,12 @@
 package app.neifur.data.a365
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 sealed interface AccountState {
     /** Checking a saved session at start-up. */
@@ -28,7 +31,8 @@ class Account(
     /** The site ended the session on its own: screens say so instead of a plain "sign in". Cleared on sign-in. */
     private val _expired = MutableStateFlow(false)
     val expired: StateFlow<Boolean> = _expired
-    @Volatile private var checking = false
+    private val checking = AtomicBoolean(false)
+    private var refreshJob: Job? = null
 
     /** The start-up check couldn't reach the site (offline): the state shown is a guess until it answers. */
     @Volatile var unconfirmed = false
@@ -46,15 +50,17 @@ class Account(
         refresh()
         // A request found the session gone: confirm once (a single page can lie) and show the app as signed out.
         api.onSessionLost = {
-            if (!checking && state.value is AccountState.SignedIn) {
-                checking = true
+            if (state.value is AccountState.SignedIn && checking.compareAndSet(false, true)) {
                 scope.launch {
-                    val p = runCatching { api.profile() }
-                    if (p.isSuccess && p.getOrNull() == null) {
-                        _expired.value = true; unconfirmed = false; _state.value = AccountState.SignedOut
-                        runCatching { prefs.saveProfile(null) }
+                    try {
+                        val p = runCatching { api.profile() }
+                        if (p.isSuccess && p.getOrNull() == null) {
+                            _expired.value = true; unconfirmed = false; _state.value = AccountState.SignedOut
+                            runCatching { prefs.saveProfile(null) }
+                        }
+                    } finally {
+                        checking.set(false)
                     }
-                    checking = false
                 }
             }
         }
@@ -64,27 +70,38 @@ class Account(
      * Re-checks the saved session. A network failure keeps the last known state instead of signing out; at start-up
      * it shows the account last seen (if any) until the site can confirm it.
      */
-    fun refresh() = scope.launch {
-        runCatching { api.profile() }
-            .onSuccess {
-                if (it != null) signIn(it)
-                else { unconfirmed = false; _state.value = AccountState.SignedOut; runCatching { prefs.saveProfile(null) } }
-            }
-            .onFailure {
-                if (_state.value == AccountState.Unknown) {
-                    val last = runCatching { prefs.savedProfile() }.getOrNull()
-                    // Either way the site hasn't said yet: ask again once the network is back.
-                    unconfirmed = true
-                    _state.value = if (last != null) AccountState.SignedIn(last) else AccountState.SignedOut
+    fun refresh(): Job {
+        refreshJob?.cancel()
+        val job = scope.launch {
+            runCatching { api.profile() }
+                .onSuccess {
+                    if (it != null) signIn(it)
+                    else { unconfirmed = false; _state.value = AccountState.SignedOut; runCatching { prefs.saveProfile(null) } }
                 }
-            }
+                .onFailure {
+                    if (it is CancellationException) throw it
+                    if (_state.value == AccountState.Unknown) {
+                        val last = runCatching { prefs.savedProfile() }.getOrNull()
+                        // Either way the site hasn't said yet: ask again once the network is back.
+                        unconfirmed = true
+                        _state.value = if (last != null) AccountState.SignedIn(last) else AccountState.SignedOut
+                    }
+                }
+        }
+        refreshJob = job
+        return job
     }
 
-    suspend fun login(email: String, password: String): Profile =
-        api.login(email, password).also { signIn(it) }
+    suspend fun login(email: String, password: String): Profile {
+        refreshJob?.cancel()
+        refreshJob = null
+        return api.login(email, password).also { signIn(it) }
+    }
 
     /** After signing in through the site page: take its cookies and confirm who we are. */
     suspend fun adoptBrowserSession(cookieHeader: String): Profile? {
+        refreshJob?.cancel()
+        refreshJob = null
         api.cookies.import(cookieHeader)
         val p = runCatching { api.profile() }.getOrNull()
         if (p != null) signIn(p)
@@ -93,6 +110,8 @@ class Account(
 
     /** Signs out of the app and of the in-app site page too, so the next site sign-in can be another account. */
     fun logout() {
+        refreshJob?.cancel()
+        refreshJob = null
         api.logout()
         runCatching { android.webkit.CookieManager.getInstance().apply { removeAllCookies(null); flush() } }
         _expired.value = false

@@ -40,9 +40,12 @@ import app.neifur.core.userMessage
 import app.neifur.data.a365.Picker
 import app.neifur.data.a365.Translation
 import app.neifur.data.a365.TranslationKind
+import app.neifur.data.a365.VideoChannel
 import app.neifur.data.WatchEntry
 import app.neifur.ui.NeifurTheme
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
@@ -65,7 +68,7 @@ class PlayerActivity : ComponentActivity() {
     private var reconnecting by mutableStateOf(false)
     private var error by mutableStateOf<String?>(null)
     private var inPip by mutableStateOf(false)
-    private var started = false
+    private var backgrounded by mutableStateOf(false)
     private var loadJob: Job? = null
     private var recoverJob: Job? = null
     private var pipUpdateJob: Job? = null
@@ -216,12 +219,14 @@ class PlayerActivity : ComponentActivity() {
         lifecycleScope.launch {
             snapshotFlow { player.ended }.collect { ended ->
                 if (!ended) sleepStoppedEpisode = false
-                else if (sleep == SleepTimer.EndOfEpisode) {
-                    sleepStoppedEpisode = true
-                    sleep = SleepTimer.Off
-                    saveProgress()
-                    player.pause(true)
-                    notice = "Таймер сна: серия закончилась"
+                else {
+                    if (player.loaded) { saveProgress(); markIfWatched() }
+                    if (sleep == SleepTimer.EndOfEpisode) {
+                        sleepStoppedEpisode = true
+                        sleep = SleepTimer.Off
+                        player.pause(true)
+                        notice = "Таймер сна: серия закончилась"
+                    }
                 }
             }
         }
@@ -268,11 +273,11 @@ class PlayerActivity : ComponentActivity() {
                 val curSession = sessionState ?: return@NeifurTheme
                 PlayerScreen(
                     player = player, session = curSession, index = index, resolving = resolving, reconnecting = reconnecting,
-                    error = error, inPip = inPip, stream = stream, notice = notice, watched = watched,
+                    error = error, inPip = inPip, isForeground = !backgrounded || inPip, stream = stream, notice = notice, watched = watched,
                     sleep = sleep, sleepRemainingMs = { sleepRemainingMs },
                     autoNextBlocked = sleep == SleepTimer.EndOfEpisode || sleepStoppedEpisode,
-                    onTranslation = ::switchTranslation, onHeight = { h -> loadEpisode(index, resumeAt = player.position, height = h, keep = true) },
-                    onBack = { finish() }, onRetry = { channelChecked = false; freshEmbedRetried = false; loadEpisode(index) }, onEpisode = { loadEpisode(it) }, onPip = { enterPip() },
+                    onTranslation = ::switchTranslation, onHeight = { h -> loadEpisode(index, resumeAt = player.position, height = h, keep = true, preservePaused = player.paused) },
+                    onBack = { finish() }, onRetry = { channelChecked = false; channelProbeJob?.cancel(); channelProbeJob = null; freshEmbedRetried = false; loadEpisode(index) }, onEpisode = { loadEpisode(it) }, onPip = { enterPip() },
                     onVideoBounds = { r ->
                         val rect = android.graphics.Rect(r.left.toInt(), r.top.toInt(), r.right.toInt(), r.bottom.toInt())
                         if (!inPip && rect.width() > 0 && rect != videoRect) { videoRect = rect; schedulePipUpdate() }
@@ -315,7 +320,10 @@ class PlayerActivity : ComponentActivity() {
         error = null
         notice = null
         sleepStoppedEpisode = false
+        backgrounded = false
         channelChecked = false
+        channelProbeJob?.cancel()
+        channelProbeJob = null
         freshEmbedRetried = false
         streamUrls = emptyList()
         streamUrlIndex = 0
@@ -334,6 +342,7 @@ class PlayerActivity : ComponentActivity() {
         height: Int? = null,
         keep: Boolean = false,
         fromRecover: Boolean = false,
+        preservePaused: Boolean = false,
         rollback: Triple<StreamUi, String?, String?>? = null,
     ) {
         val ep = session.episodes.getOrNull(i) ?: return
@@ -342,6 +351,8 @@ class PlayerActivity : ComponentActivity() {
         openJob?.cancel()
         openFallbackJob?.cancel()
         if (!fromRecover) {
+            channelProbeJob?.cancel()
+            channelProbeJob = null
             recoverJob?.cancel()
             reconnects = 0
             reconnecting = false
@@ -382,7 +393,8 @@ class PlayerActivity : ComponentActivity() {
                     streamStart = start
                     player.preferAudio(if (tr.kind == TranslationKind.VoiceRu) "ru,rus" else if (tr.kind == TranslationKind.VoiceEn) "en,eng" else "ja,jpn,jp")
                     playingIndex = i; playingTr = tr
-                    player.load(local.video.absolutePath, start, sub, null, startPaused = !started && !inPip)
+                    recoverJob?.cancel()
+                    player.load(local.video.absolutePath, start, sub, null) { (backgrounded && !inPip) || preservePaused }
                     return@runCatching
                 }
                 val quality = c.prefs.quality.first()
@@ -424,18 +436,24 @@ class PlayerActivity : ComponentActivity() {
                 streamRef = c.a365.baseUrl() + "/"
                 streamStart = start
                 playingIndex = i; playingTr = tr
-                player.load(streamUrls.first(), start, streamSub, streamRef, startPaused = !started && !inPip)
+                recoverJob?.cancel()
+                player.load(streamUrls.first(), start, streamSub, streamRef) { (backgrounded && !inPip) || preservePaused }
                 watchOpening(ep.id, start)
             }.onFailure {
                 if (it is kotlinx.coroutines.CancellationException) throw it
                 reconnecting = false
-                if (resumeAt != null && player.loaded) {
+                if (!fromRecover && resumeAt != null && player.loaded) {
                     // Keep the currently playing stream alive instead of showing a full-screen error over active video.
                     rollback?.let { (oldStream, oldPick, oldName) ->
                         stream = oldStream; pick = oldPick; pickName = oldName; syncContainerSession()
                     }
                     notice = it.userMessage()
+                } else if (fromRecover && reconnects < 2 && container.online.value) {
+                    notice = it.userMessage()
+                    recoverJob?.cancel()
+                    recoverJob = lifecycleScope.launch { delay(1500); recover() }
                 } else {
+                    player.stop()
                     error = it.userMessage()
                 }
             }
@@ -451,7 +469,7 @@ class PlayerActivity : ComponentActivity() {
         syncContainerSession()
         lifecycleScope.launch { container.prefs.setPick(session.anime.id, t.pickKey) }
         stream = stream.copy(current = t)
-        loadEpisode(index, resumeAt = player.position.takeIf { player.loaded }, keep = true, rollback = rollback)
+        loadEpisode(index, resumeAt = player.position.takeIf { player.loaded }, keep = true, preservePaused = player.paused, rollback = rollback)
     }
 
     /** Past 85% the episode counts as watched on Anime 365 too (the site moves the list counter itself). */
@@ -468,6 +486,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private var channelChecked = false
+    private var channelProbeJob: Deferred<Pair<VideoChannel?, VideoChannel>?>? = null
     private var openJob: Job? = null
     private var openFallbackJob: Job? = null
     private var streamUrls: List<String> = emptyList()
@@ -476,6 +495,18 @@ class PlayerActivity : ComponentActivity() {
     private var streamRef: String? = null
     private var streamStart = 0.0
     private var freshEmbedRetried = false
+
+    private suspend fun probeChannelsOnce(): Pair<VideoChannel?, VideoChannel>? {
+        channelProbeJob?.takeIf { it.isActive }?.let { return it.await() }
+        if (channelChecked) return null
+        val job = lifecycleScope.async { runCatching { container.channels.ensureWorking(preferSwitch = true) }.getOrNull() }
+        channelProbeJob = job
+        return try {
+            job.await().also { channelChecked = true }
+        } finally {
+            if (channelProbeJob === job) channelProbeJob = null
+        }
+    }
 
     /**
      * When libmpv fails to open the current video URL: silently walk backup URLs first, then probe & lock
@@ -486,7 +517,7 @@ class PlayerActivity : ComponentActivity() {
         openFallbackJob?.cancel()
         if (streamUrlIndex + 1 < streamUrls.size) {
             streamUrlIndex++
-            player.load(streamUrls[streamUrlIndex], streamStart, streamSub, streamRef, startPaused = !started && !inPip)
+            player.load(streamUrls[streamUrlIndex], streamStart, streamSub, streamRef) { backgrounded && !inPip }
             sessionState?.episodes?.getOrNull(index)?.id?.let { watchOpening(it, streamStart) }
             return
         }
@@ -500,10 +531,9 @@ class PlayerActivity : ComponentActivity() {
         }
         openFallbackJob = lifecycleScope.launch {
             reconnecting = true
-            if (!channelChecked) {
-                channelChecked = true
+            if (!channelChecked || channelProbeJob?.isActive == true) {
                 notice = "Канал не отвечает — подбираем рабочий…"
-                val fix = runCatching { container.channels.ensureWorking(preferSwitch = true) }.getOrNull()
+                val fix = probeChannelsOnce()
                 if (sessionState?.episodes?.getOrNull(index)?.id != targetEpId) return@launch
                 if (fix != null) {
                     val (old, new) = fix
@@ -538,9 +568,8 @@ class PlayerActivity : ComponentActivity() {
             delay(8_000)
             if (player.loaded || player.failed || error != null || channelChecked) return@launch
             if (session.episodes.getOrNull(index)?.id != episodeId) return@launch
-            channelChecked = true
             notice = "Видео не грузится — подбираем рабочий канал…"
-            val fix = runCatching { container.channels.ensureWorking(preferSwitch = true) }.getOrNull()
+            val fix = probeChannelsOnce()
             if (player.loaded || session.episodes.getOrNull(index)?.id != episodeId) return@launch
             if (fix != null) {
                 val (old, new) = fix
@@ -552,7 +581,7 @@ class PlayerActivity : ComponentActivity() {
 
     /** The stream broke mid-episode (links expire or the connection dropped): fetch fresh links and continue. */
     private fun recover() {
-        if (reconnects >= 3) { error = "Поток оборвался. Проверьте соединение"; reconnecting = false; return }
+        if (reconnects >= 3) { player.stop(); error = "Поток оборвался. Проверьте соединение"; reconnecting = false; return }
         reconnects++
         reconnecting = true
         val at = player.position
@@ -715,14 +744,14 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        started = true
+        backgrounded = false
         if (!inPip) hideSystemBars()
         if (::media.isInitialized) { media.activate(); syncMedia() }
     }
 
     override fun onStop() {
         super.onStop()
-        started = false
+        backgrounded = true
         if (::player.isInitialized) { saveProgress(); player.pause(true) }
         if (::media.isInitialized) media.deactivate()
         // onStop while in PiP with screen still on means the user dismissed the floating window;

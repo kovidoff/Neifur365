@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import okhttp3.Call
@@ -31,7 +33,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /** One episode saved on this phone for offline playback (MP4 + optional ASS subtitles). */
 @Serializable
@@ -62,20 +66,21 @@ data class DownloadedEpisode(
 
     fun toTranslation(): Translation {
         val kind = runCatching { TranslationKind.valueOf(translationKind) }.getOrDefault(TranslationKind.VoiceRu)
-        val (typeKind, typeLang) = when (kind) {
-            TranslationKind.VoiceRu -> "voice" to "ru"
-            TranslationKind.SubRu -> "sub" to "ru"
-            TranslationKind.VoiceEn -> "voice" to "en"
-            TranslationKind.SubEn -> "sub" to "en"
-            TranslationKind.VoiceUk -> "voice" to "uk"
-            TranslationKind.SubUk -> "sub" to "uk"
-            TranslationKind.SubJa -> "sub" to "ja"
-            TranslationKind.Raw -> "raw" to "ja"
-            TranslationKind.Hidden -> "voice" to "ru"
+        val (typeStr, typeKind, typeLang) = when (kind) {
+            TranslationKind.VoiceRu -> Triple("voiceRu", "voice", "ru")
+            TranslationKind.SubRu -> Triple("subRu", "sub", "ru")
+            TranslationKind.VoiceEn -> Triple("voiceEn", "voice", "en")
+            TranslationKind.SubEn -> Triple("subEn", "sub", "en")
+            TranslationKind.VoiceUk -> Triple("voiceUk", "voice", "uk")
+            TranslationKind.SubUk -> Triple("subUk", "sub", "uk")
+            TranslationKind.SubJa -> Triple("subJa", "sub", "ja")
+            TranslationKind.Raw -> Triple("raw", "raw", "ja")
+            TranslationKind.Hidden -> Triple("voiceRu", "voice", "ru")
         }
         return Translation(
             id = translationId,
             authorsSummary = studioName,
+            type = typeStr,
             typeKind = typeKind,
             typeLang = typeLang,
             episodeId = episodeId,
@@ -175,6 +180,7 @@ private data class PendingDownload(
     val episode: Episode,
     val pickKey: String?,
     val pickName: String?,
+    val token: Long,
 )
 
 /**
@@ -194,6 +200,9 @@ class DownloadManager(
     }
     private val indexFile = File(dir, "index.json")
     private val listSer = ListSerializer(DownloadedEpisode.serializer())
+    private val indexMutex = Mutex()
+    private val tokenGen = AtomicLong(0)
+    private val activeTokens = ConcurrentHashMap<Long, Long>()
 
     // Dedicated client with generous read timeout and no total call timeout for multi-hundred-MB MP4 streams.
     private val http: OkHttpClient = baseHttp.newBuilder()
@@ -214,12 +223,18 @@ class DownloadManager(
 
     init {
         scope.launch(Dispatchers.IO) {
-            val raw = readIndex()
-            val loaded = raw.filter { File(dir, it.videoFile).exists() }
-            // Clean leftover temp files from an interrupted process kill.
-            dir.listFiles()?.filter { it.name.endsWith(".part") }?.forEach { runCatching { it.delete() } }
-            if (loaded.size != raw.size) writeIndex(loaded)
-            _state.update { it.copy(items = loaded) }
+            indexMutex.withLock {
+                val raw = readIndex()
+                val loaded = raw.filter { File(dir, it.videoFile).exists() }
+                val activePart = currentId?.let { "ep_$it.mp4.part" }
+                // Clean leftover temp files from an interrupted process kill without touching active downloads.
+                dir.listFiles()?.filter { it.name.endsWith(".part") && it.name != activePart }
+                    ?.forEach { runCatching { it.delete() } }
+                if (loaded.size != raw.size) writeIndex(loaded)
+                val existing = _state.value.items
+                val merged = if (existing.isEmpty()) loaded else (existing + loaded).distinctBy { it.episodeId }
+                _state.update { it.copy(items = merged) }
+            }
         }
     }
 
@@ -238,7 +253,9 @@ class DownloadManager(
         val existing = s.active[episode.id]
         if (existing is DownloadStatus.Queued || existing is DownloadStatus.Running) return
 
-        val req = PendingDownload(anime, episode, pickKey, pickName)
+        val token = tokenGen.incrementAndGet()
+        activeTokens[episode.id] = token
+        val req = PendingDownload(anime, episode, pickKey, pickName, token)
         synchronized(queue) {
             requests[episode.id] = req
             queue.removeAll { it.episode.id == episode.id }
@@ -261,6 +278,7 @@ class DownloadManager(
     }
 
     fun cancel(episodeId: Long) {
+        activeTokens.remove(episodeId)
         synchronized(queue) {
             queue.removeAll { it.episode.id == episodeId }
             requests.remove(episodeId)
@@ -270,39 +288,61 @@ class DownloadManager(
             currentJob?.cancel()
         }
         _state.update { it.copy(active = it.active - episodeId) }
-        File(dir, "ep_$episodeId.mp4.part").delete()
-        File(dir, "ep_$episodeId.ass.part").delete()
+        scope.launch(Dispatchers.IO) {
+            runCatching { File(dir, "ep_$episodeId.mp4.part").delete() }
+            runCatching { File(dir, "ep_$episodeId.ass.part").delete() }
+            if (!_state.value.isDownloaded(episodeId)) {
+                runCatching { File(dir, "ep_$episodeId.ass").delete() }
+                runCatching { File(dir, "ep_$episodeId.vtt").delete() }
+            }
+        }
     }
 
     fun cancelAll() {
+        activeTokens.clear()
         synchronized(queue) { queue.clear(); requests.clear() }
         activeCall?.cancel()
         currentJob?.cancel()
         _state.update { it.copy(active = emptyMap()) }
+        scope.launch(Dispatchers.IO) {
+            dir.listFiles()?.filter { it.name.endsWith(".part") }?.forEach { runCatching { it.delete() } }
+        }
     }
 
     fun delete(episodeId: Long) {
         val removed = _state.value.find(episodeId) ?: return
-        val next = _state.value.items.filterNot { it.episodeId == episodeId }
-        _state.update { it.copy(items = next) }
+        _state.update { it.copy(items = it.items.filterNot { d -> d.episodeId == episodeId }) }
         scope.launch(Dispatchers.IO) {
-            runCatching { File(dir, removed.videoFile).delete() }
-            removed.subFile?.let { runCatching { File(dir, it).delete() } }
-            writeIndex(next)
+            indexMutex.withLock {
+                runCatching { File(dir, removed.videoFile).delete() }
+                removed.subFile?.let { runCatching { File(dir, it).delete() } }
+                var snapshot: List<DownloadedEpisode> = emptyList()
+                _state.update { st ->
+                    snapshot = st.items.filterNot { it.episodeId == episodeId }
+                    st.copy(items = snapshot)
+                }
+                writeIndex(snapshot)
+            }
         }
     }
 
     fun deleteAnime(animeId: String) {
         val toRemove = _state.value.items.filter { it.animeId == animeId }
         if (toRemove.isEmpty()) return
-        val next = _state.value.items.filterNot { it.animeId == animeId }
-        _state.update { it.copy(items = next) }
+        _state.update { it.copy(items = it.items.filterNot { d -> d.animeId == animeId }) }
         scope.launch(Dispatchers.IO) {
-            toRemove.forEach { d ->
-                runCatching { File(dir, d.videoFile).delete() }
-                d.subFile?.let { runCatching { File(dir, it).delete() } }
+            indexMutex.withLock {
+                toRemove.forEach { d ->
+                    runCatching { File(dir, d.videoFile).delete() }
+                    d.subFile?.let { runCatching { File(dir, it).delete() } }
+                }
+                var snapshot: List<DownloadedEpisode> = emptyList()
+                _state.update { st ->
+                    snapshot = st.items.filterNot { it.animeId == animeId }
+                    st.copy(items = snapshot)
+                }
+                writeIndex(snapshot)
             }
-            writeIndex(next)
         }
     }
 
@@ -310,11 +350,13 @@ class DownloadManager(
         val all = _state.value.items
         _state.update { it.copy(items = emptyList()) }
         scope.launch(Dispatchers.IO) {
-            all.forEach { d ->
-                runCatching { File(dir, d.videoFile).delete() }
-                d.subFile?.let { runCatching { File(dir, it).delete() } }
+            indexMutex.withLock {
+                all.forEach { d ->
+                    runCatching { File(dir, d.videoFile).delete() }
+                    d.subFile?.let { runCatching { File(dir, it).delete() } }
+                }
+                writeIndex(_state.value.items)
             }
-            writeIndex(emptyList())
         }
     }
 
@@ -350,7 +392,7 @@ class DownloadManager(
 
         fun setRunning(progress: Float, bytes: Long, total: Long) {
             _state.update { st ->
-                if (ep.id !in st.active) st
+                if (activeTokens[ep.id] != req.token || ep.id !in st.active) st
                 else st.copy(
                     active = st.active + (ep.id to DownloadStatus.Running(
                         ep.id, req.anime.id, req.anime.title, req.anime.poster, ep.number, ep.label,
@@ -361,6 +403,7 @@ class DownloadManager(
         }
 
         try {
+            if (activeTokens[ep.id] != req.token) return
             setRunning(0f, 0L, 0L)
             val dlQuality = prefs.downloadQuality.first().takeIf { it > 0 } ?: prefs.quality.first()
             val list = a365.episode(ep.id).translations.orEmpty()
@@ -372,15 +415,26 @@ class DownloadManager(
             if (streams.isEmpty()) throw ApiError("Anime 365 не отдал видео для скачивания")
             val chosenStream = streams.firstOrNull { it.height <= dlQuality } ?: streams.last()
 
-            // Optional external ASS subtitles.
-            embed.subtitlesUrl?.takeIf { it.isNotBlank() }?.let { url ->
-                runCatching {
-                    val text = a365.subtitles(url)
-                    val name = "ep_${ep.id}.ass"
-                    val file = File(dir, name)
-                    file.writeText(text)
-                    subName = name
-                    subFinal = file
+            // Optional external ASS subtitles (with VTT fallback when provided).
+            val subCandidates = listOfNotNull(
+                embed.subtitlesUrl?.takeIf { it.isNotBlank() }?.let { it to "ass" },
+                embed.subtitlesVttUrl?.takeIf { it.isNotBlank() }?.let { it to "vtt" },
+            )
+            if (subCandidates.isNotEmpty()) {
+                var subErr: Throwable? = null
+                for ((url, ext) in subCandidates) {
+                    val text = runCatching { a365.subtitles(url) }.onFailure { subErr = it }.getOrNull()
+                    if (!text.isNullOrBlank()) {
+                        val name = "ep_${ep.id}.$ext"
+                        val file = File(dir, name)
+                        file.writeText(text)
+                        subName = name
+                        subFinal = file
+                        break
+                    }
+                }
+                if (subFinal == null && tr.kind.isSubs) {
+                    throw (subErr as? ApiError ?: ApiError("Не удалось скачать субтитры"))
                 }
             }
 
@@ -426,6 +480,7 @@ class DownloadManager(
                         }
                     }
                     if (written <= 0L) throw ApiError("Скачан пустой файл")
+                    if (total > 0L && written < total) throw ApiError("Загрузка оборвалась раньше времени")
                 }
             } finally {
                 if (activeCall === call) activeCall = null
@@ -457,24 +512,38 @@ class DownloadManager(
                 downloadedAt = System.currentTimeMillis(),
             )
             synchronized(queue) { requests.remove(ep.id) }
-            val updated = listOf(saved) + _state.value.items.filterNot { it.episodeId == ep.id }
-            writeIndex(updated)
-            _state.update { st -> st.copy(items = updated, active = st.active - ep.id) }
+            val stillCurrent = activeTokens.remove(ep.id, req.token)
+            indexMutex.withLock {
+                var updated: List<DownloadedEpisode> = emptyList()
+                _state.update { st ->
+                    updated = listOf(saved) + st.items.filterNot { it.episodeId == ep.id }
+                    st.copy(items = updated, active = if (stillCurrent) st.active - ep.id else st.active)
+                }
+                writeIndex(updated)
+            }
         } catch (e: CancellationException) {
-            runCatching { videoPart.delete() }
-            subFinal?.let { runCatching { it.delete() } }
-            _state.update { st -> st.copy(active = st.active - ep.id) }
+            val stillCurrent = activeTokens.remove(ep.id, req.token)
+            if (stillCurrent || activeTokens[ep.id] == null) {
+                runCatching { videoPart.delete() }
+                subFinal?.let { runCatching { it.delete() } }
+            }
+            if (stillCurrent) _state.update { st -> st.copy(active = st.active - ep.id) }
             throw e
         } catch (e: Throwable) {
-            runCatching { videoPart.delete() }
-            subFinal?.let { runCatching { it.delete() } }
-            _state.update { st ->
-                if (ep.id !in st.active) st
-                else st.copy(
-                    active = st.active + (ep.id to DownloadStatus.Failed(
-                        ep.id, req.anime.id, req.anime.title, req.anime.poster, ep.number, ep.label, e.userMessage(),
-                    ))
-                )
+            val stillCurrent = activeTokens.remove(ep.id, req.token)
+            if (stillCurrent || activeTokens[ep.id] == null) {
+                runCatching { videoPart.delete() }
+                subFinal?.let { runCatching { it.delete() } }
+            }
+            if (stillCurrent) {
+                _state.update { st ->
+                    if (ep.id !in st.active) st
+                    else st.copy(
+                        active = st.active + (ep.id to DownloadStatus.Failed(
+                            ep.id, req.anime.id, req.anime.title, req.anime.poster, ep.number, ep.label, e.userMessage(),
+                        ))
+                    )
+                }
             }
         }
     }

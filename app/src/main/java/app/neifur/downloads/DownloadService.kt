@@ -27,21 +27,24 @@ import kotlinx.coroutines.launch
 class DownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var observer: Job? = null
+    private var lastStartId = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_CANCEL) {
-            applicationContext.container.downloads.cancelAll()
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        lastStartId = startId
         ensureChannel()
         val initial = buildNotification(applicationContext.container.downloads.state.value)
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(NOTIF_ID, initial, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
             startForeground(NOTIF_ID, initial)
+        }
+        if (intent?.action == ACTION_CANCEL) {
+            applicationContext.container.downloads.cancelAll()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
         if (observer == null) {
             observer = scope.launch {
@@ -53,7 +56,7 @@ class DownloadService : Service() {
                 applicationContext.container.downloads.state.collect { st ->
                     if (st.runningCount == 0) {
                         stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                        stopSelf(lastStartId)
                         return@collect
                     }
                     val run = st.currentRunning
@@ -75,6 +78,12 @@ class DownloadService : Service() {
             }
         }
         return START_NOT_STICKY
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        applicationContext.container.downloads.cancelAll()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf(startId)
     }
 
     override fun onDestroy() {

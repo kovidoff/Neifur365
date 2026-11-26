@@ -100,7 +100,7 @@ fun QuickAnimeSheet(
             isMovie = isMovie,
             onDismiss = { openFullEditor = false; onDismiss() },
             onChange = { st, w, sc ->
-                scope.launch {
+                c.scope.launch {
                     c.lists.set(seriesId, st, w, sc, series = series ?: listed?.series, title = stub.title)
                         .onFailure { onNotice(it.userMessage()) }
                 }

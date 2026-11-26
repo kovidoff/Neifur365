@@ -52,6 +52,12 @@ internal fun isHtmlResponse(body: String): Boolean {
     return t.startsWith("<!DOCTYPE", ignoreCase = true) || t.startsWith("<html", ignoreCase = true)
 }
 
+internal fun hostMatchesDomain(host: String, domain: String): Boolean {
+    val h = host.lowercase()
+    val d = domain.lowercase()
+    return h == d || h.endsWith(".$d")
+}
+
 internal fun isHardMirrorFailure(e: Throwable): Boolean =
     e is MirrorBlockedException ||
         e is java.net.UnknownHostException ||
@@ -112,6 +118,7 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
     companion object {
         /** Official addresses. smotret-anime.app is the one the site recommends for Russia (no VPN needed). */
         val BUILTIN = listOf("smotret-anime.app", "smotret-anime.co", "smotretanime.co", "smotret-anime.com", "smotret-anime.org")
+        private val EXTRA_SITE_HOSTS = listOf("anime365.ru", "smotret-anime.ru")
         const val CARD_FIELDS = "id,myAnimeListId,myAnimeListScore,numberOfEpisodes,season,year,type,typeTitle,isAiring,titles,posterUrl,posterUrlSmall,genres"
         private const val BROWSER_UA = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Mobile Safari/537.36"
     }
@@ -119,8 +126,11 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
     @Volatile private var known: Set<String> = BUILTIN.toSet()
 
     /** Whether [host] is one of the site's addresses (built-in or added by the viewer). */
-    fun isSiteHost(host: String?): Boolean = host != null && (host in known || BUILTIN.any { host.endsWith(it) })
-    val cookies = SessionCookies(context) { h -> h in known || BUILTIN.any { h.endsWith(it) } }
+    fun isSiteHost(host: String?): Boolean =
+        host != null && (known.any { hostMatchesDomain(host, it) } || EXTRA_SITE_HOSTS.any { hostMatchesDomain(host, it) })
+    val cookies = SessionCookies(context) { h ->
+        known.any { hostMatchesDomain(h, it) } || EXTRA_SITE_HOSTS.any { hostMatchesDomain(h, it) }
+    }
 
     /**
      * The phone's own browser identity (WebView's, without the "wv" mark). The in-app site page uses the same one,
@@ -168,7 +178,10 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
 
     /** The address requests go to: the saved one, or (first launch, or it stopped working) the fastest live one. */
     suspend fun host(): String {
-        prefs.mirror.first()?.let { return it }
+        prefs.mirror.first()?.let {
+            if (it !in known) known = known + it
+            return it
+        }
         return resolveMirror()
     }
 
@@ -202,7 +215,11 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
         runCatching { resolveMirror(exclude = if (!st.ok) cur else null, forceReprobe = true) }
     }
 
-    suspend fun pick(host: String) { prefs.setMirrorAuto(false); prefs.setMirror(host) }
+    suspend fun pick(host: String) {
+        if (host !in known) known = known + host
+        prefs.setMirrorAuto(false)
+        prefs.setMirror(host)
+    }
 
     suspend fun removeCustom(host: String) {
         prefs.setCustomMirrors(prefs.customMirrors.first() - host)
@@ -229,7 +246,7 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
     suspend fun baseUrl(): String = "https://${host()}"
 
     // --- transport -------------------------------------------------------------------------------------
-    private suspend fun text(req: Request): String = withContext(Dispatchers.IO) {
+    private suspend fun text(req: Request, allow403: Boolean = false): String = withContext(Dispatchers.IO) {
         val t0 = System.currentTimeMillis()
         val call = runCatching { http.newCall(req).await() }
             .onFailure { if (dumpDir != null) android.util.Log.w("A365", "${req.method} ${req.url.encodedPath} failed: $it") }
@@ -237,8 +254,8 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
         call.use { r ->
             val body = r.body?.string().orEmpty()
             if (dumpDir != null) android.util.Log.d("A365", "${req.method} ${req.url.encodedPath} → ${r.code} in ${System.currentTimeMillis() - t0} ms")
-            if (isMirrorBlockedBody(body)) throw MirrorBlockedException("Cloudflare challenge on ${req.url.host}")
-            if (!r.isSuccessful && r.code != 403) throw HttpError(r.code, body.take(300))
+            if (isHtmlResponse(body) && isMirrorBlockedBody(body)) throw MirrorBlockedException("Cloudflare challenge on ${req.url.host}")
+            if (!r.isSuccessful && !(allow403 && r.code == 403)) throw HttpError(r.code, body.take(300))
             // Debug builds keep the last copy of each site page, to check the parsers against real markup.
             if (dumpDir != null && !req.url.encodedPath.startsWith("/api")) runCatching {
                 val name = (req.url.encodedPath.trim('/').ifEmpty { "index" } + "_" + req.url.query.orEmpty()).replace(Regex("[^\\w.-]"), "_").take(80)
@@ -252,7 +269,7 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
         if (app.neifur.BuildConfig.DEBUG) java.io.File(context.filesDir, "pages").apply { mkdirs() } else null
 
     private suspend fun <T> api(path: String, ser: KSerializer<T>): T = mirrored { base ->
-        val raw = text(Request.Builder().url("$base/api$path").header("Accept", "application/json").build())
+        val raw = text(Request.Builder().url("$base/api$path").header("Accept", "application/json").build(), allow403 = true)
         if (isHtmlResponse(raw)) throw MirrorBlockedException("HTML response instead of JSON on $base")
         val root = runCatching { AppJson.parseToJsonElement(raw).jsonObject }.getOrNull()
             ?: throw ApiError("Anime 365 ответил что-то непонятное")
@@ -364,9 +381,15 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
     }
 
     /** Subtitle files are served to the signed-in session only, so they're fetched here rather than by the player. */
-    suspend fun subtitles(url: String): String = mirrored { base -> text(Request.Builder().url(SitePages.resolve(base, url)).build()) }
+    suspend fun subtitles(url: String): String = mirrored { base ->
+        val body = text(Request.Builder().url(SitePages.resolve(base, url)).build())
+        if (isHtmlResponse(body)) throw ApiError("Сервер вернул HTML вместо субтитров")
+        body
+    }
 
     // --- account ---------------------------------------------------------------------------------------
+    private val commentCache = ConcurrentHashMap<Long, String>()
+
     suspend fun login(email: String, password: String): Profile {
         val html = post("/users/login", mapOf("LoginForm[username]" to email.trim(), "LoginForm[password]" to password, "dynpage" to "1", "yt0" to ""))
         if (SitePages.loginFailed(html)) throw InvalidCredentials()
@@ -379,7 +402,10 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
         return mirrored { base -> SitePages.profile(text(Request.Builder().url("$base/users/profile?dynpage=1").build()), base) }
     }
 
-    fun logout() = cookies.clear()
+    fun logout() {
+        cookies.clear()
+        commentCache.clear()
+    }
 
     /** Called when the site turns out to have ended a session the app still holds (password changed, expired). */
     @Volatile var onSessionLost: (() -> Unit)? = null
@@ -405,22 +431,44 @@ class Anime365(context: Context, base: OkHttpClient, private val prefs: Prefs) {
     suspend fun listRecord(seriesId: Long): ListRecord {
         val html = page("/animelist/edit/$seriesId?mode=mini")
         if (SitePages.isSignedOut(html)) throw sessionLost()
-        return SitePages.listRecord(html)
+        return SitePages.listRecord(html).also {
+            if (it.status == null) commentCache.remove(seriesId) else commentCache[seriesId] = it.comment
+        }
     }
 
     /** [status] null removes the title from the list. */
-    suspend fun setListRecord(seriesId: Long, status: ListStatus?, watched: Int, score: Int?) {
-        post(
-            "/animelist/edit/$seriesId?mode=mini",
-            mapOf(
-                "UsersRates[score]" to (score ?: 0).toString(), "UsersRates[episodes]" to watched.toString(),
-                "UsersRates[status]" to (status?.id ?: 99).toString(), "UsersRates[comment]" to "",
-            ),
-        )
+    suspend fun setListRecord(seriesId: Long, status: ListStatus?, watched: Int, score: Int?, comment: String? = null) {
+        if (status == null) commentCache.remove(seriesId)
+        val resolvedComment = if (status == null) {
+            ""
+        } else {
+            comment ?: commentCache[seriesId] ?: runCatching { listRecord(seriesId).comment }.getOrDefault("").also {
+                commentCache[seriesId] = it
+            }
+        }
+        val html = try {
+            post(
+                "/animelist/edit/$seriesId?mode=mini",
+                mapOf(
+                    "UsersRates[score]" to (score ?: 0).toString(), "UsersRates[episodes]" to watched.toString(),
+                    "UsersRates[status]" to (status?.id ?: 99).toString(), "UsersRates[comment]" to resolvedComment,
+                ),
+            )
+        } catch (e: HttpError) {
+            if (e.code == 403) throw sessionLost() else throw e
+        }
+        if (SitePages.isSignedOut(html)) throw sessionLost()
     }
 
     /** Marks the episode of this translation as watched; the site moves the list counter itself. */
-    suspend fun markWatched(translationId: Long) { post("/translations/watched/$translationId", emptyMap()) }
+    suspend fun markWatched(translationId: Long) {
+        val html = try {
+            post("/translations/watched/$translationId", emptyMap())
+        } catch (e: HttpError) {
+            if (e.code == 403) throw sessionLost() else throw e
+        }
+        if (SitePages.isSignedOut(html)) throw sessionLost()
+    }
 
     // --- video channels ----------------------------------------------------------------------------------
 

@@ -10,6 +10,7 @@ import app.neifur.data.a365.SitePages
 import app.neifur.data.a365.Translation
 import app.neifur.data.a365.TranslationKind
 import app.neifur.data.a365.VideoChannel
+import app.neifur.data.a365.hostMatchesDomain
 import app.neifur.data.a365.isHardMirrorFailure
 import app.neifur.data.a365.isHtmlResponse
 import app.neifur.data.a365.isMirrorBlockedBody
@@ -82,6 +83,16 @@ class Anime365Test {
         assertEquals(1L, Picker.best(listOf(a, b), 2160)!!.id)
     }
 
+    @Test fun pickerBestHandles4kBdVs720AndUnknownHeight() {
+        val bd4k = Translation(1, "Studio", type = "voiceRu", typeKind = "voice", typeLang = "ru", qualityType = "bd", height = 2160, priority = 5)
+        val tv720 = bd4k.copy(id = 2, qualityType = "tv", height = 720, priority = 1)
+        assertEquals(1L, Picker.best(listOf(bd4k, tv720), 1080)!!.id)
+
+        val unknown = Translation(10, "Studio", type = "voiceRu", typeKind = "voice", typeLang = "ru", height = 0, priority = 99)
+        val fullHd = Translation(11, "Studio", type = "voiceRu", typeKind = "voice", typeLang = "ru", height = 1080, priority = 1)
+        assertEquals(11L, Picker.best(listOf(unknown, fullHd), 720)!!.id)
+    }
+
     @Test fun authorDropsReleaseNotes() {
         val t = Translation(1, "Freedub Studio [ТВ] (BD)", typeKind = "voice", typeLang = "ru")
         assertEquals("Freedub Studio", t.author)
@@ -142,10 +153,20 @@ class Anime365Test {
             <input id="UsersRates_episodes" value="3">
             <select id="UsersRates_status"><option value="0">План</option><option value="1" selected>Смотрю</option></select>
             <select id="UsersRates_score"><option value="0">-</option><option value="8" selected>8</option></select>
+            <textarea id="UsersRates_comment" name="UsersRates[comment]">Шедевр 10/10</textarea>
         """.trimIndent()
         val r = SitePages.listRecord(html)
         assertEquals(ListStatus.Watching, r.status); assertEquals(3, r.watched); assertEquals(8, r.score)
+        assertEquals("Шедевр 10/10", r.comment)
         assertNull(SitePages.listRecord("<button>Добавить в список</button>").status)
+    }
+
+    @Test fun hostMatchingRejectsSpoofedSuffixesAndMatchesSubdomains() {
+        assertTrue(hostMatchesDomain("smotret-anime.app", "smotret-anime.app"))
+        assertTrue(hostMatchesDomain("www.anime365.ru", "anime365.ru"))
+        assertTrue(hostMatchesDomain("CDN.SMOTRET-ANIME.APP", "smotret-anime.app"))
+        assertFalse(hostMatchesDomain("evilsmotret-anime.app", "smotret-anime.app"))
+        assertFalse(hostMatchesDomain("anime365.ru.evil.com", "anime365.ru"))
     }
 
     @Test fun mirrorBlockAndHtmlDetection() {

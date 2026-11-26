@@ -263,7 +263,7 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         startAt: Double,
         subtitles: Triple<String, String, String>? = null,
         referrer: String? = null,
-        startPaused: Boolean = false,
+        shouldStartPaused: () -> Boolean = { false },
     ) {
         if (released) return
         cancelVideoReveal()
@@ -285,7 +285,7 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
                 mpv.setPropertyString("referrer", referrer.orEmpty())
                 mpv.setOptionString("start", if (startAt > 0.5) String.format(java.util.Locale.US, "%.2f", startAt) else "none")
                 mpv.command(arrayOf("loadfile", url, "replace"))
-                mpv.setPropertyBoolean("pause", startPaused)
+                mpv.setPropertyBoolean("pause", shouldStartPaused())
             }
         }
         if (surfaceAttached && surfaceSized && voEnabled) startNow() else pendingLoad = startNow

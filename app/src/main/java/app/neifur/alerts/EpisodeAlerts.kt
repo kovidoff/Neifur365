@@ -26,6 +26,7 @@ import app.neifur.Container
 import app.neifur.MainActivity
 import app.neifur.R
 import app.neifur.container
+import app.neifur.data.a365.ListEntry
 import app.neifur.data.a365.ListStatus
 import app.neifur.data.a365.Picker
 import app.neifur.data.a365.Series
@@ -40,9 +41,19 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+
+internal fun shouldCheckSeries(entry: ListEntry, card: Series?, knownSeen: Int?): Boolean {
+    if (card?.airing == true) return true
+    if (knownSeen == null) return false
+    val total = card?.numberOfEpisodes?.takeIf { it > 0 } ?: entry.total?.takeIf { it > 0 } ?: return false
+    return knownSeen < total && entry.watched < total
+}
 
 /** A new episode (or several) of a followed title, ready to be shown. */
 data class EpisodeAlert(
@@ -67,6 +78,9 @@ object EpisodeAlerts {
     private const val WORK = "new-episodes"
     private const val WORK_NOW = "new-episodes-now"
     const val EXTRA_SERIES = "open_series"
+    private val checkMutex = Mutex()
+
+    private fun notifId(seriesId: Long): Int = 10_000 + (seriesId % 1_000_000L).toInt()
 
     fun schedule(ctx: Context, on: Boolean) {
         val wm = WorkManager.getInstance(ctx)
@@ -104,8 +118,8 @@ object EpisodeAlerts {
      * Looks for new episodes. [demo] (debug builds) pretends the newest episode of every followed title is new,
      * to see the notifications without waiting for a release.
      */
-    suspend fun check(c: Container, demo: Boolean = false): List<EpisodeAlert> {
-        val profile = c.a365.profile() ?: return emptyList()
+    suspend fun check(c: Container, demo: Boolean = false): List<EpisodeAlert> = checkMutex.withLock {
+        val profile = c.a365.profile() ?: return@withLock emptyList()
         val planned = c.prefs.alertsPlanned.first()
         val myStudio = c.prefs.alertsMyStudio.first()
         val preferred = runCatching { TranslationKind.valueOf(c.prefs.preferredKind.first()) }.getOrDefault(TranslationKind.VoiceRu)
@@ -113,13 +127,13 @@ object EpisodeAlerts {
         val favourites = studios.keys.toList()
         val entries = c.a365.allLists(profile.id)
             .filter { it.status == ListStatus.Watching || (planned && it.status == ListStatus.Planned) }
-        if (entries.isEmpty()) return emptyList()
-        // One request for the cards tells which titles still air; only those are opened.
-        val airing = c.a365.cards(entries.map { it.seriesId }).filter { it.airing }.map { it.id }.toSet()
-        val seen = c.prefs.alertsSeen().toMutableMap()
+        if (entries.isEmpty()) return@withLock emptyList()
+        // One request for the cards tells which titles still air (or recently finished before our last seen mark).
+        val cards = c.a365.cards(entries.map { it.seriesId }).associateBy { it.id }
+        val seen = ConcurrentHashMap(c.prefs.alertsSeen())
         val gate = Semaphore(3)
         val alerts = coroutineScope {
-            entries.filter { demo || it.seriesId in airing }.map { e ->
+            entries.filter { demo || shouldCheckSeries(it, cards[it.seriesId], seen[it.seriesId]) }.map { e ->
                 async {
                     gate.withPermit {
                         runCatching {
@@ -127,24 +141,42 @@ object EpisodeAlerts {
                             val eps = s.playable.filter { it.number > 0 }
                             val newest = eps.maxByOrNull { it.number } ?: return@runCatching null
                             val known = if (demo) newest.number - 1 else seen[e.seriesId]
-                            if (known == null || newest.number <= known) { seen[e.seriesId] = maxOf(known ?: 0, newest.number); return@runCatching null }
-                            val fresh = eps.filter { it.number > known && it.number > e.watched }.map { it.number }.distinct().sorted()
-                            if (fresh.isEmpty()) { seen[e.seriesId] = newest.number; return@runCatching null }
-
-                            val trs = c.a365.translations(listOf(newest.id)).filter { it.shown }
-                            val pick = c.prefs.pick(e.seriesId.toString())
-                            val mine = pick?.let { k -> Picker.best(trs.filter { it.pickKey == k }, 1080) }
-                            val ready = when {
-                                !myStudio -> trs.isNotEmpty()
-                                pick != null -> mine != null
-                                else -> trs.any { it.kind == preferred }
+                            if (known == null) { seen[e.seriesId] = newest.number; return@runCatching null }
+                            val freshEps = eps.filter { it.number > known && it.number > e.watched }.sortedBy { it.number }
+                            if (freshEps.isEmpty()) {
+                                seen[e.seriesId] = maxOf(known, newest.number)
+                                return@runCatching null
                             }
-                            // Not out the way the viewer watches yet: ask again next time, without moving the mark.
-                            if (!ready) return@runCatching null
-                            seen[e.seriesId] = newest.number
-                            val shown = mine ?: Picker.choose(trs, pick, preferred, favourites, 1080)
-                            val waiting = if (pick != null && mine == null) studios[pick] ?: pick.substringAfter('|').replaceFirstChar { it.uppercase() } else null
-                            EpisodeAlert(s, fresh, shown, waiting)
+
+                            val pick = c.prefs.pick(e.seriesId.toString())
+                            if (!myStudio) {
+                                val trs = c.a365.translations(listOf(newest.id)).filter { it.shown }
+                                if (trs.isEmpty()) return@runCatching null
+                                val mine = pick?.let { k -> Picker.best(trs.filter { it.pickKey == k }, 1080) }
+                                seen[e.seriesId] = newest.number
+                                val shown = mine ?: Picker.choose(trs, pick, preferred, favourites, 1080)
+                                val waiting = if (pick != null && mine == null) studios[pick] ?: pick.substringAfter('|').replaceFirstChar { it.uppercase() } else null
+                                EpisodeAlert(s, freshEps.map { it.number }.distinct().sorted(), shown, waiting)
+                            } else {
+                                val candidates = freshEps.takeLast(5)
+                                val allTrs = c.a365.translations(candidates.map { it.id }).filter { it.shown }.groupBy { it.episodeId }
+                                val readyPairs = candidates.mapNotNull { ep ->
+                                    val epTrs = allTrs[ep.id].orEmpty()
+                                    val chosen = if (pick != null) {
+                                        Picker.best(epTrs.filter { it.pickKey == pick }, 1080)
+                                    } else {
+                                        Picker.best(epTrs.filter { it.kind == preferred }, 1080)
+                                    }
+                                    chosen?.let { ep to it }
+                                }
+                                // Not out the way the viewer watches yet: ask again next time, without moving the mark.
+                                if (readyPairs.isEmpty()) return@runCatching null
+                                val readyMax = readyPairs.maxOf { it.first.number }
+                                seen[e.seriesId] = maxOf(known, readyMax)
+                                val nums = readyPairs.map { it.first.number }.distinct().sorted()
+                                val shown = readyPairs.maxBy { it.first.number }.second
+                                EpisodeAlert(s, nums, shown, null)
+                            }
                         }.getOrNull()
                     }
                 }
@@ -153,7 +185,7 @@ object EpisodeAlerts {
         // Titles that left the followed lists stop being remembered.
         val followed = entries.map { it.seriesId }.toSet()
         c.prefs.saveAlertsSeen(seen.filterKeys { it in followed }, System.currentTimeMillis())
-        return alerts
+        alerts
     }
 
     /** "Вышла 7 серия", "Вышли 6 и 7 серии", "Вышли серии 5–8". */
@@ -192,7 +224,7 @@ object EpisodeAlerts {
                 .setGroup(GROUP)
                 .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
                 .build()
-            post(ctx, nm, id.toInt(), n)
+            post(ctx, nm, notifId(id), n)
         }
         // Several titles at once fold into one group under a summary.
         val active = (ctx.getSystemService(NotificationManager::class.java).activeNotifications
@@ -219,7 +251,7 @@ object EpisodeAlerts {
         val i = Intent(ctx, MainActivity::class.java)
             .putExtra(EXTRA_SERIES, seriesId.toString())
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        return PendingIntent.getActivity(ctx, seriesId.toInt(), i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        return PendingIntent.getActivity(ctx, notifId(seriesId), i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
     /** The poster, cropped to its middle square (the shade shows large icons square or round). */

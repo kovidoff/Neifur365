@@ -91,7 +91,9 @@ import coil3.request.allowHardware
 import coil3.toBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -154,7 +156,12 @@ private const val RANGE = 50
 
 class DetailVm(private val c: Container, private val requestedId: String) : ViewModel() {
     val stub: AnimeStub? = c.stubs[requestedId]
+    private val seriesIdFlow = MutableStateFlow(requestedId.takeIf { !it.startsWith("mal:") })
     var seriesId by mutableStateOf(requestedId.takeIf { !it.startsWith("mal:") })
+        private set
+    var offlineFallback by mutableStateOf(false)
+        private set
+    var offlineStub by mutableStateOf<AnimeStub?>(null)
         private set
     var series by mutableStateOf<Series?>(null)
         private set
@@ -178,7 +185,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
     val signedIn: Boolean get() = c.account.state.value is AccountState.SignedIn
     val account = c.account.state
 
-    val isFavorite = c.prefs.favorites.map { l -> l.any { it.id == seriesId } }
+    val isFavorite = combine(c.prefs.favorites, seriesIdFlow) { l, sid -> sid != null && l.any { it.id == sid } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     init {
@@ -238,6 +245,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
 
     fun load() {
         error = null
+        offlineFallback = false
         viewModelScope.launch {
             seriesId?.let { startedHint = localStarted(it) }
             runCatching {
@@ -245,6 +253,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
                     ?: c.a365.byMyAnimeList(requestedId.removePrefix("mal:").toLong())?.id
                     ?: throw ApiError("Этого тайтла нет на Anime 365")
                 seriesId = sid.toString()
+                seriesIdFlow.value = sid.toString()
                 if (startedHint == null) startedHint = localStarted(sid.toString())
                 c.a365.series(sid)
             }.onSuccess { s ->
@@ -268,6 +277,8 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
                     val eps = local.map { it.toEpisode() }
                     val studios = Studios.grouped(Studios.build(local.map { it.toTranslation() }), eps)
                     extrasPending = false
+                    offlineFallback = true
+                    offlineStub = local.first().stub()
                     play = PlayState.Ready(
                         episodes = eps,
                         target = targetIndex(eps),
@@ -428,7 +439,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         val ep = r.episodes.getOrNull(index)
         // Locally downloaded episode can play right away even if signed out or offline.
         if (!signedIn && (ep == null || c.downloads.localFile(ep.id) == null)) { askSignIn = true; return }
-        val s = series?.stub() ?: stub ?: return
+        val s = series?.stub() ?: stub ?: offlineStub ?: return
         c.session = PlaySession(s, r.episodes, index, pickKey ?: r.studio?.key, r.studio?.author)
         context.startActivity(Intent(context, PlayerActivity::class.java))
     }
@@ -438,7 +449,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
     fun download(ep: Episode) {
         if (!signedIn) { askSignIn = true; return }
         val r = play as? PlayState.Ready ?: return
-        val s = series?.stub() ?: stub ?: return
+        val s = series?.stub() ?: stub ?: offlineStub ?: return
         c.downloads.enqueue(s, ep, pickKey ?: r.studio?.key, r.studio?.author)
         notice = "Загрузка: ${ep.label}"
     }
@@ -447,7 +458,7 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         if (eps.isEmpty()) return
         if (!signedIn) { askSignIn = true; return }
         val r = play as? PlayState.Ready ?: return
-        val s = series?.stub() ?: stub ?: return
+        val s = series?.stub() ?: stub ?: offlineStub ?: return
         val pk = pickKey ?: r.studio?.key
         val pn = r.studio?.author
         eps.forEach { c.downloads.enqueue(s, it, pk, pn) }
@@ -526,7 +537,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
     val vm = nfViewModel(key = "detail-$id") { DetailVm(it, id) }
     val ctx = LocalContext.current
     val anime = vm.anime
-    val stub = vm.series?.stub()?.copy(poster = vm.stub?.poster ?: vm.series?.posterUrl) ?: vm.stub
+    val stub = vm.series?.stub()?.copy(poster = vm.stub?.poster ?: vm.series?.posterUrl) ?: vm.stub ?: vm.offlineStub
     val favorite by vm.isFavorite.collectAsStateWithLifecycle()
     val account by vm.account.collectAsStateWithLifecycle()
     val signedIn = account is AccountState.SignedIn
@@ -539,6 +550,9 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
     val preferred by vm.preferredKind.collectAsStateWithLifecycle("VoiceRu")
     var listSheet by remember { mutableStateOf(false) }
     val play = vm.play
+    val downloads by vm.downloads.collectAsStateWithLifecycle()
+    val targetEpId = (play as? PlayState.Ready)?.let { it.episodes.getOrNull(it.target)?.id }
+    val isTargetDownloaded = targetEpId != null && downloads.isDownloaded(targetEpId)
     val listState = rememberLazyListState()
     val isMovie = vm.series?.isMovie == true || (play as? PlayState.Ready)?.episodes?.size == 1
 
@@ -579,7 +593,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                             stub = stub, anime = anime, origin = origin, accent = accent,
                             listState = listState, pending = vm.extrasPending,
                             play = play, history = history, isMovie = isMovie, signedIn = signedIn,
-                            favorite = favorite, vm = vm, padH = padH,
+                            isTargetDownloaded = isTargetDownloaded, favorite = favorite, vm = vm, padH = padH,
                             onPlay = { idx ->
                                 if ((play as? PlayState.Ready)?.started == false) { startFor = idx; sheet = SheetPage.Translations } else vm.play(ctx, idx)
                             },
@@ -592,7 +606,17 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                         EmptyState("Не получилось загрузить тайтл", vm.error, modifier = Modifier.padding(top = 24.dp), action = "Повторить", onAction = vm::load)
                     }
 
-                    if (anime == null && vm.error == null) item(key = "skeleton") {
+                    if (vm.offlineFallback && anime == null) item(key = "offline-downloads") {
+                        EmptyState(
+                            "Нет сети — доступны скачанные серии",
+                            "Подключите интернет, чтобы загрузить описание и остальные серии",
+                            modifier = Modifier.padding(top = 24.dp),
+                            action = "Повторить",
+                            onAction = vm::load,
+                        )
+                    }
+
+                    if (anime == null && vm.error == null && !vm.offlineFallback) item(key = "skeleton") {
                         SectionsSkeleton(Modifier.reveal(2), padH = padH)
                     }
 
@@ -640,7 +664,7 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                         item(key = "actions") {
                             DetailActionsBlock(
                                 play = play, history = history, anime = anime, isMovie = isMovie, accent = accent,
-                                signedIn = signedIn, favorite = favorite, vm = vm, account = account,
+                                signedIn = signedIn, isTargetDownloaded = isTargetDownloaded, favorite = favorite, vm = vm, account = account,
                                 onPlay = { idx ->
                                     if ((play as? PlayState.Ready)?.started == false) { startFor = idx; sheet = SheetPage.Translations } else vm.play(ctx, idx)
                                 },
@@ -673,7 +697,6 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
         }
 
         sheet?.let { page ->
-            val downloads by vm.downloads.collectAsStateWithLifecycle()
             EpisodesSheet(
                 state = play, history = history, isMovie = isMovie, accent = accent, startPage = page,
                 onDismiss = { sheet = null; startFor = null }, onPlay = { idx -> vm.play(ctx, idx) },
@@ -713,13 +736,13 @@ private fun openUrl(ctx: Context, url: String) {
 @Composable
 private fun DetailActionsBlock(
     play: PlayState, history: List<WatchEntry>, anime: Anime?, isMovie: Boolean, accent: Color,
-    signedIn: Boolean, favorite: Boolean, vm: DetailVm, account: AccountState,
+    signedIn: Boolean, isTargetDownloaded: Boolean, favorite: Boolean, vm: DetailVm, account: AccountState,
     onPlay: (Int) -> Unit, onEpisodes: () -> Unit, onList: () -> Unit, onStudio: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            WatchButton(play, history, anime, isMovie, accent, signedIn, Modifier.weight(1f), { vm.askSignIn = true }, onPlay)
+            WatchButton(play, history, anime, isMovie, accent, signedIn, isTargetDownloaded, Modifier.weight(1f), { vm.askSignIn = true }, onPlay)
             // An announcement has nothing to list yet: the button would open an empty sheet.
             if (!isMovie && (play as? PlayState.Ready)?.episodes?.isEmpty() != true) {
                 Spacer(Modifier.width(10.dp))
@@ -750,7 +773,17 @@ private fun LazyListScope.detailInfoItems(
         EmptyState("Не получилось загрузить тайтл", vm.error, modifier = Modifier.padding(top = 20.dp), action = "Повторить", onAction = vm::load)
     }
 
-    if (anime == null && vm.error == null) item(key = "skeleton") { SectionsSkeleton(Modifier.reveal(3)) }
+    if (vm.offlineFallback && anime == null) item(key = "offline-downloads") {
+        EmptyState(
+            "Нет сети — доступны скачанные серии",
+            "Подключите интернет, чтобы загрузить описание и остальные серии",
+            modifier = Modifier.padding(top = 20.dp),
+            action = "Повторить",
+            onAction = vm::load,
+        )
+    }
+
+    if (anime == null && vm.error == null && !vm.offlineFallback) item(key = "skeleton") { SectionsSkeleton(Modifier.reveal(3)) }
 
     if (anime != null) {
         val desc = cleanDescription(anime.description)
@@ -827,7 +860,7 @@ private fun LazyListScope.detailMediaItems(
 private fun TabletHero(
     stub: AnimeStub?, anime: Anime?, origin: String, accent: Color,
     listState: LazyListState, pending: Boolean,
-    play: PlayState, history: List<WatchEntry>, isMovie: Boolean, signedIn: Boolean,
+    play: PlayState, history: List<WatchEntry>, isMovie: Boolean, signedIn: Boolean, isTargetDownloaded: Boolean,
     favorite: Boolean, vm: DetailVm, padH: androidx.compose.ui.unit.Dp,
     onPlay: (Int) -> Unit, onEpisodes: () -> Unit, onList: () -> Unit,
 ) {
@@ -854,7 +887,7 @@ private fun TabletHero(
                     Modifier.widthIn(max = 460.dp).fillMaxWidth().reveal(1),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    WatchButton(play, history, anime, isMovie, accent, signedIn, Modifier.weight(1f), { vm.askSignIn = true }, onPlay)
+                    WatchButton(play, history, anime, isMovie, accent, signedIn, isTargetDownloaded, Modifier.weight(1f), { vm.askSignIn = true }, onPlay)
                     if (!isMovie && (play as? PlayState.Ready)?.episodes?.isEmpty() != true) {
                         Spacer(Modifier.width(10.dp))
                         SquareAction(Icons.AutoMirrored.Rounded.FormatListBulleted, "Серии", onClick = onEpisodes)
@@ -1053,7 +1086,7 @@ private fun SquareAction(icon: ImageVector, label: String, tint: Color = Nf.Text
 @Composable
 private fun WatchButton(
     state: PlayState, history: List<WatchEntry>, anime: Anime?, isMovie: Boolean, accent: Color, signedIn: Boolean,
-    modifier: Modifier, onSignIn: () -> Unit, onPlay: (Int) -> Unit,
+    isTargetDownloaded: Boolean, modifier: Modifier, onSignIn: () -> Unit, onPlay: (Int) -> Unit,
 ) {
     val ready = state as? PlayState.Ready
     val eps = ready?.episodes.orEmpty()
@@ -1061,12 +1094,13 @@ private fun WatchButton(
     val target = eps.getOrNull(targetIdx)
     val last = history.maxByOrNull { it.updatedAt }
     val resuming = last != null && !last.finished && target != null && target.number == last.episode
-    val loading = anime == null || state is PlayState.Loading
+    val loading = state is PlayState.Loading || (anime == null && !isTargetDownloaded && state !is PlayState.Ready && state !is PlayState.Error)
+    val needSignIn = !signedIn && !isTargetDownloaded
     val label = when {
         loading -> "Загрузка…"
         state is PlayState.Error -> "Не удалось загрузить"
         target == null -> if (anime?.status == "anons") "Ещё не вышло" else "Серий пока нет"
-        !signedIn -> "Войти и смотреть"
+        needSignIn -> "Войти и смотреть"
         ready?.started == false -> if (isMovie || eps.size == 1) "Смотреть" else "Начать просмотр"
         isMovie || eps.size == 1 -> if (resuming) "Продолжить" else "Смотреть"
         resuming -> "Продолжить · серия ${target.number}"
@@ -1076,15 +1110,15 @@ private fun WatchButton(
     val active = target != null
     val bg by animateColorAsState(if (active) accent else Nf.Surface, tween(400), label = "btn")
     Box(modifier.height(54.dp).clip(RoundedCornerShape(18.dp)).background(bg)
-        .pressable(0.97f, enabled = active) { if (!signedIn) onSignIn() else onPlay(targetIdx) }
+        .pressable(0.97f, enabled = active) { if (needSignIn) onSignIn() else onPlay(targetIdx) }
     ) {
         // A resume button shows how far into the episode you are.
         if (progress > 0.01f) Box(Modifier.fillMaxHeight().fillMaxWidth(progress).background(Color.White.copy(alpha = 0.18f)))
         Row(Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-            AnimatedContent(Triple(loading, active, signedIn), label = "wbi") { (l, act, si) ->
+            AnimatedContent(Triple(loading, active, !needSignIn), label = "wbi") { (l, act, canPlay) ->
                 when {
                     l -> CircularProgressIndicator(Modifier.size(18.dp), color = Nf.TextDim, strokeWidth = 2.dp)
-                    act -> Icon(if (si) Icons.Rounded.PlayArrow else Icons.AutoMirrored.Rounded.Login, null, tint = Nf.Ink, modifier = Modifier.size(24.dp))
+                    act -> Icon(if (canPlay) Icons.Rounded.PlayArrow else Icons.AutoMirrored.Rounded.Login, null, tint = Nf.Ink, modifier = Modifier.size(24.dp))
                     else -> Spacer(Modifier.size(0.dp))
                 }
             }

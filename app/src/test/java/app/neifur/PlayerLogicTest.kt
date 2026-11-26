@@ -18,6 +18,7 @@ import app.neifur.player.formatSleepCountdown
 import app.neifur.player.nextSeekBurst
 import app.neifur.player.playerPanelWidth
 import app.neifur.player.resolvePlayerWindowSize
+import app.neifur.player.shouldAutoAdvance
 import app.neifur.player.shouldFinishOnStop
 import app.neifur.player.shouldThrottle
 import app.neifur.player.speedLabel
@@ -139,5 +140,16 @@ class PlayerLogicTest {
         assertEquals(2400 to 1080, resolvePlayerWindowSize(1080, 2400, inPip = false))
         assertEquals(2400 to 1080, resolvePlayerWindowSize(2400, 1080, inPip = false))
         assertEquals(400 to 600, resolvePlayerWindowSize(400, 600, inPip = true))
+    }
+
+    @Test fun autoAdvanceRunsAtEofEvenWhenKeepOpenPausesPlayback() {
+        assertTrue(shouldAutoAdvance(ended = true, hasNext = true, hasFailure = false, cancelled = false, blocked = false, foreground = true, panelOpen = false))
+        assertFalse(shouldAutoAdvance(ended = false, hasNext = true, hasFailure = false, cancelled = false, blocked = false, foreground = true, panelOpen = false))
+        assertFalse(shouldAutoAdvance(ended = true, hasNext = false, hasFailure = false, cancelled = false, blocked = false, foreground = true, panelOpen = false))
+        assertFalse(shouldAutoAdvance(ended = true, hasNext = true, hasFailure = true, cancelled = false, blocked = false, foreground = true, panelOpen = false))
+        assertFalse(shouldAutoAdvance(ended = true, hasNext = true, hasFailure = false, cancelled = true, blocked = false, foreground = true, panelOpen = false))
+        assertFalse(shouldAutoAdvance(ended = true, hasNext = true, hasFailure = false, cancelled = false, blocked = true, foreground = true, panelOpen = false))
+        assertFalse(shouldAutoAdvance(ended = true, hasNext = true, hasFailure = false, cancelled = false, blocked = false, foreground = false, panelOpen = false))
+        assertFalse(shouldAutoAdvance(ended = true, hasNext = true, hasFailure = false, cancelled = false, blocked = false, foreground = true, panelOpen = true))
     }
 }

@@ -60,6 +60,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.neifur.Container
 import app.neifur.core.userMessage
+import app.neifur.data.a365.AccountState
 import app.neifur.data.a365.Profile
 import app.neifur.nfViewModel
 import app.neifur.ui.LocalAccent
@@ -85,7 +86,15 @@ class SignInVm(private val c: Container) : ViewModel() {
     val userAgent: String get() = c.a365.userAgent
     fun isSiteHost(host: String?) = c.a365.isSiteHost(host)
 
-    init { viewModelScope.launch { base = runCatching { c.a365.baseUrl() }.getOrNull() } }
+    init {
+        viewModelScope.launch { base = runCatching { c.a365.baseUrl() }.getOrNull() }
+        viewModelScope.launch {
+            c.account.state.collect { st ->
+                profile = (st as? AccountState.SignedIn)?.profile
+                if (st is AccountState.SignedOut) error = null
+            }
+        }
+    }
 
     fun login() {
         if (busy || email.isBlank() || password.isEmpty()) return

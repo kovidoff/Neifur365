@@ -145,8 +145,10 @@ private fun AppRoot() {
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
     val open: OpenAnime = { stub, origin ->
-        container.remember(stub)
-        nav.navigate("detail/${stub.id}?origin=${Uri.encode(origin)}") { launchSingleTop = true }
+        if (nav.currentBackStackEntry?.arguments?.getString("id") != stub.id) {
+            container.remember(stub)
+            nav.navigate("detail/${stub.id}?origin=${Uri.encode(origin)}")
+        }
     }
 
     // Opening a title from a notification or link: wait for the welcome flow to be out of the way, then go there.
@@ -155,7 +157,9 @@ private fun AppRoot() {
         val id = pending ?: return@LaunchedEffect
         if (onboarded != true) return@LaunchedEffect
         container.pendingOpen.value = null
-        nav.navigate("detail/$id?origin=notification") { launchSingleTop = true }
+        if (nav.currentBackStackEntry?.arguments?.getString("id") != id) {
+            nav.navigate("detail/$id?origin=notification")
+        }
     }
     val openDownloads by container.pendingDownloads.collectAsStateWithLifecycle()
     LaunchedEffect(openDownloads, onboarded) {

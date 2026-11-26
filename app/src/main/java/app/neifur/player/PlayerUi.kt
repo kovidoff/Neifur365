@@ -31,7 +31,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -107,6 +108,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 internal fun time(sec: Double): String {
@@ -129,6 +131,17 @@ internal fun nextSeekBurst(current: SeekBurst?, side: Int, stepSec: Int, nowMs: 
 internal fun canHoldBoost(holdBoost: Boolean, loaded: Boolean, paused: Boolean, panelOpen: Boolean, currentSpeed: Double): Boolean =
     holdBoost && loaded && !paused && !panelOpen && currentSpeed < 2.0
 
+/** True while the post-episode countdown may advance to the next episode (at EOF libmpv pauses via keep-open=yes). */
+internal fun shouldAutoAdvance(
+    ended: Boolean,
+    hasNext: Boolean,
+    hasFailure: Boolean,
+    cancelled: Boolean,
+    blocked: Boolean,
+    foreground: Boolean,
+    panelOpen: Boolean,
+): Boolean = ended && hasNext && !hasFailure && !cancelled && !blocked && foreground && !panelOpen
+
 /**
  * PlayerActivity is locked to sensorLandscape, but Android briefly measures it in portrait (maxW < maxH) for 1–2 frames
  * when launching from portrait MainActivity, unlocking a portrait lockscreen, or resuming from a portrait launcher.
@@ -143,6 +156,7 @@ private data class Level(val volume: Boolean, val value: Float)
 @Composable
 fun PlayerScreen(
     player: MpvPlayer, session: PlaySession, index: Int, resolving: Boolean, reconnecting: Boolean, error: String?, inPip: Boolean,
+    isForeground: Boolean = true,
     stream: StreamUi, notice: String?, watched: Set<Int>,
     sleep: SleepTimer, sleepRemainingMs: () -> Long, autoNextBlocked: Boolean,
     onBack: () -> Unit, onRetry: () -> Unit, onEpisode: (Int) -> Unit, onPip: () -> Unit,
@@ -205,9 +219,9 @@ fun PlayerScreen(
     val busy by produceState(rawBusy, rawBusy) { if (rawBusy) { delay(350); value = true } else value = false }
     val failure = error ?: if (player.failed) "Не удалось открыть видео. Возможно, ссылка устарела" else null
 
-    // Auto-advance when an episode ends (paused while panel is open, player is paused, or sleep timer suppressed it).
+    // Auto-advance when an episode ends (paused while panel is open, activity is backgrounded, or sleep timer suppressed it).
     val countdown = remember { Animatable(0f) }
-    val autoNextActive = player.ended && hasNext && failure == null && !autoNextCancelled && !autoNextBlocked && !player.paused && panel == null
+    val autoNextActive = shouldAutoAdvance(player.ended, hasNext, failure != null, autoNextCancelled, autoNextBlocked, isForeground, panel != null)
     LaunchedEffect(autoNextActive, session.anime.id, index) {
         countdown.snapTo(0f)
         if (autoNextActive) {
@@ -373,60 +387,84 @@ fun PlayerScreen(
                     )
                 }
                 .pointerInput(Unit) {
-                    var mode = 0 // 1 seek, 2 brightness, 3 volume, -1 ignored
-                    var acc = 0f
-                    var startPos = 0.0
-                    var startLevel = 0f
                     val audio = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
                     val maxVol = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
                     val topEdge = with(density) { 56.dp.toPx() }
                     val edge = with(density) { 40.dp.toPx() }
                     val window = (ctx as ComponentActivity).window
-                    detectDragGestures(
-                        onDragStart = { o ->
-                            dragActive.value = false
-                            // Leave the screen edges (especially top notification shade) to system gestures.
-                            mode = if (boostingNow || o.y < topEdge || o.y > size.height - edge || o.x < edge || o.x > size.width - edge || panelNow != null) -1 else 0
-                            acc = 0f; startPos = player.position
-                        },
-                        onDragEnd = {
-                            if (mode == 1) scrubState.value?.let { player.seekTo(it, exact = true) }
-                            if (mode == 2) levelState.value?.let { l -> scope.launch { ctx.container.prefs.saveBrightness(l.value) } }
-                            dragActive.value = false; scrubState.value = null; mode = 0; levelState.value = null
-                        },
-                        onDragCancel = { dragActive.value = false; scrubState.value = null; mode = 0; levelState.value = null },
-                    ) { change, drag ->
-                        if (mode == -1 || boostingNow) return@detectDragGestures
-                        if (mode == 0) {
-                            mode = when {
-                                abs(drag.x) > abs(drag.y) -> 1
-                                !sideGesturesNow -> -1
-                                change.position.x < size.width / 2 -> 2
-                                else -> 3
-                            }
-                            if (mode == -1) return@detectDragGestures
-                            dragActive.value = true
-                            startLevel = if (mode == 2) window.attributes.screenBrightness.let { if (it < 0) 0.5f else it }
-                            else audio.getStreamVolume(AudioManager.STREAM_MUSIC) / maxVol.toFloat()
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        if (boostingNow || panelNow != null || down.position.y < topEdge || down.position.y > size.height - edge || down.position.x < edge || down.position.x > size.width - edge) {
+                            return@awaitEachGesture
                         }
-                        when (mode) {
-                            1 -> if (player.loaded && player.duration > 0.0) {
-                                acc += drag.x
-                                // A full-width swipe covers 3 minutes: precise enough to land after an opening.
-                                scrubState.value = (startPos + acc / size.width * 180.0).coerceIn(0.0, player.duration)
+                        var mode = 0 // 1 seek, 2 brightness, 3 volume, -1 ignored
+                        var acc = 0f
+                        var dx = 0f
+                        var dy = 0f
+                        var startPos = 0.0
+                        var startLevel = 0f
+                        var completedCleanly = false
+                        val slop = viewConfiguration.touchSlop
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (boostingNow) break
+                                val pressedCount = event.changes.count { it.pressed }
+                                if (pressedCount == 0) {
+                                    completedCleanly = true
+                                    break
+                                }
+                                if (pressedCount > 1) break
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                val delta = change.position - change.previousPosition
+                                if (mode == 0) {
+                                    dx += delta.x
+                                    dy += delta.y
+                                    if (hypot(dx, dy) > slop) {
+                                        mode = when {
+                                            abs(dx) > abs(dy) -> 1
+                                            !sideGesturesNow -> -1
+                                            down.position.x < size.width / 2 -> 2
+                                            else -> 3
+                                        }
+                                        if (mode == -1) break
+                                        dragActive.value = true
+                                        startPos = player.position
+                                        startLevel = if (mode == 2) window.attributes.screenBrightness.let { if (it < 0) 0.5f else it }
+                                        else audio.getStreamVolume(AudioManager.STREAM_MUSIC) / maxVol.toFloat()
+                                    }
+                                }
+                                if (mode in 1..3) {
+                                    change.consume()
+                                    when (mode) {
+                                        1 -> if (player.loaded && player.duration > 0.0) {
+                                            acc += delta.x
+                                            // A full-width swipe covers 3 minutes: precise enough to land after an opening.
+                                            scrubState.value = (startPos + acc / size.width * 180.0).coerceIn(0.0, player.duration)
+                                        }
+                                        2 -> {
+                                            acc -= delta.y
+                                            val v = (startLevel + acc / (size.height * 0.75f)).coerceIn(0.01f, 1f)
+                                            window.attributes = window.attributes.apply { screenBrightness = v }
+                                            levelState.value = Level(false, v)
+                                        }
+                                        3 -> {
+                                            acc -= delta.y
+                                            val v = (startLevel + acc / (size.height * 0.75f)).coerceIn(0f, 1f)
+                                            audio.setStreamVolume(AudioManager.STREAM_MUSIC, (v * maxVol).roundToInt(), 0)
+                                            levelState.value = Level(true, v)
+                                        }
+                                    }
+                                }
                             }
-                            2 -> {
-                                acc -= drag.y
-                                val v = (startLevel + acc / (size.height * 0.75f)).coerceIn(0.01f, 1f)
-                                window.attributes = window.attributes.apply { screenBrightness = v }
-                                levelState.value = Level(false, v)
+                            if (completedCleanly) {
+                                if (mode == 1) scrubState.value?.let { player.seekTo(it, exact = true) }
+                                if (mode == 2) levelState.value?.let { l -> scope.launch { ctx.container.prefs.saveBrightness(l.value) } }
                             }
-                            3 -> {
-                                acc -= drag.y
-                                val v = (startLevel + acc / (size.height * 0.75f)).coerceIn(0f, 1f)
-                                audio.setStreamVolume(AudioManager.STREAM_MUSIC, (v * maxVol).roundToInt(), 0)
-                                levelState.value = Level(true, v)
-                            }
+                        } finally {
+                            dragActive.value = false
+                            scrubState.value = null
+                            levelState.value = null
                         }
                     }
                 }

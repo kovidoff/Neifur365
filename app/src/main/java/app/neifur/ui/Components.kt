@@ -110,21 +110,27 @@ fun Modifier.pressable(
     enabled: Boolean = true,
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
-): Modifier = composed {
-    val source = remember { MutableInteractionSource() }
-    val pressed by source.collectIsPressedAsState()
-    val haptic = LocalHapticFeedback.current
-    val s by animateFloatAsState(
-        if (pressed) scale else 1f,
-        spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow), label = "press",
-    )
-    graphicsLayer { scaleX = s; scaleY = s }.then(
-        if (onLongClick != null) Modifier.combinedClickable(
-            interactionSource = source, indication = null, enabled = enabled,
-            onClick = onClick,
-            onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onLongClick() },
-        ) else Modifier.clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
-    )
+): Modifier {
+    val upstream = this
+    return Modifier.composed {
+        val source = remember { MutableInteractionSource() }
+        val pressed by source.collectIsPressedAsState()
+        val haptic = LocalHapticFeedback.current
+        val s by animateFloatAsState(
+            if (pressed) scale else 1f,
+            spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow), label = "press",
+        )
+        Modifier
+            .graphicsLayer { scaleX = s; scaleY = s }
+            .then(upstream)
+            .then(
+                if (onLongClick != null) Modifier.combinedClickable(
+                    interactionSource = source, indication = null, enabled = enabled,
+                    onClick = onClick,
+                    onLongClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onLongClick() },
+                ) else Modifier.clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
+            )
+    }
 }
 
 /** Loading placeholder. The sweep is read only while drawing, so a screen full of skeletons never recomposes. */

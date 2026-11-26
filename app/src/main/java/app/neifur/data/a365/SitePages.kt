@@ -92,7 +92,10 @@ internal object SitePages {
         val watched = doc.selectFirst("input#UsersRates_episodes")?.attr("value")?.toIntOrNull() ?: 0
         val status = doc.selectFirst("select#UsersRates_status option[selected]")?.attr("value")?.toIntOrNull()?.let { ListStatus.of(it) }
         val score = doc.selectFirst("#UsersRates_score option[selected]")?.attr("value")?.toIntOrNull()?.takeIf { it > 0 }
-        return ListRecord(status, watched, score)
+        val comment = doc.selectFirst("textarea#UsersRates_comment, textarea[name='UsersRates[comment]'], input[name='UsersRates[comment]']")
+            ?.let { if (it.tagName().equals("textarea", true)) it.text() else it.attr("value") }
+            .orEmpty()
+        return ListRecord(status, watched, score, comment)
     }
 
     fun resolve(base: String, url: String): String = when {

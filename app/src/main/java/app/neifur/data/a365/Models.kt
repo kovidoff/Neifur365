@@ -148,6 +148,11 @@ enum class TranslationKind(val title: String, val short: String, val inline: Str
                 kind == "raw" -> Raw
                 kind == "voice" && lang == "ru" -> VoiceRu
                 kind == "sub" && lang == "ru" -> SubRu
+                kind == "voice" && lang == "en" -> VoiceEn
+                kind == "sub" && lang == "en" -> SubEn
+                kind == "voice" && (lang == "uk" || lang == "ua") -> VoiceUk
+                kind == "sub" && (lang == "uk" || lang == "ua") -> SubUk
+                kind == "sub" && lang == "ja" -> SubJa
                 else -> Hidden
             }
             else -> Hidden
@@ -207,5 +212,5 @@ data class ListEntry(
 )
 
 /** The viewer's own record for one title; [status] null means "not in the list". */
-data class ListRecord(val status: ListStatus?, val watched: Int, val score: Int?)
+data class ListRecord(val status: ListStatus?, val watched: Int, val score: Int?, val comment: String = "")
 

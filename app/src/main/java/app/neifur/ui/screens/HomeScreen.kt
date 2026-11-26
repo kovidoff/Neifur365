@@ -316,7 +316,11 @@ private fun OfflineDownloadsRow(groups: List<DownloadedAnime>, padH: androidx.co
  */
 @Composable
 private fun Appear(key: String, index: Int, played: MutableSet<String>, ready: Boolean = true, content: @Composable () -> Unit) {
-    val a = remember { Animatable(if (key in played) 1f else 0f) }
+    if (!ready) {
+        content()
+        return
+    }
+    val a = remember(key) { Animatable(if (key in played) 1f else 0f) }
     LaunchedEffect(ready) {
         if (!ready || key in played) return@LaunchedEffect
         played += key
