@@ -2,9 +2,10 @@ package app.neifur.ui.screens
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -18,6 +19,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -50,6 +53,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -59,6 +63,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
@@ -69,6 +74,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import app.neifur.data.WatchEntry
 import app.neifur.data.a365.Episode
@@ -155,31 +161,38 @@ internal class SheetDragController(
 ) : NestedScrollConnection {
     private var gestureStartedScrolled = false
 
+    fun onNewTouchDown() {
+        gestureStartedScrolled = !isListAtTop()
+    }
+
     override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
         val cur = getOffset()
-        if (cur > 0f && source == NestedScrollSource.UserInput) {
-            val next = (cur + available.y).coerceAtLeast(0f)
-            val consumedY = next - cur
-            setOffset(next)
-            return Offset(0f, consumedY)
+        if (cur > 0f) {
+            return if (source == NestedScrollSource.UserInput) {
+                val next = (cur + available.y).coerceAtLeast(0f)
+                setOffset(next)
+                Offset(0f, next - cur)
+            } else {
+                Offset(0f, available.y)
+            }
         }
-        if (source == NestedScrollSource.UserInput && !isListAtTop()) {
-            gestureStartedScrolled = true
+        if (source == NestedScrollSource.UserInput) {
+            if (gestureStartedScrolled) return Offset.Zero
+            if (!isListAtTop() || available.y < 0f) {
+                gestureStartedScrolled = true
+                return Offset.Zero
+            }
+            if (available.y > 0f) {
+                setOffset(available.y)
+                return Offset(0f, available.y)
+            }
         }
         return Offset.Zero
     }
 
-    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-        if (source == NestedScrollSource.UserInput && available.y > 0f && consumed.y == 0f && !gestureStartedScrolled && isListAtTop()) {
-            val cur = getOffset()
-            setOffset((cur + available.y).coerceAtLeast(0f))
-            return Offset(0f, available.y)
-        }
-        return Offset.Zero
-    }
+    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset = Offset.Zero
 
     override suspend fun onPreFling(available: Velocity): Velocity {
-        gestureStartedScrolled = false
         val cur = getOffset()
         if (cur > 0f) {
             onRelease(decideRelease(cur, available.y, getSheetHeight()))
@@ -189,7 +202,6 @@ internal class SheetDragController(
     }
 
     override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-        gestureStartedScrolled = false
         val cur = getOffset()
         if (cur > 0f) {
             onRelease(decideRelease(cur, available.y, getSheetHeight()))
@@ -221,26 +233,60 @@ fun EpisodesSheet(
     var page by remember { mutableStateOf(startPage) }
     // Which episode the picker is choosing for, when the title has no studio yet.
     var choosingFor by remember { mutableStateOf(startFor) }
-    var listAtTop by remember { mutableStateOf(true) }
+    var episodesAtTop by remember { mutableStateOf<() -> Boolean>({ true }) }
+    var translationsAtTop by remember { mutableStateOf<() -> Boolean>({ true }) }
     var sheetHeightPx by remember { mutableFloatStateOf(0f) }
     var entered by remember { mutableStateOf(false) }
     var dismissing by remember { mutableStateOf(false) }
-    val offsetY = remember { Animatable(0f) }
+    var offsetY by remember { mutableFloatStateOf(0f) }
+    var animJob by remember { mutableStateOf<Job?>(null) }
+    var pointersDown by remember { mutableStateOf(false) }
+
+    fun setDragOffset(v: Float) {
+        if (dismissing) return
+        animJob?.cancel()
+        animJob = null
+        offsetY = v.coerceAtLeast(0f)
+    }
+
+    fun animateOffsetTo(target: Float, spec: AnimationSpec<Float>, onEnd: (() -> Unit)? = null) {
+        animJob?.cancel()
+        val job = scope.launch {
+            try {
+                animate(initialValue = offsetY, targetValue = target, animationSpec = spec) { v, _ ->
+                    offsetY = v
+                }
+                offsetY = target
+                onEnd?.invoke()
+            } finally {
+                animJob = null
+            }
+        }
+        animJob = job
+    }
 
     fun dismissAnimated() {
         if (dismissing) return
         dismissing = true
-        scope.launch {
-            val target = sheetHeightPx.takeIf { it > 0f } ?: 1200f
-            offsetY.animateTo(target, tween(210, easing = FastOutSlowInEasing))
-            onDismiss()
+        animJob?.cancel()
+        val target = sheetHeightPx.takeIf { it > 0f } ?: 1200f
+        animJob = scope.launch {
+            try {
+                animate(
+                    initialValue = offsetY,
+                    targetValue = target,
+                    animationSpec = tween(210, easing = FastOutSlowInEasing),
+                ) { v, _ -> offsetY = v }
+            } finally {
+                animJob = null
+                onDismiss()
+            }
         }
     }
 
     fun snapOpen() {
-        scope.launch {
-            offsetY.animateTo(0f, spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow))
-        }
+        if (dismissing) return
+        animateOffsetTo(0f, spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow))
     }
 
     fun handleRelease(action: SheetReleaseAction) {
@@ -253,9 +299,14 @@ fun EpisodesSheet(
 
     val dragController = remember(scope) {
         SheetDragController(
-            isListAtTop = { listAtTop },
-            getOffset = { offsetY.value },
-            setOffset = { v -> if (!dismissing) scope.launch { offsetY.snapTo(v) } },
+            isListAtTop = {
+                when (page) {
+                    SheetPage.Episodes -> episodesAtTop()
+                    SheetPage.Translations -> translationsAtTop()
+                }
+            },
+            getOffset = { offsetY },
+            setOffset = ::setDragOffset,
             getSheetHeight = { sheetHeightPx },
             onRelease = ::handleRelease,
         )
@@ -264,13 +315,12 @@ fun EpisodesSheet(
     LaunchedEffect(page) { dragController.resetGesture() }
     LaunchedEffect(sheetHeightPx) {
         if (!entered && sheetHeightPx > 0f) {
+            offsetY = sheetHeightPx
             entered = true
-            offsetY.snapTo(sheetHeightPx)
-            offsetY.animateTo(0f, spring(dampingRatio = 0.88f, stiffness = Spring.StiffnessMediumLow))
+            animateOffsetTo(0f, spring(dampingRatio = 0.88f, stiffness = Spring.StiffnessMediumLow))
         }
     }
 
-    val openFraction = if (!entered || sheetHeightPx <= 0f) 0f else (1f - offsetY.value / sheetHeightPx).coerceIn(0f, 1f)
     val openedOnPicker = startPage == SheetPage.Translations
 
     Dialog(
@@ -281,7 +331,10 @@ fun EpisodesSheet(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.62f * openFraction))
+                    .drawBehind {
+                        val frac = if (!entered || sheetHeightPx <= 0f) 0f else (1f - offsetY / sheetHeightPx).coerceIn(0f, 1f)
+                        drawRect(Color.Black.copy(alpha = 0.62f * frac))
+                    }
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { dismissAnimated() }
             )
             Column(
@@ -290,8 +343,50 @@ fun EpisodesSheet(
                     .fillMaxWidth()
                     .fillMaxHeight(0.88f)
                     .onSizeChanged { if (it.height > 0) sheetHeightPx = it.height.toFloat() }
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                            pointersDown = true
+                            dragController.onNewTouchDown()
+                            do {
+                                val event = awaitPointerEvent(PointerEventPass.Final)
+                            } while (event.changes.any { it.pressed })
+                            pointersDown = false
+                            scope.launch {
+                                withFrameNanos { }
+                                if (!pointersDown && offsetY > 0f && !dismissing && animJob == null) {
+                                    handleRelease(decideRelease(offsetY, 0f, sheetHeightPx))
+                                }
+                            }
+                        }
+                    }
+                    .pointerInput(Unit) {
+                        val tracker = VelocityTracker()
+                        var totalDrag = 0f
+                        detectVerticalDragGestures(
+                            onDragStart = {
+                                totalDrag = 0f
+                                tracker.resetTracking()
+                            },
+                            onDragEnd = {
+                                val v = tracker.calculateVelocity().y
+                                handleRelease(decideRelease(offsetY, v, sheetHeightPx))
+                            },
+                            onDragCancel = {
+                                handleRelease(decideRelease(offsetY, 0f, sheetHeightPx))
+                            },
+                            onVerticalDrag = { change, dragAmount ->
+                                if (offsetY > 0f || dragAmount > 0f) {
+                                    change.consume()
+                                    totalDrag += dragAmount
+                                    tracker.addPosition(change.uptimeMillis, Offset(0f, totalDrag))
+                                    setDragOffset(offsetY + dragAmount)
+                                }
+                            },
+                        )
+                    }
                     .graphicsLayer {
-                        translationY = if (!entered) sheetHeightPx.takeIf { it > 0f } ?: 2000f else offsetY.value
+                        translationY = if (!entered) sheetHeightPx.takeIf { it > 0f } ?: 2000f else offsetY
                         alpha = if (entered) 1f else 0f
                     }
                     .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
@@ -302,26 +397,6 @@ fun EpisodesSheet(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .pointerInput(Unit) {
-                            val tracker = VelocityTracker()
-                            detectVerticalDragGestures(
-                                onDragStart = { tracker.resetTracking() },
-                                onDragEnd = {
-                                    val v = tracker.calculateVelocity().y
-                                    handleRelease(decideRelease(offsetY.value, v, sheetHeightPx))
-                                },
-                                onDragCancel = {
-                                    handleRelease(decideRelease(offsetY.value, 0f, sheetHeightPx))
-                                },
-                                onVerticalDrag = { change, dragAmount ->
-                                    change.consume()
-                                    tracker.addPosition(change.uptimeMillis, change.position)
-                                    if (!dismissing) scope.launch {
-                                        offsetY.snapTo((offsetY.value + dragAmount).coerceAtLeast(0f))
-                                    }
-                                },
-                            )
-                        }
                         .padding(top = 12.dp, bottom = 10.dp),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -345,12 +420,12 @@ fun EpisodesSheet(
                                 onRetry = onRetry, onRange = onRange,
                                 onDownload = onDownload, onDownloadBatch = onDownloadBatch, onCancelDownload = onCancelDownload,
                                 onRetryDownload = onRetryDownload, onDeleteDownload = onDeleteDownload,
-                                onSwipeDismissAllowed = { listAtTop = it },
+                                onBindAtTop = { episodesAtTop = it },
                             ) { choosingFor = null; page = SheetPage.Translations }
                             SheetPage.Translations -> TranslationsPage(
                                 state as? PlayState.Ready, accent, choosingFor, preferred,
                                 showBack = !(openedOnPicker && choosingFor == startFor),
-                                onSwipeDismissAllowed = { listAtTop = it },
+                                onBindAtTop = { translationsAtTop = it },
                                 onBack = { choosingFor = null; page = SheetPage.Episodes },
                                 onPick = { s ->
                                     val i = choosingFor
@@ -386,7 +461,7 @@ private fun EpisodesPage(
     onPlay: (Int) -> Unit, onRetry: () -> Unit, onRange: (List<Episode>) -> Unit,
     onDownload: (Episode) -> Unit, onDownloadBatch: (List<Episode>) -> Unit, onCancelDownload: (Long) -> Unit,
     onRetryDownload: (Long) -> Unit, onDeleteDownload: (Long) -> Unit,
-    onSwipeDismissAllowed: (Boolean) -> Unit,
+    onBindAtTop: (() -> Boolean) -> Unit,
     onTranslations: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
@@ -414,24 +489,24 @@ private fun EpisodesPage(
         }
         when (state) {
             PlayState.Loading -> {
-                LaunchedEffect(Unit) { onSwipeDismissAllowed(true) }
+                SideEffect { onBindAtTop { true } }
                 Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Box(Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(20.dp)).shimmer())
                     repeat(5) { Box(Modifier.fillMaxWidth().height(58.dp).clip(RoundedCornerShape(16.dp)).shimmer()) }
                 }
             }
             is PlayState.Error -> {
-                LaunchedEffect(Unit) { onSwipeDismissAllowed(true) }
+                SideEffect { onBindAtTop { true } }
                 EmptyState("Не получилось загрузить серии", state.message, action = "Повторить", onAction = onRetry)
             }
             is PlayState.Ready ->
                 if (state.episodes.isEmpty()) {
-                    LaunchedEffect(Unit) { onSwipeDismissAllowed(true) }
+                    SideEffect { onBindAtTop { true } }
                     EmptyState("Серий пока нет", "На Anime 365 ещё не загрузили ни одной серии этого тайтла")
                 } else Episodes(
                     state, history, isMovie, accent, downloads,
                     onPlay, onRange, onTranslations, onDownload, onCancelDownload, onRetryDownload, onDeleteDownload,
-                    onSwipeDismissAllowed,
+                    onBindAtTop,
                 )
         }
     }
@@ -442,7 +517,7 @@ private fun Episodes(
     state: PlayState.Ready, history: List<WatchEntry>, isMovie: Boolean, accent: Color, downloads: DownloadsState,
     onPlay: (Int) -> Unit, onRange: (List<Episode>) -> Unit, onTranslations: () -> Unit,
     onDownload: (Episode) -> Unit, onCancelDownload: (Long) -> Unit, onRetryDownload: (Long) -> Unit, onDeleteDownload: (Long) -> Unit,
-    onSwipeDismissAllowed: (Boolean) -> Unit,
+    onBindAtTop: (() -> Boolean) -> Unit,
 ) {
     val eps = state.episodes
     // Long shows are split into ranges of 50; the sheet opens on the range you're watching.
@@ -451,8 +526,7 @@ private fun Episodes(
     val resume = state.target
     var range by remember { mutableIntStateOf(if (ranges.size > 1 && resume >= 0) resume / chunk else 0) }
     val list = rememberLazyListState()
-    val atTop by remember { derivedStateOf { isListAtTop(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset) } }
-    LaunchedEffect(atTop) { onSwipeDismissAllowed(atTop) }
+    SideEffect { onBindAtTop { isListAtTop(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset) } }
     LaunchedEffect(range) {
         if (ranges.size > 1) onRange(ranges[range].map { eps[it] })
         val pos = ranges.getOrNull(range).orEmpty().indexOf(resume)
@@ -724,7 +798,7 @@ private fun uploaded(s: String?): String? = runCatching {
 @Composable
 private fun TranslationsPage(
     state: PlayState.Ready?, accent: Color, startFor: Int?, preferred: TranslationKind, showBack: Boolean,
-    onSwipeDismissAllowed: (Boolean) -> Unit,
+    onBindAtTop: (() -> Boolean) -> Unit,
     onBack: () -> Unit, onPick: (Studio) -> Unit,
 ) {
     val groups = state?.studios.orEmpty()
@@ -757,14 +831,14 @@ private fun TranslationsPage(
             }
         }
         if (state?.studios == null) {
-            LaunchedEffect(Unit) { onSwipeDismissAllowed(true) }
+            SideEffect { onBindAtTop { true } }
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 repeat(4) { Box(Modifier.fillMaxWidth().height(64.dp).clip(RoundedCornerShape(16.dp)).shimmer()) }
             }
             return@Column
         }
         if (kinds.isEmpty()) {
-            LaunchedEffect(Unit) { onSwipeDismissAllowed(true) }
+            SideEffect { onBindAtTop { true } }
             EmptyState("Переводов пока нет", state.trError ?: "На Anime 365 для этого тайтла ещё ничего не загрузили")
             return@Column
         }
@@ -797,8 +871,7 @@ private fun TranslationsPage(
         val rest = list.filterNot { it.key in fav }
         // A newly starred studio moves into "Любимые" at the top: follow it there instead of leaving it off screen.
         val listState = rememberLazyListState()
-        val atTop by remember { derivedStateOf { isListAtTop(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset) } }
-        LaunchedEffect(atTop) { onSwipeDismissAllowed(atTop) }
+        SideEffect { onBindAtTop { isListAtTop(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset) } }
         val favKeys = favs.map { it.key }
         var seenFavs by remember(kind) { mutableStateOf(favKeys) }
         LaunchedEffect(favKeys) {

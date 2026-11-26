@@ -160,32 +160,43 @@ class Wave3LogicTest {
             onRelease = { release = it },
         )
 
-        // 1. Mid-list scroll down + bottom overscroll -> sheet never moves.
+        // 1. Touch down mid-list -> scroll down + bottom overscroll -> sheet never moves.
+        ctrl.onNewTouchDown()
         assertEquals(Offset.Zero, ctrl.onPreScroll(Offset(0f, -120f), NestedScrollSource.UserInput))
         assertEquals(Offset.Zero, ctrl.onPostScroll(Offset(0f, -20f), Offset(0f, -80f), NestedScrollSource.UserInput))
         assertEquals(Velocity.Zero, ctrl.onPostFling(Velocity(0f, -400f), Velocity(0f, -600f)))
         assertEquals(0f, offset, 0.01f)
         assertEquals(null, release)
 
-        // 2. Mid-list drag UP hitting top -> atTop flips true mid-gesture, leftover + fling still ignored.
+        // 2. Touch down mid-list, drag UP hitting top -> atTop flips true mid-gesture, leftover + fling still ignored.
+        ctrl.onNewTouchDown()
         assertEquals(Offset.Zero, ctrl.onPreScroll(Offset(0f, 90f), NestedScrollSource.UserInput))
         atTop = true
+        assertEquals(Offset.Zero, ctrl.onPreScroll(Offset(0f, 60f), NestedScrollSource.UserInput))
         assertEquals(Offset.Zero, ctrl.onPostScroll(Offset(0f, 30f), Offset(0f, 60f), NestedScrollSource.UserInput))
         assertEquals(Offset.Zero, ctrl.onPostScroll(Offset.Zero, Offset(0f, 50f), NestedScrollSource.SideEffect))
         assertEquals(Velocity.Zero, ctrl.onPostFling(Velocity(0f, 200f), Velocity(0f, 700f)))
         assertEquals(0f, offset, 0.01f)
         assertEquals(null, release)
 
-        // 3. Pull down cleanly from top -> follows finger, pushes back up, snaps open below threshold.
-        assertEquals(Offset.Zero, ctrl.onPreScroll(Offset(0f, 120f), NestedScrollSource.UserInput))
-        assertEquals(Offset(0f, 120f), ctrl.onPostScroll(Offset.Zero, Offset(0f, 120f), NestedScrollSource.UserInput))
+        // 3. Touch down cleanly at top, scroll down into list first (available.y < 0f), then reverse up -> still locked.
+        ctrl.onNewTouchDown()
+        assertEquals(Offset.Zero, ctrl.onPreScroll(Offset(0f, -40f), NestedScrollSource.UserInput))
+        assertEquals(Offset.Zero, ctrl.onPreScroll(Offset(0f, 90f), NestedScrollSource.UserInput))
+        assertEquals(0f, offset, 0.01f)
+        assertEquals(null, release)
+
+        // 4. Touch down cleanly at top -> onPreScroll immediately intercepts downward pull before OverscrollEffect,
+        //    follows finger symmetrically up and down, and commits SnapOpen below threshold on release.
+        ctrl.onNewTouchDown()
+        assertEquals(Offset(0f, 120f), ctrl.onPreScroll(Offset(0f, 120f), NestedScrollSource.UserInput))
         assertEquals(120f, offset, 0.01f)
         assertEquals(Offset(0f, -30f), ctrl.onPreScroll(Offset(0f, -30f), NestedScrollSource.UserInput))
         assertEquals(90f, offset, 0.01f)
         ctrl.onPreFling(Velocity(0f, 100f))
         assertEquals(SheetReleaseAction.SnapOpen, release)
 
-        // 4. Threshold & fast velocity decide Dismiss.
+        // 5. Threshold & fast velocity decide Dismiss.
         assertEquals(SheetReleaseAction.None, decideRelease(0f, 2000f, 1000f))
         assertEquals(SheetReleaseAction.SnapOpen, decideRelease(150f, 200f, 1000f))
         assertEquals(SheetReleaseAction.Dismiss, decideRelease(260f, 100f, 1000f))
