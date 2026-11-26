@@ -13,6 +13,7 @@ import app.neifur.player.canAutoEnterPip
 import app.neifur.player.canHoldBoost
 import app.neifur.player.canSkipOpening
 import app.neifur.player.clampSeekTarget
+import app.neifur.player.fixedSurfaceBufferSize
 import app.neifur.player.formatSleepBadge
 import app.neifur.player.formatSleepCountdown
 import app.neifur.player.nextSeekBurst
@@ -151,5 +152,23 @@ class PlayerLogicTest {
         assertFalse(shouldAutoAdvance(ended = true, hasNext = true, hasFailure = false, cancelled = false, blocked = true, foreground = true, panelOpen = false))
         assertFalse(shouldAutoAdvance(ended = true, hasNext = true, hasFailure = false, cancelled = false, blocked = false, foreground = false, panelOpen = false))
         assertFalse(shouldAutoAdvance(ended = true, hasNext = true, hasFailure = false, cancelled = false, blocked = false, foreground = true, panelOpen = true))
+    }
+
+    @Test fun fixedSurfaceBufferSizeNormalizesQualitySwitchesByAspect() {
+        assertEquals(1920 to 1080, fixedSurfaceBufferSize(1920, 1080))
+        assertEquals(1920 to 1080, fixedSurfaceBufferSize(1280, 720))
+        assertEquals(1920 to 1080, fixedSurfaceBufferSize(854, 480))
+        assertEquals(1920 to 1080, fixedSurfaceBufferSize(640, 360))
+        assertEquals(1920 to 1080, fixedSurfaceBufferSize(3840, 2160))
+        assertEquals(1920 to 1080, fixedSurfaceBufferSize(0, 0))
+
+        assertEquals(1440 to 1080, fixedSurfaceBufferSize(1440, 1080))
+        assertEquals(1440 to 1080, fixedSurfaceBufferSize(960, 720))
+        assertEquals(1440 to 1080, fixedSurfaceBufferSize(640, 480))
+
+        assertEquals(2560 to 1080, fixedSurfaceBufferSize(2560, 1080))
+        val (cappedW, cappedH) = fixedSurfaceBufferSize(3840, 1600)
+        assertEquals(2560, cappedW)
+        assertEquals(0, cappedH % 2)
     }
 }

@@ -215,7 +215,10 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         val gen = loadGen
         val task = Runnable {
             revealTask = null
-            if (!released && loadGen == gen && loaded && voEnabled) videoReady = true
+            if (!released && loadGen == gen && loaded && voEnabled) {
+                if (!seeking && !cacheWait) videoReady = true
+                else scheduleVideoReveal(200L)
+            }
         }
         revealTask = task
         main.postDelayed(task, delayMs)
@@ -483,7 +486,7 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
                     if (advanced && !paused) { seeking = false; cacheWait = false; buffering = false }
                     if (!seeking) {
                         position = value
-                        if (voEnabled && !videoReady) { cancelVideoReveal(); videoReady = true }
+                        if (voEnabled && !videoReady && !cacheWait) { cancelVideoReveal(); videoReady = true }
                     }
                 }
             }

@@ -150,6 +150,32 @@ internal fun shouldAutoAdvance(
 internal fun resolvePlayerWindowSize(maxW: Int, maxH: Int, inPip: Boolean): Pair<Int, Int> =
     if (!inPip && maxW < maxH) maxH to maxW else maxW to maxH
 
+/**
+ * Normalizes the fixed SurfaceView buffer to a 1080p-class resolution by aspect ratio so switching
+ * quality (1080p <-> 720p <-> 480p <-> 360p) of the same aspect never resizes the SurfaceView buffer
+ * (eliminating transient 2/3-shrink / 1.5x-zoom frames) and keeps libass subtitles crisp.
+ */
+internal fun fixedSurfaceBufferSize(videoW: Int, videoH: Int): Pair<Int, Int> {
+    val vw = if (videoW > 0) videoW else 1920
+    val vh = if (videoH > 0) videoH else 1080
+    val aspect = vw.toFloat() / vh.toFloat()
+    return when {
+        abs(aspect - 16f / 9f) < 0.02f -> 1920 to 1080
+        abs(aspect - 4f / 3f) < 0.02f -> 1440 to 1080
+        else -> {
+            val targetH = 1080f
+            var w = (targetH * aspect).roundToInt().coerceAtLeast(2)
+            var h = targetH.roundToInt()
+            if (w > 2560) {
+                val k = 2560f / w
+                w = 2560
+                h = (h * k).roundToInt().coerceAtLeast(2)
+            }
+            (w and 1.inv()) to (h and 1.inv())
+        }
+    }
+}
+
 /** Brightness / volume while a vertical swipe is in progress. */
 private data class Level(val volume: Boolean, val value: Float)
 
@@ -262,10 +288,7 @@ fun PlayerScreen(
     // slide and fill/fit never resize EGLSurface while paused (which otherwise causes double-frame corner
     // artifacts on entering PiP and zoom on exiting PiP). Combined with portraitHold + mediacodec-copy,
     // EGLSurface and android-surface-size stay 1:1 in sync across lockscreen and PiP.
-    val (bufW, bufH) = remember(vw, vh) {
-        val k = minOf(1f, 2560f / maxOf(vw, vh))
-        (vw * k).roundToInt() to (vh * k).roundToInt()
-    }
+    val (bufW, bufH) = remember(vw, vh) { fixedSurfaceBufferSize(vw, vh) }
     val aspect = vw.toFloat() / vh
     val rightCutoutDp = with(density) { WindowInsets.displayCutout.getRight(density, layoutDir).toDp() }
     val targetPanelShift = playerPanelWidth(screenWidthDp) + 12.dp + rightCutoutDp
@@ -306,7 +329,7 @@ fun PlayerScreen(
                 }
             },
             update = { v ->
-                if (fixedBuf[0] != bufW || fixedBuf[1] != bufH) {
+                if (abs(fixedBuf[0] - bufW) > 4 || abs(fixedBuf[1] - bufH) > 4) {
                     fixedBuf[0] = bufW; fixedBuf[1] = bufH
                     v.holder.setFixedSize(bufW, bufH)
                 }
