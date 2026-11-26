@@ -82,6 +82,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
@@ -491,10 +492,14 @@ fun SettingsSectionScreen(
                         Divider()
                         SettingTitle("Размер субтитров", null)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val subBgOn = remember { Nf.Violet.copy(alpha = 0.2f).compositeOver(Nf.Surface) }
+                            val subBgOff = remember { Nf.Ink.compositeOver(Nf.Surface) }
+                            val subBrOn = remember { Nf.Violet.copy(alpha = 0.55f).compositeOver(Nf.Surface) }
+                            val subBrOff = remember { Nf.Line.compositeOver(Nf.Surface) }
                             listOf(0.8 to "80%", 1.0 to "100%", 1.25 to "125%", 1.5 to "150%").forEachIndexed { i, (v, pct) ->
                                 val on = kotlin.math.abs(subScale - v) < 0.01
-                                val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.2f) else Nf.Ink, tween(220, easing = FastOutSlowInEasing), label = "sz")
-                                val br by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.55f) else Nf.Line, tween(220, easing = FastOutSlowInEasing), label = "szb")
+                                val bg by animateColorAsState(if (on) subBgOn else subBgOff, tween(220, easing = FastOutSlowInEasing), label = "sz")
+                                val br by animateColorAsState(if (on) subBrOn else subBrOff, tween(220, easing = FastOutSlowInEasing), label = "szb")
                                 Column(
                                     Modifier.weight(1f).height(58.dp).pressable(0.95f) { vm.setSubScale(v) }
                                         .clip(RoundedCornerShape(14.dp)).background(bg)
@@ -1357,8 +1362,12 @@ private fun MirrorRow(m: MirrorStatus, auto: Boolean, onPick: () -> Unit, onRemo
 private fun RowScope.QualityTile(height: Int, caption: String, bars: Int, selected: Int, onPick: (Int) -> Unit) {
     val on = height == selected
     val tileSpec = tween<Color>(220, easing = FastOutSlowInEasing)
-    val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.16f) else Nf.Ink, tileSpec, label = "qt")
-    val br by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.6f) else Nf.Line, tileSpec, label = "qtb")
+    val bgOn = remember { Nf.Violet.copy(alpha = 0.16f).compositeOver(Nf.Surface) }
+    val bgOff = remember { Nf.Ink.compositeOver(Nf.Surface) }
+    val brOn = remember { Nf.Violet.copy(alpha = 0.6f).compositeOver(Nf.Surface) }
+    val brOff = remember { Nf.Line.compositeOver(Nf.Surface) }
+    val bg by animateColorAsState(if (on) bgOn else bgOff, tileSpec, label = "qt")
+    val br by animateColorAsState(if (on) brOn else brOff, tileSpec, label = "qtb")
     Column(
         Modifier.weight(1f).height(92.dp).pressable(0.95f) { onPick(height) }
             .clip(RoundedCornerShape(18.dp)).background(bg).border(1.dp, br, RoundedCornerShape(18.dp))
@@ -1386,9 +1395,15 @@ private fun RowScope.QualityTile(height: Int, caption: String, bars: Int, select
 private fun RowScope.StepTile(sec: Int, icon: ImageVector, caption: String, selected: Int, onPick: (Int) -> Unit) {
     val on = sec == selected
     val tileSpec = tween<Color>(220, easing = FastOutSlowInEasing)
-    val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.16f) else Nf.Ink, tileSpec, label = "st")
-    val br by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.6f) else Nf.Line, tileSpec, label = "stb")
-    val box by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.22f) else Nf.Surface, tileSpec, label = "sti")
+    val bgOn = remember { Nf.Violet.copy(alpha = 0.16f).compositeOver(Nf.Surface) }
+    val bgOff = remember { Nf.Ink.compositeOver(Nf.Surface) }
+    val brOn = remember { Nf.Violet.copy(alpha = 0.6f).compositeOver(Nf.Surface) }
+    val brOff = remember { Nf.Line.compositeOver(Nf.Surface) }
+    val boxOn = remember(bgOn) { Nf.Violet.copy(alpha = 0.22f).compositeOver(bgOn) }
+    val boxOff = remember { Nf.Surface }
+    val bg by animateColorAsState(if (on) bgOn else bgOff, tileSpec, label = "st")
+    val br by animateColorAsState(if (on) brOn else brOff, tileSpec, label = "stb")
+    val box by animateColorAsState(if (on) boxOn else boxOff, tileSpec, label = "sti")
     val iconTint by animateColorAsState(if (on) Nf.Violet else Nf.TextDim, tileSpec, label = "stit")
     val titleColor by animateColorAsState(if (on) Nf.Text else Nf.TextDim, tileSpec, label = "sttc")
     val capColor by animateColorAsState(if (on) Nf.Violet else Nf.TextMute, tileSpec, label = "stcc")
@@ -1413,8 +1428,9 @@ private fun RowScope.StepTile(sec: Int, icon: ImageVector, caption: String, sele
 @Composable
 private fun NeifurSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     val colorSpec = tween<Color>(240, easing = FastOutSlowInEasing)
+    val trackBorderOff = remember { Nf.Line.compositeOver(Nf.Surface) }
     val trackBg by animateColorAsState(if (checked) Nf.Mint else Nf.Ink, colorSpec, label = "swTrack")
-    val trackBr by animateColorAsState(if (checked) Nf.Mint else Nf.Line, colorSpec, label = "swBorder")
+    val trackBr by animateColorAsState(if (checked) Nf.Mint else trackBorderOff, colorSpec, label = "swBorder")
     val thumbColor by animateColorAsState(if (checked) Nf.Ink else Nf.TextDim, colorSpec, label = "swThumbColor")
     val thumbX by animateDpAsState(
         if (checked) 23.dp else 3.dp,
@@ -1450,9 +1466,13 @@ private fun NeifurSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit, m
 @Composable
 private fun ToggleRow(icon: ImageVector, title: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     val colorSpec = tween<Color>(240, easing = FastOutSlowInEasing)
+    val boxOn = remember { Nf.Mint.copy(alpha = 0.14f).compositeOver(Nf.Surface) }
+    val boxOff = remember { Nf.Ink.compositeOver(Nf.Surface) }
+    val borderOn = remember { Nf.Mint.copy(alpha = 0.36f).compositeOver(Nf.Surface) }
+    val borderOff = remember { Nf.Line.copy(alpha = 0.7f).compositeOver(Nf.Surface) }
     val tint by animateColorAsState(if (checked) Nf.Mint else Nf.TextDim, colorSpec, label = "tg")
-    val box by animateColorAsState(if (checked) Nf.Mint.copy(alpha = 0.14f) else Nf.Ink, colorSpec, label = "tgb")
-    val boxBorder by animateColorAsState(if (checked) Nf.Mint.copy(alpha = 0.36f) else Nf.Line.copy(alpha = 0.7f), colorSpec, label = "tgbb")
+    val box by animateColorAsState(if (checked) boxOn else boxOff, colorSpec, label = "tgb")
+    val boxBorder by animateColorAsState(if (checked) borderOn else borderOff, colorSpec, label = "tgbb")
     Row(
         Modifier.fillMaxWidth().pressable(0.985f) { onChange(!checked) }.padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1477,8 +1497,12 @@ private fun ToggleRow(icon: ImageVector, title: String, hint: String, checked: B
 private fun RowScope.KindTile(key: String, icon: ImageVector, tint: Color, label: String, selected: String, onPick: (String) -> Unit) {
     val on = key == selected
     val tileSpec = tween<Color>(220, easing = FastOutSlowInEasing)
-    val bg by animateColorAsState(if (on) tint.copy(alpha = 0.16f) else Nf.Ink, tileSpec, label = "kt")
-    val br by animateColorAsState(if (on) tint.copy(alpha = 0.6f) else Nf.Line, tileSpec, label = "ktb")
+    val bgOn = remember(tint) { tint.copy(alpha = 0.16f).compositeOver(Nf.Surface) }
+    val bgOff = remember { Nf.Ink.compositeOver(Nf.Surface) }
+    val brOn = remember(tint) { tint.copy(alpha = 0.6f).compositeOver(Nf.Surface) }
+    val brOff = remember { Nf.Line.compositeOver(Nf.Surface) }
+    val bg by animateColorAsState(if (on) bgOn else bgOff, tileSpec, label = "kt")
+    val br by animateColorAsState(if (on) brOn else brOff, tileSpec, label = "ktb")
     Column(
         Modifier.weight(1f).height(84.dp).pressable(0.95f) { onPick(key) }
             .clip(RoundedCornerShape(18.dp)).background(bg).border(1.dp, br, RoundedCornerShape(18.dp)),

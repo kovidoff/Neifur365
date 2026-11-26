@@ -141,7 +141,8 @@ internal class SheetScrollGuardConnection(
     }
 
     override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-        if (available.y <= 0f) return Offset.Zero
+        if (available.y < 0f) return Offset(0f, available.y)
+        if (available.y == 0f) return Offset.Zero
         if (source == NestedScrollSource.SideEffect) return Offset(0f, available.y)
         if (blockOverscrollUntilRelease || consumed.y > 0f) {
             blockOverscrollUntilRelease = true
@@ -151,9 +152,13 @@ internal class SheetScrollGuardConnection(
     }
 
     override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-        val shouldConsume = blockOverscrollUntilRelease || consumed.y > 0f || canScrollBackward()
+        val startedInList = blockOverscrollUntilRelease || consumed.y != 0f || canScrollBackward()
         blockOverscrollUntilRelease = false
-        return if (shouldConsume && available.y > 0f) Velocity(0f, available.y) else Velocity.Zero
+        return when {
+            available.y < 0f -> Velocity(0f, available.y)
+            startedInList && available.y > 0f -> Velocity(0f, available.y)
+            else -> Velocity.Zero
+        }
     }
 }
 
@@ -177,9 +182,11 @@ fun EpisodesSheet(
     var page by remember { mutableStateOf(startPage) }
     // Which episode the picker is choosing for, when the title has no studio yet.
     var choosingFor by remember { mutableStateOf(startFor) }
+    var allowSheetSwipe by remember { mutableStateOf(true) }
     val openedOnPicker = startPage == SheetPage.Translations
     ModalBottomSheet(
-        onDismissRequest = onDismiss, sheetState = sheetState, containerColor = Nf.Surface, contentColor = Nf.Text,
+        onDismissRequest = onDismiss, sheetState = sheetState, sheetGesturesEnabled = allowSheetSwipe,
+        containerColor = Nf.Surface, contentColor = Nf.Text,
         dragHandle = { Box(Modifier.padding(top = 10.dp, bottom = 6.dp).size(40.dp, 4.dp).clip(CircleShape).background(Nf.Line)) },
     ) {
         Box(Modifier.fillMaxWidth().fillMaxHeight(0.88f)) {
@@ -200,10 +207,12 @@ fun EpisodesSheet(
                         onRetry = onRetry, onRange = onRange,
                         onDownload = onDownload, onDownloadBatch = onDownloadBatch, onCancelDownload = onCancelDownload,
                         onRetryDownload = onRetryDownload, onDeleteDownload = onDeleteDownload,
+                        onSwipeDismissAllowed = { allowSheetSwipe = it },
                     ) { choosingFor = null; page = SheetPage.Translations }
                     SheetPage.Translations -> TranslationsPage(
                         state as? PlayState.Ready, accent, choosingFor, preferred,
                         showBack = !(openedOnPicker && choosingFor == startFor),
+                        onSwipeDismissAllowed = { allowSheetSwipe = it },
                         onBack = { choosingFor = null; page = SheetPage.Episodes },
                         onPick = { s ->
                             val i = choosingFor
@@ -237,6 +246,7 @@ private fun EpisodesPage(
     onPlay: (Int) -> Unit, onRetry: () -> Unit, onRange: (List<Episode>) -> Unit,
     onDownload: (Episode) -> Unit, onDownloadBatch: (List<Episode>) -> Unit, onCancelDownload: (Long) -> Unit,
     onRetryDownload: (Long) -> Unit, onDeleteDownload: (Long) -> Unit,
+    onSwipeDismissAllowed: (Boolean) -> Unit,
     onTranslations: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
@@ -263,16 +273,25 @@ private fun EpisodesPage(
             }
         }
         when (state) {
-            PlayState.Loading -> Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(20.dp)).shimmer())
-                repeat(5) { Box(Modifier.fillMaxWidth().height(58.dp).clip(RoundedCornerShape(16.dp)).shimmer()) }
+            PlayState.Loading -> {
+                LaunchedEffect(Unit) { onSwipeDismissAllowed(true) }
+                Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(20.dp)).shimmer())
+                    repeat(5) { Box(Modifier.fillMaxWidth().height(58.dp).clip(RoundedCornerShape(16.dp)).shimmer()) }
+                }
             }
-            is PlayState.Error -> EmptyState("Не получилось загрузить серии", state.message, action = "Повторить", onAction = onRetry)
+            is PlayState.Error -> {
+                LaunchedEffect(Unit) { onSwipeDismissAllowed(true) }
+                EmptyState("Не получилось загрузить серии", state.message, action = "Повторить", onAction = onRetry)
+            }
             is PlayState.Ready ->
-                if (state.episodes.isEmpty()) EmptyState("Серий пока нет", "На Anime 365 ещё не загрузили ни одной серии этого тайтла")
-                else Episodes(
+                if (state.episodes.isEmpty()) {
+                    LaunchedEffect(Unit) { onSwipeDismissAllowed(true) }
+                    EmptyState("Серий пока нет", "На Anime 365 ещё не загрузили ни одной серии этого тайтла")
+                } else Episodes(
                     state, history, isMovie, accent, downloads,
                     onPlay, onRange, onTranslations, onDownload, onCancelDownload, onRetryDownload, onDeleteDownload,
+                    onSwipeDismissAllowed,
                 )
         }
     }
@@ -283,6 +302,7 @@ private fun Episodes(
     state: PlayState.Ready, history: List<WatchEntry>, isMovie: Boolean, accent: Color, downloads: DownloadsState,
     onPlay: (Int) -> Unit, onRange: (List<Episode>) -> Unit, onTranslations: () -> Unit,
     onDownload: (Episode) -> Unit, onCancelDownload: (Long) -> Unit, onRetryDownload: (Long) -> Unit, onDeleteDownload: (Long) -> Unit,
+    onSwipeDismissAllowed: (Boolean) -> Unit,
 ) {
     val eps = state.episodes
     // Long shows are split into ranges of 50; the sheet opens on the range you're watching.
@@ -291,6 +311,10 @@ private fun Episodes(
     val resume = state.target
     var range by remember { mutableIntStateOf(if (ranges.size > 1 && resume >= 0) resume / chunk else 0) }
     val list = rememberLazyListState()
+    val atTop by remember { derivedStateOf { !list.canScrollBackward } }
+    LaunchedEffect(atTop, list.isScrollInProgress) {
+        if (!list.isScrollInProgress) onSwipeDismissAllowed(atTop)
+    }
     LaunchedEffect(range) {
         if (ranges.size > 1) onRange(ranges[range].map { eps[it] })
         val pos = ranges.getOrNull(range).orEmpty().indexOf(resume)
@@ -564,6 +588,7 @@ private fun uploaded(s: String?): String? = runCatching {
 @Composable
 private fun TranslationsPage(
     state: PlayState.Ready?, accent: Color, startFor: Int?, preferred: TranslationKind, showBack: Boolean,
+    onSwipeDismissAllowed: (Boolean) -> Unit,
     onBack: () -> Unit, onPick: (Studio) -> Unit,
 ) {
     val groups = state?.studios.orEmpty()
@@ -596,12 +621,14 @@ private fun TranslationsPage(
             }
         }
         if (state?.studios == null) {
+            LaunchedEffect(Unit) { onSwipeDismissAllowed(true) }
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 repeat(4) { Box(Modifier.fillMaxWidth().height(64.dp).clip(RoundedCornerShape(16.dp)).shimmer()) }
             }
             return@Column
         }
         if (kinds.isEmpty()) {
+            LaunchedEffect(Unit) { onSwipeDismissAllowed(true) }
             EmptyState("Переводов пока нет", state.trError ?: "На Anime 365 для этого тайтла ещё ничего не загрузили")
             return@Column
         }
@@ -634,6 +661,10 @@ private fun TranslationsPage(
         val rest = list.filterNot { it.key in fav }
         // A newly starred studio moves into "Любимые" at the top: follow it there instead of leaving it off screen.
         val listState = rememberLazyListState()
+        val atTop by remember { derivedStateOf { !listState.canScrollBackward } }
+        LaunchedEffect(atTop, listState.isScrollInProgress) {
+            if (!listState.isScrollInProgress) onSwipeDismissAllowed(atTop)
+        }
         val favKeys = favs.map { it.key }
         var seenFavs by remember(kind) { mutableStateOf(favKeys) }
         LaunchedEffect(favKeys) {

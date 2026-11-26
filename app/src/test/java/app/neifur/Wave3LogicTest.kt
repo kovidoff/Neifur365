@@ -150,6 +150,10 @@ class Wave3LogicTest {
         // Fling inertia (SideEffect) hitting the top of the list is always absorbed so it never snaps the sheet shut.
         assertEquals(Offset(0f, 55f), guard.onPostScroll(Offset(0f, 10f), Offset(0f, 55f), NestedScrollSource.SideEffect))
 
+        // Bottom overscroll / downward fling velocity (available.y < 0f) is absorbed so ModalBottomSheet never settles/locks.
+        assertEquals(Offset(0f, -45f), guard.onPostScroll(Offset(0f, -15f), Offset(0f, -45f), NestedScrollSource.UserInput))
+        assertEquals(Velocity(0f, -750f), guard.onPostFling(Velocity(0f, -300f), Velocity(0f, -750f)))
+
         // Reset between gestures: a fresh downward pull starting right at index 0 passes through to dismiss the sheet.
         inProgress = false
         canBackward = false
