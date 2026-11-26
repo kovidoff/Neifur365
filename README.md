@@ -93,6 +93,7 @@
 | --- | --- | --- |
 | **Anime 365** (`smotret-anime.*` / `anime365.ru`) | Вход в аккаунт, списки, каталог, ссылки на серии и субтитры | [`Anime365.kt`](app/src/main/java/app/neifur/data/a365/Anime365.kt), [`SitePages.kt`](app/src/main/java/app/neifur/data/a365/SitePages.kt) |
 | **Shikimori** (`shikimori.one` / `shikimori.io`) | Описания, оценки, персонажи, кадры и расписание онгоингов | [`Shikimori.kt`](app/src/main/java/app/neifur/data/shikimori/Shikimori.kt) |
+| **AniSkip** (`api.aniskip.com`, только если включён в настройках) | Тайминги опенингов и эндингов по MAL ID | [`AniSkip.kt`](app/src/main/java/app/neifur/data/aniskip/AniSkip.kt) |
 | **YouTube** (только при открытии трейлера / превью) | Превью и переход к трейлерам тайтла | [`DetailScreen.kt`](app/src/main/java/app/neifur/ui/screens/DetailScreen.kt) |
 
 - Логин и пароль отправляются **напрямую** на Anime 365 и не сохраняются на телефоне (хранятся только session cookies в приватном `SharedPreferences` приложения).
