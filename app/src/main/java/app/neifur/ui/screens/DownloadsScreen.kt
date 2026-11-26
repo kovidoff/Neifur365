@@ -18,6 +18,7 @@ import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -83,7 +84,8 @@ fun DownloadsScreen(onBack: () -> Unit) {
             when (it) {
                 is DownloadStatus.Running -> 0
                 is DownloadStatus.Queued -> 1
-                is DownloadStatus.Failed -> 2
+                is DownloadStatus.WaitingWifi -> 2
+                is DownloadStatus.Failed -> 3
             }
         }
     }
@@ -248,6 +250,13 @@ private fun ActiveDownloadCard(
                     Box(Modifier.padding(top = 8.dp).fillMaxWidth().height(4.dp).clip(CircleShape).background(Nf.Line)) {
                         Box(Modifier.fillMaxWidth(status.progress.coerceIn(0.03f, 1f)).fillMaxHeight().clip(CircleShape).background(Nf.Violet))
                     }
+                }
+                is DownloadStatus.WaitingWifi -> Row(
+                    Modifier.padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Rounded.Wifi, null, tint = Nf.Amber, modifier = Modifier.size(13.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("${status.episodeLabel} · ждёт Wi-Fi", style = Type.Caption, color = Nf.Amber, maxLines = 1)
                 }
                 is DownloadStatus.Failed -> Text(
                     "${status.episodeLabel} · ${status.message}", style = Type.Caption, color = Nf.Red, maxLines = 2,

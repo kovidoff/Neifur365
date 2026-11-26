@@ -42,13 +42,15 @@ data class Track(
         get() = when (channels) { null, 0 -> null; 1 -> "Моно"; 2 -> "2.0"; 6 -> "5.1"; 8 -> "7.1"; else -> "$channels кан." }
 }
 
-/** A chapter mark from the file; names like "Opening" let the player offer a skip. */
-data class Chapter(val start: Double, val title: String) {
-    val kind: ChapterKind = ChapterKind.of(title)
-}
+/** A chapter mark from the file (or verified AniSkip segments); names like "Opening" let the player offer a skip. */
+data class Chapter(
+    val start: Double,
+    val title: String,
+    val kind: ChapterKind = ChapterKind.of(title),
+)
 
 enum class ChapterKind {
-    Opening, Ending, Preview, Other;
+    Opening, Ending, Preview, Recap, Other;
 
     companion object {
         private val OP = Regex("""(?i)(?<![a-z])(op\d*|opening|intro|オープニング|片头|片頭)(?![a-z])""")
@@ -280,7 +282,7 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         cacheWait = false; seeking = false
         position = startAt; duration = 0.0; buffered = 0.0
         lastPos = -1.0; lastBuffered = -1.0
-        tracks = emptyList(); chapters = emptyList()
+        tracks = emptyList(); embeddedChapters = emptyList(); externalChapters = emptyList(); chapters = emptyList()
         val startNow = {
             if (!released && active && loadGen == gen) {
                 if (mpvOpenCount > 0) skipEndFile += mpvOpenCount
@@ -316,7 +318,7 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         position = 0.0; duration = 0.0; buffered = 0.0
         lastPos = -1.0; lastBuffered = -1.0
         videoW = 0; videoH = 0
-        tracks = emptyList(); chapters = emptyList()
+        tracks = emptyList(); embeddedChapters = emptyList(); externalChapters = emptyList(); chapters = emptyList()
         if (subDelay != 0.0) changeSubDelay(0.0)
         if (hadOpen) mpv.command(arrayOf("stop"))
     }
@@ -368,6 +370,9 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     fun changeFill(on: Boolean) { fill = on }
 
     private var lastSubPos = 100
+    private var lastNormalize: Boolean? = null
+    private var embeddedChapters: List<Chapter> = emptyList()
+    private var externalChapters: List<Chapter> = emptyList()
 
     /** Lifts subtitles cleanly above the cropped bottom edge when Fill crops a 16:9 picture on a taller display. */
     fun setSubPos(pos: Int) {
@@ -376,6 +381,22 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
         if (clamped == lastSubPos) return
         lastSubPos = clamped
         mpv.setPropertyInt("sub-pos", clamped)
+    }
+
+    /** Dynamic audio normalization (dynaudnorm) to balance quiet speech and loud openings. */
+    fun setAudioNormalize(on: Boolean) {
+        if (released || lastNormalize == on) return
+        lastNormalize = on
+        runCatching {
+            mpv.setPropertyString("af", if (on) "lavfi=[dynaudnorm=f=150:g=15:p=0.9:m=10]" else "")
+        }
+    }
+
+    /** Supplies verified external skip chapters (AniSkip); embedded MKV chapters always take priority. */
+    fun setExternalChapters(list: List<Chapter>) {
+        if (released) return
+        externalChapters = list
+        if (embeddedChapters.isEmpty()) chapters = list
     }
 
     /** Marks the current open attempt as failed once all fallback URLs / channel switches are exhausted. */
@@ -447,10 +468,11 @@ class MpvPlayer(context: Context) : MPVLib.EventObserver {
     private fun readChapters() {
         if (released) return
         val n = mpv.getPropertyInt("chapter-list/count") ?: 0
-        chapters = (0 until n).mapNotNull { i ->
+        embeddedChapters = (0 until n).mapNotNull { i ->
             val t = mpv.getPropertyDouble("chapter-list/$i/time") ?: return@mapNotNull null
             Chapter(t, mpv.getPropertyString("chapter-list/$i/title").orEmpty())
         }.sortedBy { it.start }
+        chapters = embeddedChapters.ifEmpty { externalChapters }
         if (BuildConfig.DEBUG) android.util.Log.i("NeifurPlayer", "chapters: " + chapters.joinToString { "${it.start.toInt()}s '${it.title}' ${it.kind}" })
     }
 

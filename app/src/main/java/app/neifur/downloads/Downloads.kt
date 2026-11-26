@@ -2,6 +2,8 @@ package app.neifur.downloads
 
 import android.app.Application
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import app.neifur.AnimeStub
 import app.neifur.core.ApiError
@@ -20,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -133,6 +136,15 @@ sealed interface DownloadStatus {
         val totalBytes: Long,
     ) : DownloadStatus
 
+    data class WaitingWifi(
+        override val episodeId: Long,
+        override val animeId: String,
+        override val animeTitle: String,
+        override val animePoster: String?,
+        override val episodeNumber: Int,
+        override val episodeLabel: String,
+    ) : DownloadStatus
+
     data class Failed(
         override val episodeId: Long,
         override val animeId: String,
@@ -199,6 +211,7 @@ class DownloadManager(
     private val prefs: Prefs,
     baseHttp: OkHttpClient,
     private val scope: CoroutineScope,
+    private val networkKey: StateFlow<String> = MutableStateFlow(""),
 ) {
     private val dir: File = (app.getExternalFilesDir("downloads") ?: File(app.filesDir, "downloads")).apply {
         mkdirs()
@@ -221,11 +234,31 @@ class DownloadManager(
     val state: StateFlow<DownloadsState> = _state
 
     private val queue = ArrayDeque<PendingDownload>()
+    private val waitingWifi = LinkedHashMap<Long, PendingDownload>()
     private val requests = HashMap<Long, PendingDownload>()
     @Volatile private var currentId: Long? = null
+    @Volatile private var pauseForWifiId: Long? = null
+    @Volatile private var wifiOnlyCached: Boolean = false
     @Volatile private var activeCall: Call? = null
     private var currentJob: Job? = null
     private var pumpJob: Job? = null
+
+    private fun isOnWifi(): Boolean {
+        val cm = app.getSystemService(ConnectivityManager::class.java) ?: return true
+        val net = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(net) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+            !cm.isActiveNetworkMetered
+    }
+
+    private fun waitingStatus(req: PendingDownload) = DownloadStatus.WaitingWifi(
+        req.episode.id, req.anime.id, req.anime.title, req.anime.poster, req.episode.number, req.episode.label,
+    )
+
+    private fun queuedStatus(req: PendingDownload) = DownloadStatus.Queued(
+        req.episode.id, req.anime.id, req.anime.title, req.anime.poster, req.episode.number, req.episode.label,
+    )
 
     init {
         scope.launch(Dispatchers.IO) {
@@ -240,6 +273,47 @@ class DownloadManager(
                 val existing = _state.value.items
                 val merged = if (existing.isEmpty()) loaded else (existing + loaded).distinctBy { it.episodeId }
                 _state.update { it.copy(items = merged) }
+            }
+        }
+        // Automatically pause active/queued downloads on cellular when Wi-Fi-only is on, and resume on Wi-Fi.
+        scope.launch {
+            combine(networkKey, prefs.wifiOnlyDownloads) { _, wifiOnly -> wifiOnly }.collect { wifiOnly ->
+                wifiOnlyCached = wifiOnly
+                if (wifiOnly && !isOnWifi()) {
+                    val moved = synchronized(queue) {
+                        val list = queue.toList()
+                        queue.clear()
+                        list.forEach { waitingWifi[it.episode.id] = it }
+                        list
+                    }
+                    if (moved.isNotEmpty()) {
+                        _state.update { st ->
+                            st.copy(active = st.active + moved.associate { it.episode.id to waitingStatus(it) })
+                        }
+                    }
+                    val activeId = currentId
+                    if (activeId != null) {
+                        pauseForWifiId = activeId
+                        activeCall?.cancel()
+                    }
+                } else {
+                    val resume = synchronized(queue) {
+                        val list = waitingWifi.values.toList()
+                        waitingWifi.clear()
+                        list.forEach { req ->
+                            queue.removeAll { it.episode.id == req.episode.id }
+                            queue.addLast(req)
+                        }
+                        list
+                    }
+                    if (resume.isNotEmpty()) {
+                        _state.update { st ->
+                            st.copy(active = st.active + resume.associate { it.episode.id to queuedStatus(it) })
+                        }
+                        startService()
+                        pump()
+                    }
+                }
             }
         }
     }
@@ -257,23 +331,26 @@ class DownloadManager(
         val s = _state.value
         if (s.isDownloaded(episode.id)) return
         val existing = s.active[episode.id]
-        if (existing is DownloadStatus.Queued || existing is DownloadStatus.Running) return
+        if (existing is DownloadStatus.Queued || existing is DownloadStatus.Running || existing is DownloadStatus.WaitingWifi) return
 
         val token = tokenGen.incrementAndGet()
         activeTokens[episode.id] = token
         val req = PendingDownload(anime, episode, pickKey, pickName, token)
+        if (wifiOnlyCached && !isOnWifi()) {
+            synchronized(queue) {
+                requests[episode.id] = req
+                waitingWifi[episode.id] = req
+            }
+            _state.update { st -> st.copy(active = st.active + (episode.id to waitingStatus(req))) }
+            return
+        }
         synchronized(queue) {
             requests[episode.id] = req
+            waitingWifi.remove(episode.id)
             queue.removeAll { it.episode.id == episode.id }
             queue.addLast(req)
         }
-        _state.update { st ->
-            st.copy(
-                active = st.active + (episode.id to DownloadStatus.Queued(
-                    episode.id, anime.id, anime.title, anime.poster, episode.number, episode.label,
-                ))
-            )
-        }
+        _state.update { st -> st.copy(active = st.active + (episode.id to queuedStatus(req))) }
         startService()
         pump()
     }
@@ -287,9 +364,11 @@ class DownloadManager(
         activeTokens.remove(episodeId)
         synchronized(queue) {
             queue.removeAll { it.episode.id == episodeId }
+            waitingWifi.remove(episodeId)
             requests.remove(episodeId)
         }
         if (currentId == episodeId) {
+            if (pauseForWifiId == episodeId) pauseForWifiId = null
             activeCall?.cancel()
             currentJob?.cancel()
         }
@@ -306,7 +385,8 @@ class DownloadManager(
 
     fun cancelAll() {
         activeTokens.clear()
-        synchronized(queue) { queue.clear(); requests.clear() }
+        pauseForWifiId = null
+        synchronized(queue) { queue.clear(); waitingWifi.clear(); requests.clear() }
         activeCall?.cancel()
         currentJob?.cancel()
         _state.update { it.copy(active = emptyMap()) }
@@ -410,6 +490,14 @@ class DownloadManager(
 
         try {
             if (activeTokens[ep.id] != req.token) return
+            if (prefs.wifiOnlyDownloads.first() && !isOnWifi()) {
+                synchronized(queue) { waitingWifi[ep.id] = req }
+                _state.update { st ->
+                    if (activeTokens[ep.id] != req.token || ep.id !in st.active) st
+                    else st.copy(active = st.active + (ep.id to waitingStatus(req)))
+                }
+                return
+            }
             setRunning(0f, 0L, 0L)
             val dlQuality = prefs.downloadQuality.first().takeIf { it > 0 } ?: prefs.quality.first()
             val list = a365.episode(ep.id).translations.orEmpty()
@@ -564,6 +652,16 @@ class DownloadManager(
             if (stillCurrent) _state.update { st -> st.copy(active = st.active - ep.id) }
             throw e
         } catch (e: Throwable) {
+            if (pauseForWifiId == ep.id) {
+                pauseForWifiId = null
+                if (activeTokens[ep.id] == req.token) {
+                    synchronized(queue) { waitingWifi[ep.id] = req }
+                    _state.update { st ->
+                        if (ep.id !in st.active) st else st.copy(active = st.active + (ep.id to waitingStatus(req)))
+                    }
+                    return
+                }
+            }
             val stillCurrent = activeTokens.remove(ep.id, req.token)
             if (stillCurrent || activeTokens[ep.id] == null) {
                 // Keep non-empty .part files on network failures so Retry resumes with HTTP Range.

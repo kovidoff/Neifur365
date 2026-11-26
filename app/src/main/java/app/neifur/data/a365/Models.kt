@@ -189,6 +189,7 @@ data class Profile(
     val subscribedUntil: String? = null,
 )
 
+@Serializable
 enum class ListStatus(val id: Int, val path: String, val title: String) {
     Watching(1, "watching", "Смотрю"),
     Planned(0, "planned", "Запланировано"),
@@ -206,6 +207,7 @@ fun scoreLabel(score: Int): String = when (score) {
 }
 
 /** One row of the viewer's Anime 365 lists. [total] is null while the site doesn't know it ("3 / ?"). */
+@Serializable
 data class ListEntry(
     val seriesId: Long, val title: String, val watched: Int, val total: Int?, val score: Int?,
     val status: ListStatus? = null,

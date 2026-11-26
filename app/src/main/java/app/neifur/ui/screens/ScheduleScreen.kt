@@ -165,19 +165,24 @@ class ScheduleVm(private val c: Container) : ViewModel() {
     var onlyMine by mutableStateOf(false)
     var selectedIdx by mutableIntStateOf(0)
 
-    init { load() }
+    init {
+        viewModelScope.launch {
+            c.shikimori.cachedSchedule()?.takeIf { it.isNotEmpty() }?.let { state.value = Load.Ready(it) }
+            load()
+        }
+    }
 
     fun load(pull: Boolean = false) {
-        if (pull && state.value is Load.Ready) refreshing = true else state.value = Load.Loading
+        if (pull && state.value is Load.Ready) refreshing = true else if (state.value !is Load.Ready) state.value = Load.Loading
         viewModelScope.launch {
             runCatching {
                 val extra = c.lists.state.value.titles.values
                     .filter { it.airing && (it.status == ListStatus.Watching || it.status == ListStatus.Planned) }
                     .mapNotNull { it.series?.myAnimeListId?.takeIf { id -> id > 0 } }
-                c.shikimori.ongoingSchedule(extra)
+                c.shikimori.ongoingSchedule(extra, forceRefresh = pull)
             }.fold(
                 { state.value = Load.Ready(it) },
-                { if (!pull || state.value !is Load.Ready) state.value = Load.Error(it.userMessage()) },
+                { if (state.value !is Load.Ready) state.value = Load.Error(it.userMessage()) },
             )
             refreshing = false
         }

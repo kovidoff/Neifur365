@@ -7,6 +7,9 @@ import android.content.Intent
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,7 +17,10 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -35,10 +41,12 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -46,6 +54,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.graphics.ColorUtils
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -59,10 +69,12 @@ import app.neifur.core.userMessage
 import app.neifur.container
 import app.neifur.core.ApiError
 import app.neifur.data.WatchEntry
+import app.neifur.data.a365.A365Genres
 import app.neifur.data.a365.AccountState
 import app.neifur.data.a365.Episode
 import app.neifur.data.a365.ListRecord
 import app.neifur.data.a365.ListStatus
+import app.neifur.data.a365.ListedTitle
 import app.neifur.data.a365.Studio
 import app.neifur.data.a365.Studios
 import app.neifur.data.a365.Series
@@ -72,6 +84,9 @@ import app.neifur.data.shikimori.Anime
 import app.neifur.data.shikimori.Genre
 import app.neifur.data.shikimori.IncDate
 import app.neifur.data.shikimori.Poster
+import app.neifur.data.shikimori.RelatedRef
+import app.neifur.data.shikimori.Screenshot
+import app.neifur.data.shikimori.Studio as AnimeStudio
 import androidx.compose.material.icons.automirrored.rounded.Login
 import kotlinx.coroutines.Job
 import app.neifur.data.shikimori.AnimeCast
@@ -173,6 +188,8 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
         private set
     var cast by mutableStateOf<AnimeCast?>(null)
         private set
+    var franchise by mutableStateOf<List<RelatedRef>>(emptyList())
+        private set
     /** The viewer's Anime 365 list record for this title (signed in only). */
     var record by mutableStateOf<ListRecord?>(null)
         private set
@@ -184,6 +201,19 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
 
     val signedIn: Boolean get() = c.account.state.value is AccountState.SignedIn
     val account = c.account.state
+    val lists = c.lists.state
+
+    /** Maps a Shikimori genre to an Anime 365 catalog genre ID when a matching filter exists. */
+    fun resolveGenreId(g: Genre): Int? {
+        val label = g.label.trim()
+        val numId = g.id.toIntOrNull()
+        series?.genres?.firstOrNull {
+            (numId != null && it.id == numId) || (label.isNotEmpty() && it.title.equals(label, ignoreCase = true))
+        }?.let { sg -> if (A365Genres.any { it.first == sg.id }) return sg.id }
+        if (label.isNotEmpty()) A365Genres.firstOrNull { it.second.equals(label, ignoreCase = true) }?.let { return it.first }
+        if (numId != null && A365Genres.any { it.first == numId }) return numId
+        return null
+    }
 
     val isFavorite = combine(c.prefs.favorites, seriesIdFlow) { l, sid -> sid != null && l.any { it.id == sid } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
@@ -262,7 +292,13 @@ class DetailVm(private val c: Container, private val requestedId: String) : View
                 if (s.myAnimeListId <= 0) extrasPending = false
                 if (s.myAnimeListId > 0) {
                     launch {
-                        runCatching { c.shikimori.detail(s.myAnimeListId.toString()) }.onSuccess { anime = it.copy(russian = s.title) }
+                        runCatching { c.shikimori.detail(s.myAnimeListId.toString()) }.onSuccess { detail ->
+                            anime = detail.copy(russian = s.title)
+                            val slug = detail.franchise?.takeIf { it.isNotBlank() }
+                            if (slug != null) {
+                                launch { franchise = runCatching { c.shikimori.franchise(slug) }.getOrDefault(emptyList()) }
+                            }
+                        }
                         extrasPending = false
                     }
                     launch { cast = runCatching { c.shikimori.cast(s.myAnimeListId.toString()) }.getOrNull() }
@@ -533,7 +569,14 @@ private fun Modifier.reveal(order: Int): Modifier {
 }
 
 @Composable
-fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit) {
+fun DetailScreen(
+    id: String,
+    origin: String,
+    open: OpenAnime,
+    onOpenGenre: (Int) -> Unit = {},
+    onOpenStudio: (AnimeStudio) -> Unit = {},
+    onBack: () -> Unit,
+) {
     val vm = nfViewModel(key = "detail-$id") { DetailVm(it, id) }
     val ctx = LocalContext.current
     val anime = vm.anime
@@ -541,10 +584,15 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
     val favorite by vm.isFavorite.collectAsStateWithLifecycle()
     val account by vm.account.collectAsStateWithLifecycle()
     val signedIn = account is AccountState.SignedIn
+    val listsState by vm.lists.collectAsStateWithLifecycle()
+    val listedByMal = remember(listsState) {
+        listsState.titles.values.mapNotNull { t -> t.series?.myAnimeListId?.takeIf { it > 0L }?.let { it to t } }.toMap()
+    }
     val allHistory by LocalContext.current.container.prefs.history.collectAsStateWithLifecycle(emptyList())
     val history = remember(allHistory, vm.seriesId) { allHistory.filter { it.animeId == vm.seriesId } }
     val accent = rememberPosterAccent(stub?.poster)
     var sheet by remember { mutableStateOf<SheetPage?>(null) }
+    var shotViewerIndex by remember { mutableStateOf<Int?>(null) }
     /** Episode the "В чём смотреть?" picker starts, when a title not started yet is played. */
     var startFor by remember { mutableStateOf<Int?>(null) }
     val preferred by vm.preferredKind.collectAsStateWithLifecycle("VoiceRu")
@@ -638,16 +686,25 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                                         Modifier.reveal(3).padding(top = 18.dp),
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                                         verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) { genres.forEach { Pill(it.label) } }
+                                    ) {
+                                        genres.forEach { g ->
+                                            val gid = vm.resolveGenreId(g)
+                                            Pill(g.label, onClick = gid?.let { { onOpenGenre(it) } })
+                                        }
+                                    }
                                     if (hasScores) Scores(anime, accent, Modifier, padH = 0.dp, topPad = 26.dp)
                                 }
                                 Column(Modifier.weight(0.82f)) {
-                                    Facts(anime, vm.cast, Modifier.reveal(2), padH = 0.dp, topPad = 0.dp)
+                                    Facts(anime, vm.cast, Modifier.reveal(2), padH = 0.dp, topPad = 0.dp, accent = accent, onOpenStudio = onOpenStudio)
                                 }
                             }
                         }
 
-                        detailMediaItems(vm, anime, id, accent, open, ctx, padH = padH, shotHeight = 148.dp, relatedWidth = 136.dp)
+                        detailMediaItems(
+                            vm, anime, id, accent, listedByMal, open, ctx,
+                            onOpenShot = { shotViewerIndex = it },
+                            padH = padH, shotHeight = 148.dp, relatedWidth = 136.dp,
+                        )
                     }
                 }
             } else {
@@ -675,7 +732,13 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
                             )
                         }
 
-                        detailInfoItems(vm, anime, id, desc, genres, accent, open, ctx, includeMeta = false)
+                        detailInfoItems(
+                            vm, anime, id, desc, genres, accent, listedByMal, open, ctx,
+                            onOpenGenre = onOpenGenre,
+                            onOpenStudio = onOpenStudio,
+                            onOpenShot = { shotViewerIndex = it },
+                            includeMeta = false,
+                        )
                     }
                 }
             }
@@ -741,6 +804,16 @@ fun DetailScreen(id: String, origin: String, open: OpenAnime, onBack: () -> Unit
             onDismiss = { listSheet = false },
             onChange = { st, w, sc -> vm.setList(st, w, sc) },
         )
+        shotViewerIndex?.let { startIdx ->
+            val shots = anime?.screenshots.orEmpty()
+            if (shots.isNotEmpty()) {
+                ScreenshotViewerDialog(
+                    screenshots = shots,
+                    initialIndex = startIdx.coerceIn(0, shots.lastIndex),
+                    onDismiss = { shotViewerIndex = null },
+                )
+            }
+        }
         if (vm.askSignIn) SignInSheet(onDismiss = { vm.askSignIn = false }, onDone = { vm.askSignIn = false })
     }
 }
@@ -787,7 +860,11 @@ private fun DetailActionsBlock(
 }
 
 private fun LazyListScope.detailInfoItems(
-    vm: DetailVm, anime: Anime?, id: String, desc: String, genres: List<Genre>, accent: Color, open: OpenAnime, ctx: Context,
+    vm: DetailVm, anime: Anime?, id: String, desc: String, genres: List<Genre>, accent: Color,
+    listedByMal: Map<Long, ListedTitle>, open: OpenAnime, ctx: Context,
+    onOpenGenre: (Int) -> Unit,
+    onOpenStudio: (AnimeStudio) -> Unit,
+    onOpenShot: (Int) -> Unit,
     includeMeta: Boolean = true,
 ) {
     if (includeMeta) item(key = "meta") { MetaChips(anime, vm.extrasPending, Modifier.reveal(1)) }
@@ -815,19 +892,26 @@ private fun LazyListScope.detailInfoItems(
             FlowRow(
                 Modifier.animateItem().reveal(4).padding(horizontal = 20.dp).padding(top = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) { genres.forEach { Pill(it.label) } }
+            ) {
+                genres.forEach { g ->
+                    val gid = vm.resolveGenreId(g)
+                    Pill(g.label, onClick = gid?.let { { onOpenGenre(it) } })
+                }
+            }
         }
 
-        item(key = "facts") { Facts(anime, vm.cast, Modifier.animateItem()) }
+        item(key = "facts") { Facts(anime, vm.cast, Modifier.animateItem(), accent = accent, onOpenStudio = onOpenStudio) }
 
         if (anime.scoresStats.sumOf { it.count } > 20) item(key = "scores") { Scores(anime, accent, Modifier.animateItem()) }
 
-        detailMediaItems(vm, anime, id, accent, open, ctx)
+        detailMediaItems(vm, anime, id, accent, listedByMal, open, ctx, onOpenShot = onOpenShot)
     }
 }
 
 private fun LazyListScope.detailMediaItems(
-    vm: DetailVm, anime: Anime, id: String, accent: Color, open: OpenAnime, ctx: Context,
+    vm: DetailVm, anime: Anime, id: String, accent: Color,
+    listedByMal: Map<Long, ListedTitle>, open: OpenAnime, ctx: Context,
+    onOpenShot: (Int) -> Unit,
     padH: androidx.compose.ui.unit.Dp = 20.dp,
     shotHeight: androidx.compose.ui.unit.Dp = 124.dp,
     relatedWidth: androidx.compose.ui.unit.Dp = 118.dp,
@@ -840,14 +924,35 @@ private fun LazyListScope.detailMediaItems(
     if (videos.isNotEmpty()) item(key = "videos") { Videos(videos, Modifier.animateItem(), padH = padH) { url -> openUrl(ctx, url) } }
 
     if (anime.screenshots.isNotEmpty()) item(key = "shots") {
+        val shots = anime.screenshots.take(14)
         Column(Modifier.animateItem()) {
             SectionTitle("Кадры", Modifier.padding(top = 30.dp, bottom = 14.dp), horizontalPadding = padH)
             LazyRow(contentPadding = PaddingValues(horizontal = padH), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(anime.screenshots.take(14)) { s ->
-                    PosterImage(s.x332Url ?: s.originalUrl, Modifier.height(shotHeight).aspectRatio(16f / 9f).clip(RoundedCornerShape(16.dp)))
+                itemsIndexed(shots) { idx, s ->
+                    Box(
+                        Modifier.height(shotHeight).aspectRatio(16f / 9f)
+                            .pressable(0.96f) { onOpenShot(idx) }
+                            .clip(RoundedCornerShape(16.dp))
+                            .border(1.dp, Color(0x14FFFFFF), RoundedCornerShape(16.dp)),
+                    ) {
+                        PosterImage(s.x332Url ?: s.originalUrl, Modifier.fillMaxSize())
+                    }
                 }
             }
         }
+    }
+
+    if (vm.franchise.size >= 2) item(key = "franchise") {
+        FranchiseSection(
+            entries = vm.franchise,
+            currentMalId = vm.series?.myAnimeListId?.takeIf { it > 0L }?.toString() ?: anime.id,
+            detailId = id,
+            accent = accent,
+            listedByMal = listedByMal,
+            padH = padH,
+            open = open,
+            modifier = Modifier.animateItem(),
+        )
     }
 
     // Related seasons come from Shikimori; opening one finds its Anime 365 page by the shared MyAnimeList id.
@@ -1282,6 +1387,8 @@ private fun Facts(
     anime: Anime, cast: AnimeCast?, modifier: Modifier,
     padH: androidx.compose.ui.unit.Dp = 20.dp,
     topPad: androidx.compose.ui.unit.Dp = 30.dp,
+    accent: Color = LocalAccent.current,
+    onOpenStudio: (AnimeStudio) -> Unit = {},
 ) {
     fun staff(vararg roles: String) = cast?.staff.orEmpty()
         .filter { p -> p.rolesRu.any { it in roles } }.mapNotNull { it.person?.label }.distinct().take(2).joinToString(", ").ifBlank { null }
@@ -1293,32 +1400,373 @@ private fun Facts(
         released != null && released != aired && anime.kind != "movie" -> "$aired — $released"
         else -> aired
     }
-    val rows = listOfNotNull(
-        "Тип" to kindLabel(anime.kind).ifBlank { null },
-        "Эпизоды" to when {
-            anime.kind == "movie" -> null
-            anime.status == "ongoing" -> if (anime.episodes > 0) "${anime.episodesAired} из ${anime.episodes}" else "${anime.episodesAired}, выходит"
-            anime.episodes > 0 -> "${anime.episodes}"
-            else -> null
-        },
-        "Длительность" to durationLabel(anime)?.let { if (anime.kind == "movie") it else "$it на серию" },
-        "Выход" to dates,
-        "Студия" to anime.studios.joinToString(", ") { it.name }.ifBlank { null },
-        "Первоисточник" to originLabel(anime.origin),
-        "Режиссёр" to staff("Режиссёр"),
-        "Автор оригинала" to staff("Автор оригинала", "Оригинальное создание"),
-        "Музыка" to staff("Композитор", "Музыка"),
-        "Возраст" to ageLabel(anime.rating),
-    ).filter { it.second != null }
+    val studios = anime.studios.filter { it.name.isNotBlank() }
+    val rows = buildList<Pair<String, String?>> {
+        add("Тип" to kindLabel(anime.kind).ifBlank { null })
+        add(
+            "Эпизоды" to when {
+                anime.kind == "movie" -> null
+                anime.status == "ongoing" -> if (anime.episodes > 0) "${anime.episodesAired} из ${anime.episodes}" else "${anime.episodesAired}, выходит"
+                anime.episodes > 0 -> "${anime.episodes}"
+                else -> null
+            }
+        )
+        add("Длительность" to durationLabel(anime)?.let { if (anime.kind == "movie") it else "$it на серию" })
+        add("Выход" to dates)
+        if (studios.isNotEmpty()) add("Студия" to "__studios__")
+        add("Первоисточник" to originLabel(anime.origin))
+        add("Режиссёр" to staff("Режиссёр"))
+        add("Автор оригинала" to staff("Автор оригинала", "Оригинальное создание"))
+        add("Музыка" to staff("Композитор", "Музыка"))
+        add("Возраст" to ageLabel(anime.rating))
+    }.filter { it.second != null }
     Column(modifier.padding(horizontal = padH).padding(top = topPad)) {
         Text("О тайтле", style = Type.Section, color = Nf.Text, modifier = Modifier.padding(bottom = 14.dp))
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Nf.Surface).padding(vertical = 6.dp)) {
             rows.forEachIndexed { i, (k, v) ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp), verticalAlignment = Alignment.Top) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(k, style = Type.Label, color = Nf.TextMute, modifier = Modifier.width(126.dp))
-                    Text(v!!, style = Type.Label.copy(fontSize = 14.sp), color = Nf.Text, modifier = Modifier.weight(1f))
+                    if (v == "__studios__") {
+                        FlowRow(
+                            Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            studios.forEach { st ->
+                                val clickable = st.id.isNotBlank()
+                                Row(
+                                    Modifier
+                                        .then(if (clickable) Modifier.pressable(0.93f) { onOpenStudio(st) } else Modifier)
+                                        .clip(CircleShape)
+                                        .background(if (clickable) accent.copy(alpha = 0.13f) else Nf.SurfaceHi)
+                                        .border(1.dp, if (clickable) accent.copy(alpha = 0.32f) else Nf.Line, CircleShape)
+                                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(st.name, style = Type.Label.copy(fontSize = 13.sp), color = if (clickable) Nf.Text else Nf.TextDim, maxLines = 1)
+                                    if (clickable) {
+                                        Spacer(Modifier.width(2.dp))
+                                        Icon(Icons.Rounded.ChevronRight, null, tint = accent, modifier = Modifier.size(15.dp))
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Text(v!!, style = Type.Label.copy(fontSize = 14.sp), color = Nf.Text, modifier = Modifier.weight(1f))
+                    }
                 }
                 if (i != rows.lastIndex) Box(Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(1.dp).background(Nf.Line.copy(alpha = 0.6f)))
+            }
+        }
+    }
+}
+
+@Composable
+private fun FranchiseSection(
+    entries: List<RelatedRef>,
+    currentMalId: String,
+    detailId: String,
+    accent: Color,
+    listedByMal: Map<Long, ListedTitle>,
+    padH: androidx.compose.ui.unit.Dp,
+    open: OpenAnime,
+    modifier: Modifier = Modifier,
+) {
+    var expanded by remember(detailId, entries.size) { mutableStateOf(entries.size <= 6) }
+    val currentIdx = remember(entries, currentMalId) { entries.indexOfFirst { it.id == currentMalId } }
+    val window = remember(entries, expanded, currentIdx) {
+        if (expanded || entries.size <= 6) 0..entries.lastIndex
+        else {
+            val center = if (currentIdx >= 0) currentIdx else 0
+            val start = (center - 2).coerceIn(0, (entries.size - 5).coerceAtLeast(0))
+            start..(start + 4).coerceAtMost(entries.lastIndex)
+        }
+    }
+    val visible = remember(entries, window) { entries.subList(window.first, window.last + 1) }
+
+    Column(modifier.padding(top = 30.dp)) {
+        SectionTitle(
+            text = "Хронология франшизы",
+            horizontalPadding = padH,
+            trailing = {
+                Text(
+                    "${entries.size} ${plural(entries.size, "тайтл", "тайтла", "тайтлов")}",
+                    style = Type.Caption.copy(fontFeatureSettings = "tnum"),
+                    color = Nf.TextMute,
+                )
+            },
+        )
+        Spacer(Modifier.height(14.dp))
+        Column(
+            Modifier
+                .padding(horizontal = padH)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(Nf.Surface)
+                .border(1.dp, Color(0x0DFFFFFF), RoundedCornerShape(24.dp))
+                .animateContentSize(spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            visible.forEachIndexed { localIdx, entry ->
+                val globalIdx = window.first + localIdx
+                val isCurrent = entry.id == currentMalId
+                val listed = entry.id.toLongOrNull()?.let { listedByMal[it] }
+                val listStatus = listed?.status
+                val nodeColor = when {
+                    isCurrent -> accent
+                    listStatus == ListStatus.Completed -> Nf.Mint
+                    listStatus == ListStatus.Watching -> Nf.Violet
+                    listStatus == ListStatus.Planned -> Nf.Amber
+                    listStatus == ListStatus.Dropped -> Nf.Red
+                    else -> Nf.Line
+                }
+                val title = entry.russian?.takeIf { it.isNotBlank() } ?: entry.name
+                val stub = AnimeStub("mal:${entry.id}", title, entry.poster?.card, entry.kind, entry.airedOn?.year, entry.score, entry.id.toLongOrNull() ?: 0L)
+                val meta = buildList {
+                    entry.airedOn?.year?.let { add(it.toString()) }
+                    kindLabel(entry.kind).takeIf { it.isNotBlank() }?.let { add(it) }
+                    if (entry.kind != "movie" && entry.episodes > 0) add("${entry.episodes} эп.")
+                    entry.score?.takeIf { it > 0.0 }?.let { add("★ ${String.format(Locale.forLanguageTag("ru"), "%.1f", it)}") }
+                }.joinToString(" · ")
+
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min)
+                        .then(
+                            if (isCurrent) Modifier
+                            else Modifier.pressable(0.97f) { open(stub, "franchise-$detailId") }
+                        )
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(if (isCurrent) accent.copy(alpha = 0.09f) else Color.Transparent)
+                        .then(if (isCurrent) Modifier.border(1.dp, accent.copy(alpha = 0.28f), RoundedCornerShape(16.dp)) else Modifier)
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // Vertical timeline rail + node
+                    Box(Modifier.width(24.dp).fillMaxHeight(), contentAlignment = Alignment.Center) {
+                        Column(Modifier.fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(
+                                Modifier.width(2.dp).weight(1f).background(
+                                    when {
+                                        globalIdx == 0 -> Color.Transparent
+                                        localIdx == 0 -> Nf.Line.copy(alpha = 0.35f)
+                                        else -> Nf.Line.copy(alpha = 0.75f)
+                                    }
+                                )
+                            )
+                            Box(
+                                Modifier.width(2.dp).weight(1f).background(
+                                    when {
+                                        globalIdx == entries.lastIndex -> Color.Transparent
+                                        localIdx == visible.lastIndex -> Nf.Line.copy(alpha = 0.35f)
+                                        else -> Nf.Line.copy(alpha = 0.75f)
+                                    }
+                                )
+                            )
+                        }
+                        if (isCurrent) {
+                            Box(Modifier.size(18.dp).clip(CircleShape).background(accent.copy(alpha = 0.24f)), contentAlignment = Alignment.Center) {
+                                Box(Modifier.size(9.dp).clip(CircleShape).background(accent))
+                            }
+                        } else if (listStatus != null) {
+                            Box(Modifier.size(10.dp).clip(CircleShape).background(nodeColor))
+                        } else {
+                            Box(Modifier.size(10.dp).clip(CircleShape).background(Nf.Surface).border(2.dp, Nf.TextMute.copy(alpha = 0.7f), CircleShape))
+                        }
+                    }
+
+                    Spacer(Modifier.width(8.dp))
+
+                    Row(
+                        Modifier.weight(1f).padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        PosterImage(
+                            entry.poster?.card,
+                            Modifier
+                                .sharedPoster("poster/franchise-$detailId/${stub.id}", RoundedCornerShape(10.dp))
+                                .width(42.dp).height(60.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .border(1.dp, Color(0x14FFFFFF), RoundedCornerShape(10.dp)),
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    "${globalIdx + 1}.",
+                                    style = Type.Caption.copy(fontFeatureSettings = "tnum"),
+                                    color = if (isCurrent) accent else Nf.TextMute,
+                                )
+                                Text(
+                                    title,
+                                    style = Type.Label.copy(fontSize = 14.sp),
+                                    color = Nf.Text,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (meta.isNotEmpty()) {
+                                Text(
+                                    meta,
+                                    style = Type.Caption.copy(fontFeatureSettings = "tnum"),
+                                    color = Nf.TextMute,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(top = 3.dp),
+                                )
+                            }
+                            val badge: Pair<String, Color>? = when {
+                                isCurrent -> "Сейчас открыто" to accent
+                                listStatus == ListStatus.Completed -> "Просмотрено" to Nf.Mint
+                                listStatus == ListStatus.Watching -> "Смотрю" to Nf.Violet
+                                listStatus == ListStatus.Planned -> "В планах" to Nf.Amber
+                                listStatus == ListStatus.OnHold -> "Отложено" to Nf.TextDim
+                                listStatus == ListStatus.Dropped -> "Брошено" to Nf.Red
+                                entry.status == "anons" -> "Анонс" to Nf.Amber
+                                entry.status == "ongoing" -> "Онгоинг" to Nf.Mint
+                                else -> null
+                            }
+                            if (badge != null) {
+                                Tag(badge.first, badge.second, Modifier.padding(top = 5.dp))
+                            }
+                        }
+                        if (!isCurrent) {
+                            Icon(Icons.Rounded.ChevronRight, null, tint = Nf.TextMute, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+
+            if (entries.size > 6) {
+                Row(
+                    Modifier
+                        .padding(top = 6.dp, bottom = 2.dp)
+                        .fillMaxWidth()
+                        .pressable(0.97f) { expanded = !expanded }
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Nf.SurfaceHi)
+                        .border(1.dp, Nf.Line, RoundedCornerShape(14.dp))
+                        .padding(vertical = 10.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (expanded) "Свернуть хронологию" else "Показать всю хронологию (${entries.size})",
+                        style = Type.Label,
+                        color = Nf.Text,
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+                        null, tint = Nf.TextDim, modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScreenshotViewerDialog(
+    screenshots: List<Screenshot>,
+    initialIndex: Int,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        val pager = rememberPagerState(initialPage = initialIndex) { screenshots.size }
+        var showBar by remember { mutableStateOf(true) }
+        var scale by remember { mutableFloatStateOf(1f) }
+        var offset by remember { mutableStateOf(Offset.Zero) }
+
+        LaunchedEffect(pager.currentPage) {
+            scale = 1f
+            offset = Offset.Zero
+        }
+
+        val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+            val nextScale = (scale * zoomChange).coerceIn(1f, 3.5f)
+            scale = nextScale
+            offset = if (nextScale <= 1.02f) Offset.Zero else offset + panChange
+        }
+
+        Box(Modifier.fillMaxSize().background(Color(0xF507080D))) {
+            HorizontalPager(
+                state = pager,
+                userScrollEnabled = scale <= 1.05f,
+                modifier = Modifier.fillMaxSize(),
+            ) { page ->
+                val shot = screenshots[page]
+                val isCurrent = page == pager.currentPage
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .then(if (isCurrent) Modifier.transformable(state = transformState, canPan = { scale > 1.02f }) else Modifier)
+                        .pointerInput(page) {
+                            detectTapGestures(
+                                onTap = { showBar = !showBar },
+                                onDoubleTap = {
+                                    if (scale > 1.05f) {
+                                        scale = 1f; offset = Offset.Zero
+                                    } else {
+                                        scale = 2.4f
+                                    }
+                                },
+                            )
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    AsyncImage(
+                        model = shot.originalUrl ?: shot.x332Url,
+                        contentDescription = "Кадр ${page + 1}",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                val s = if (isCurrent) scale else 1f
+                                val o = if (isCurrent) offset else Offset.Zero
+                                scaleX = s
+                                scaleY = s
+                                translationX = o.x
+                                translationY = o.y
+                            },
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = showBar,
+                enter = fadeIn(tween(180)),
+                exit = fadeOut(tween(180)),
+                modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().statusBarsPadding().padding(horizontal = 18.dp, vertical = 14.dp),
+            ) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(
+                        "${pager.currentPage + 1} / ${screenshots.size}",
+                        style = Type.Label.copy(fontFeatureSettings = "tnum"),
+                        color = Color.White,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(Color(0xB312121A))
+                            .border(1.dp, Color(0x1FFFFFFF), CircleShape)
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                    )
+                    Box(
+                        Modifier
+                            .size(40.dp)
+                            .pressable(0.88f, onClick = onDismiss)
+                            .clip(CircleShape)
+                            .background(Color(0xB312121A))
+                            .border(1.dp, Color(0x1FFFFFFF), CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Rounded.Close, "Закрыть", tint = Color.White, modifier = Modifier.size(20.dp))
+                    }
+                }
             }
         }
     }

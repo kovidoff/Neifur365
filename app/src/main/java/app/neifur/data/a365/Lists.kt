@@ -12,8 +12,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.serialization.Serializable
 
 /** A title in the viewer's lists, with what the list screen needs to show about it. */
+@Serializable
 data class ListedTitle(
     val entry: ListEntry,
     val series: Series?,
@@ -118,7 +120,12 @@ data class ListsState(
  * Changes show everywhere at once (applied locally first) and are sent to the site; a failed send puts the old
  * entry back.
  */
-class Lists(private val api: Anime365, private val account: Account, private val scope: CoroutineScope) {
+class Lists(
+    private val api: Anime365,
+    private val account: Account,
+    private val scope: CoroutineScope,
+    private val offlineCache: app.neifur.data.OfflineCache? = null,
+) {
     private val _state = MutableStateFlow(ListsState())
     val state: StateFlow<ListsState> = _state
     private var job: Job? = null
@@ -128,12 +135,30 @@ class Lists(private val api: Anime365, private val account: Account, private val
         scope.launch {
             account.state.collect { s ->
                 when (s) {
-                    is AccountState.SignedIn -> refresh()
+                    is AccountState.SignedIn -> {
+                        if (_state.value.titles.isEmpty()) {
+                            offlineCache?.readLists(s.profile.id)?.let { cached ->
+                                _state.value = ListsState(
+                                    loaded = true,
+                                    titles = cached.titles.associateBy { it.entry.seriesId },
+                                    updatedAt = cached.updatedAt,
+                                )
+                            }
+                        }
+                        refresh()
+                    }
                     AccountState.SignedOut -> { job?.cancel(); _state.value = ListsState() }
                     AccountState.Unknown -> {}
                 }
             }
         }
+    }
+
+    private fun persistSnapshot() {
+        val userId = account.profile?.id ?: return
+        val cur = _state.value
+        if (!cur.loaded) return
+        scope.launch { offlineCache?.writeLists(userId, cur.titles, cur.updatedAt) }
     }
 
     /** Reloads every list in one request, then the cards and, for airing titles, how many episodes are out. */
@@ -146,16 +171,19 @@ class Lists(private val api: Anime365, private val account: Account, private val
                 val entries = api.allLists(user.id)
                 val cards = runCatching { api.cards(entries.map { it.seriesId }) }.getOrDefault(emptyList()).associateBy { it.id }
                 val known = _state.value.titles
-                entries.associate { e -> e.seriesId to ListedTitle(e, cards[e.seriesId], known[e.seriesId]?.aired) }
+                entries.associate { e -> e.seriesId to ListedTitle(e, cards[e.seriesId] ?: known[e.seriesId]?.series, known[e.seriesId]?.aired) }
             }.onSuccess { titles ->
                 _state.value = ListsState(loaded = true, titles = titles, updatedAt = System.currentTimeMillis())
+                persistSnapshot()
                 titles.values.filter { it.series == null }.forEach { fill(it.entry.seriesId) }
                 // Count aired episodes for "Смотрю" first so huge "Запланировано" lists never delay fresh badges.
                 countAired(titles.values.filter { it.airing && it.status == ListStatus.Watching })
                 countAired(titles.values.filter { it.airing && it.status == ListStatus.Planned })
+                persistSnapshot()
             }.onFailure { e ->
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                _state.update { it.copy(loading = false, error = e.userMessage()) }
+                // If we already have cached titles loaded, clear loading quietly without wiping the offline view.
+                _state.update { it.copy(loading = false, error = if (it.loaded) null else e.userMessage()) }
             }
         }
     }
@@ -194,9 +222,11 @@ class Lists(private val api: Anime365, private val account: Account, private val
             s.copy(titles = titles)
         }
         if (status != null && (before?.series == null || (series?.airing == true && before.aired == null))) fill(seriesId)
-        return runCatching { api.setListRecord(seriesId, status, watched, score) }.onFailure {
-            _state.update { s -> s.copy(titles = if (before == null) s.titles - seriesId else s.titles + (seriesId to before)) }
-        }
+        return runCatching { api.setListRecord(seriesId, status, watched, score) }
+            .onSuccess { persistSnapshot() }
+            .onFailure {
+                _state.update { s -> s.copy(titles = if (before == null) s.titles - seriesId else s.titles + (seriesId to before)) }
+            }
     }
 
     /**

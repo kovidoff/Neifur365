@@ -24,6 +24,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
@@ -63,6 +65,10 @@ import app.neifur.data.WatchEntry
 import app.neifur.data.a365.ListStatus
 import app.neifur.data.a365.ListedTitle
 import app.neifur.data.a365.Series
+import app.neifur.data.shikimori.Anime
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import app.neifur.downloads.DownloadedAnime
 import app.neifur.downloads.formatBytes
 import app.neifur.nfViewModel
@@ -88,6 +94,7 @@ data class HomeFeed(val ongoing: List<Series>, val popular: List<Series>, val th
 
 class HomeVm(private val c: Container) : ViewModel() {
     val feed = MutableStateFlow<Load<HomeFeed>>(Load.Loading)
+    val schedule = MutableStateFlow<List<Anime>>(emptyList())
     var refreshing by mutableStateOf(false)
         private set
     /** Rows that already played their entrance: scrolling back to them must not replay it. */
@@ -100,14 +107,35 @@ class HomeVm(private val c: Container) : ViewModel() {
 
     init {
         load()
+        loadSchedule(force = false)
         // The catalog failed for lack of a network: try again by itself once it's back.
-        viewModelScope.launch { c.online.collect { if (it && feed.value is Load.Error) load() } }
+        viewModelScope.launch { c.online.collect { if (it && feed.value is Load.Error) { load(); loadSchedule(force = false) } } }
+        viewModelScope.launch {
+            c.lists.state.collect { st ->
+                if (st.loaded && st.titles.values.any { it.airing && it.status == ListStatus.Watching }) {
+                    loadSchedule(force = false)
+                }
+            }
+        }
     }
 
     /** New episodes come out while the app sits in the background: reread the lists when Home shows up again. */
     fun refreshLists() = c.lists.refreshIfStale()
 
     fun forgetHistory(animeId: String) = viewModelScope.launch { c.prefs.removeFromHistory(animeId) }
+
+    fun loadSchedule(force: Boolean = false) {
+        viewModelScope.launch {
+            if (!force && schedule.value.isEmpty()) {
+                c.shikimori.cachedSchedule()?.takeIf { it.isNotEmpty() }?.let { schedule.value = it }
+            }
+            val extra = c.lists.state.value.titles.values
+                .filter { it.airing && (it.status == ListStatus.Watching || it.status == ListStatus.Planned) }
+                .mapNotNull { it.series?.myAnimeListId?.takeIf { id -> id > 0L } }
+            runCatching { c.shikimori.ongoingSchedule(extra, forceRefresh = force) }
+                .onSuccess { schedule.value = it }
+        }
+    }
 
     fun load(pull: Boolean = false) {
         if (pull && feed.value is Load.Ready) refreshing = true else feed.value = Load.Loading
@@ -130,19 +158,49 @@ class HomeVm(private val c: Container) : ViewModel() {
     }
 }
 
+/** Filters out fully finished / dropped titles from "Продолжить просмотр" while keeping full watch history intact. */
+internal fun filterContinueWatching(history: List<WatchEntry>, listed: Map<Long, ListedTitle>): List<WatchEntry> =
+    history.distinctBy { it.animeId }
+        .filterNot { e ->
+            val t = e.animeId.toLongOrNull()?.let { listed[it] } ?: return@filterNot false
+            if (t.status == ListStatus.Completed || t.status == ListStatus.Dropped) return@filterNot true
+            val total = t.total
+            !t.airing && total != null && total > 0 && (t.entry.watched >= total || (e.finished && e.episode >= total))
+        }
+        .take(12)
+
 @Composable
-fun HomeScreen(open: OpenAnime, scrollTopSignal: Int = 0, onSearch: () -> Unit, onDownloads: () -> Unit = {}) {
+fun HomeScreen(
+    open: OpenAnime,
+    scrollTopSignal: Int = 0,
+    onSearch: () -> Unit,
+    onDownloads: () -> Unit = {},
+    onSchedule: () -> Unit = {},
+) {
     val vm = nfViewModel { HomeVm(it) }
     val ctx = LocalContext.current
     val feed by vm.feed.collectAsStateWithLifecycle()
+    val scheduleRaw by vm.schedule.collectAsStateWithLifecycle()
     val history by vm.history.collectAsStateWithLifecycle()
-    val cont = remember(history) { history.distinctBy { it.animeId }.take(12) }
     val lists by vm.lists.collectAsStateWithLifecycle()
+    val cont = remember(history, lists.titles) { filterContinueWatching(history, lists.titles) }
     val downloads by vm.downloads.collectAsStateWithLifecycle()
     val offlineGroups = remember(downloads.items) { downloads.byAnime() }
     // Only what the viewer is watching: a planned title's new episode isn't news to them.
     val fresh = remember(lists, history) { lists.watching(history).filter { it.behind > 0 && it.series != null } }
     val marks = remember(lists) { lists.titles.mapValues { it.value.status } }
+    val zone = remember { ZoneId.systemDefault() }
+    val today = remember { LocalDate.now(zone) }
+    val todayAiring = remember(scheduleRaw, lists.titles, today) {
+        if (scheduleRaw.isEmpty()) emptyList()
+        else {
+            val byMal = lists.titles.values.mapNotNull { t ->
+                t.series?.myAnimeListId?.takeIf { it > 0L }?.let { it to t }
+            }.toMap()
+            buildWeeklySchedule(scheduleRaw, byMal, zone, today)[today].orEmpty()
+                .filter { it.status == ListStatus.Watching }
+        }
+    }
     LifecycleResumeEffect(Unit) { vm.refreshLists(); onPauseOrDispose {} }
     val listState = rememberLazyListState()
     LaunchedEffect(scrollTopSignal) { if (scrollTopSignal > 0) listState.animateScrollToItem(0) }
@@ -179,7 +237,7 @@ fun HomeScreen(open: OpenAnime, scrollTopSignal: Int = 0, onSearch: () -> Unit, 
                 val data = (f as? Load.Ready)?.value
                 PullToRefreshBox(
                     isRefreshing = vm.refreshing,
-                    onRefresh = { vm.load(pull = true); vm.refreshLists() },
+                    onRefresh = { vm.load(pull = true); vm.refreshLists(); vm.loadSchedule(force = true) },
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 120.dp)) {
@@ -192,6 +250,9 @@ fun HomeScreen(open: OpenAnime, scrollTopSignal: Int = 0, onSearch: () -> Unit, 
                         }
                         if (fresh.isNotEmpty()) item(key = "fresh", contentType = "fresh") {
                             Appear("fresh", 1, vm.appeared) { FreshRow(fresh, layout, open) { s -> showQuick(s.stub(), s, "fresh", false) } }
+                        }
+                        if (todayAiring.isNotEmpty()) item(key = "today", contentType = "today") {
+                            Appear("today", 2, vm.appeared) { TodayAiringRow(todayAiring, padH, open, onSchedule) }
                         }
                         val rows = listOf(
                             "ongoing" to "Сейчас выходит", "year" to "Новинки года", "popular" to "Самое популярное", "movies" to "Полнометражные",
@@ -608,6 +669,89 @@ private fun FreshRow(items: List<ListedTitle>, layout: ScreenLayout, open: OpenA
                         "Дальше ${t.entry.watched + 1} серия", style = Type.Caption, color = Nf.Mint, maxLines = 1,
                         modifier = Modifier.padding(top = 2.dp),
                     )
+                }
+            }
+        }
+    }
+}
+
+/** Compact strip of titles from "Смотрю" airing today, with live countdown badges and a jump to full Schedule. */
+@Composable
+private fun TodayAiringRow(
+    items: List<ScheduleItem>,
+    padH: androidx.compose.ui.unit.Dp,
+    open: OpenAnime,
+    onSchedule: () -> Unit,
+) {
+    val now = remember(items) { ZonedDateTime.now(ZoneId.systemDefault()) }
+    Column(Modifier.padding(top = 22.dp)) {
+        SectionTitle(
+            text = "Сегодня выходит",
+            horizontalPadding = padH,
+            trailing = {
+                Row(
+                    Modifier
+                        .pressable(0.93f, onClick = onSchedule)
+                        .clip(CircleShape)
+                        .background(Nf.Surface)
+                        .border(1.dp, Nf.Line, CircleShape)
+                        .padding(start = 11.dp, end = 7.dp, top = 5.dp, bottom = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Rounded.CalendarMonth, null, tint = Nf.Violet, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("Расписание", style = Type.Caption, color = Nf.Text)
+                    Icon(Icons.Rounded.ChevronRight, null, tint = Nf.TextMute, modifier = Modifier.size(16.dp))
+                }
+            },
+        )
+        Spacer(Modifier.height(14.dp))
+        LazyRow(contentPadding = PaddingValues(horizontal = padH), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(items, key = { it.malId }) { item ->
+                val stub = item.stub()
+                val (rel, aired) = formatRelativeAir(item.airAt, now)
+                Row(
+                    Modifier
+                        .width(256.dp)
+                        .pressable(0.96f) { open(stub, "today") }
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Nf.Surface)
+                        .border(1.dp, if (aired) Nf.Mint.copy(alpha = 0.25f) else Color(0x0DFFFFFF), RoundedCornerShape(20.dp))
+                        .padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    PosterImage(
+                        item.poster,
+                        Modifier
+                            .sharedPoster("poster/today/${stub.id}", RoundedCornerShape(12.dp))
+                            .width(46.dp).height(64.dp)
+                            .clip(RoundedCornerShape(12.dp)),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(item.title, style = Type.Label, color = Nf.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            "Серия ${item.nextEpisode}",
+                            style = Type.Caption.copy(fontFeatureSettings = "tnum"),
+                            color = Nf.TextMute,
+                            modifier = Modifier.padding(top = 3.dp),
+                        )
+                        Row(
+                            Modifier.padding(top = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Box(
+                                Modifier.size(6.dp).clip(CircleShape).background(if (aired) Nf.Mint else Nf.Violet)
+                            )
+                            Text(
+                                rel,
+                                style = Type.Caption.copy(fontFeatureSettings = "tnum"),
+                                color = if (aired) Nf.Mint else Nf.Violet,
+                                maxLines = 1,
+                            )
+                        }
+                    }
                 }
             }
         }

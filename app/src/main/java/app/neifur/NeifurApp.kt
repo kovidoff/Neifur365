@@ -23,9 +23,12 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.core.app.NotificationManagerCompat
 import app.neifur.core.buildHttpClient
 import app.neifur.player.PlayerActivity
+import app.neifur.data.OfflineCache
 import app.neifur.data.Prefs
 import app.neifur.data.SavedAnime
+import app.neifur.data.aniskip.AniSkipApi
 import app.neifur.data.a365.Account
+import app.neifur.data.a365.AccountState
 import app.neifur.data.a365.Lists
 import app.neifur.data.a365.ChannelPilot
 import app.neifur.data.a365.Anime365
@@ -44,18 +47,24 @@ import coil3.request.crossfade
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** The little a screen needs to draw a title before its full data arrives. */
 data class AnimeStub(
     val id: String, val title: String, val poster: String?, val kind: String? = null,
-    val year: Int? = null, val score: Double? = null,
+    val year: Int? = null, val score: Double? = null, val malId: Long = 0L,
 ) {
     fun saved() = SavedAnime(id, title, poster, kind, year, score, System.currentTimeMillis())
 }
 
-fun Series.stub() = AnimeStub(id.toString(), title, posterUrl ?: posterUrlSmall, type, year.takeIf { it > 0 }, score)
+fun Series.stub() = AnimeStub(
+    if (id <= 0L && myAnimeListId > 0L) "mal:$myAnimeListId" else id.toString(),
+    title, posterUrl ?: posterUrlSmall, type, year.takeIf { it > 0 }, score, myAnimeListId,
+)
 
 /**
  * What the player was asked to play: the title's episodes, where to start, and which translation
@@ -67,7 +76,9 @@ class Container(app: Application) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val http = buildHttpClient()
     val prefs = Prefs(app)
-    val shikimori = ShikimoriApi(http)
+    val offlineCache = OfflineCache(app)
+    val aniSkip = AniSkipApi(http)
+    val shikimori = ShikimoriApi(http, offlineCache)
     val a365 = Anime365(app, http, prefs)
     val account = Account(a365, prefs, scope) { p ->
         // Another account than last time: its own history, picks and marks come in, the previous one's are put
@@ -77,11 +88,7 @@ class Container(app: Application) {
             app.cacheDir.resolve(PlayerActivity.SESSION_FILE).delete()
         }
     }
-    val lists = Lists(a365, account, scope)
-    val downloads = DownloadManager(app, a365, prefs, http, scope)
-    val channels = ChannelPilot(a365, prefs, account, scope) {
-        app.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered ?: false
-    }
+    val lists = Lists(a365, account, scope, offlineCache)
 
     /**
      * Fingerprint of the active network (e.g. Wi-Fi vs LTE vs VPN or network handoff). Empty when offline.
@@ -112,6 +119,13 @@ class Container(app: Application) {
         .map { it.isNotEmpty() }
         .stateIn(scope, SharingStarted.Eagerly, true)
 
+    val downloads = DownloadManager(app, a365, prefs, http, scope, networkKey)
+    val channels = ChannelPilot(a365, prefs, account, scope) {
+        app.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered ?: false
+    }
+
+    private val outboxLock = Mutex()
+
     init {
         // Started offline: confirm the account with the site once there is a network, then load its lists.
         scope.launch {
@@ -121,6 +135,28 @@ class Container(app: Application) {
                     account.refresh().join()
                     // Same account as guessed: the state didn't change, so the lists need asking for themselves.
                     if (!account.unconfirmed && account.state.value == before) lists.refresh()
+                }
+            }
+        }
+        // Offline watched outbox: sync episode marks made while offline once the network & account are ready.
+        scope.launch {
+            combine(online, account.state, prefs.pendingWatched) { on, acc, pending ->
+                Triple(on, acc is AccountState.SignedIn, pending)
+            }.collectLatest { (on, signedIn, pending) ->
+                if (!on || !signedIn || pending.isEmpty()) return@collectLatest
+                delay(1200)
+                outboxLock.withLock {
+                    val touchedAnime = LinkedHashSet<Long>()
+                    for (item in pending) {
+                        val ok = runCatching { a365.markWatched(item.translationId) }.isSuccess
+                        if (ok) {
+                            prefs.removePendingWatched(item.translationId)
+                            if (item.animeId > 0L) touchedAnime += item.animeId
+                        } else if (!online.value) {
+                            break
+                        }
+                    }
+                    touchedAnime.forEach { lists.reload(it) }
                 }
             }
         }

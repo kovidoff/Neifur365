@@ -81,7 +81,7 @@ data class Genre(val id: String = "", val russian: String? = null, val name: Str
 }
 
 @Serializable
-data class Studio(val name: String = "")
+data class Studio(val id: String = "", val name: String = "")
 
 @Serializable
 data class Screenshot(val originalUrl: String? = null, val x332Url: String? = null)
@@ -157,11 +157,32 @@ fun cleanDescription(raw: String?): String {
         .trim()
 }
 
-class ShikimoriApi(private val http: OkHttpClient) {
+private val FRANCHISE_SKIP_KINDS = setOf("music", "cm", "pv")
+
+/** Filters out music videos/ads and puts a franchise in chronological release order (unannounced/undated last). */
+internal fun sortFranchiseEntries(raw: List<RelatedRef>): List<RelatedRef> = raw
+    .filterNot { it.kind in FRANCHISE_SKIP_KINDS }
+    .distinctBy { it.id }
+    .sortedWith(
+        compareBy<RelatedRef>(
+            { it.airedOn?.year ?: Int.MAX_VALUE },
+            { it.airedOn?.month ?: Int.MAX_VALUE },
+            { it.airedOn?.day ?: Int.MAX_VALUE },
+            { it.id.toLongOrNull() ?: Long.MAX_VALUE },
+        )
+    )
+
+class ShikimoriApi(
+    private val http: OkHttpClient,
+    private val offlineCache: app.neifur.data.OfflineCache? = null,
+) {
     private val endpoint = "https://shikimori.io/api/graphql"
     private val media = "application/json".toMediaType()
     private val detailCache = ConcurrentHashMap<String, Pair<Long, Anime>>()
     private val castCache = ConcurrentHashMap<String, Pair<Long, AnimeCast>>()
+    private val franchiseCache = ConcurrentHashMap<String, Pair<Long, List<RelatedRef>>>()
+    private val studioCache = ConcurrentHashMap<String, Pair<Long, List<Anime>>>()
+    @Volatile private var scheduleCache: Triple<Long, Set<Long>, List<Anime>>? = null
 
     // Shikimori allows 5 rps / 90 rpm. A small gate keeps bursts (home + detail + franchise) polite.
     private val gate = Mutex()
@@ -220,7 +241,7 @@ class ShikimoriApi(private val http: OkHttpClient) {
                 scoresStats { score count } statusesStats { status count }
                 videos { kind name url imageUrl }
                 poster { originalUrl mainUrl main2xUrl }
-                genres { id russian kind } studios { name }
+                genres { id russian kind } studios { id name }
                 screenshots { originalUrl x332Url }
                 related { relationKind relationText anime { id name russian kind score status episodes episodesAired
                   airedOn { year } poster { originalUrl mainUrl main2xUrl } } }
@@ -255,21 +276,83 @@ class ShikimoriApi(private val http: OkHttpClient) {
         }
     }
 
+    /** Chronological list of anime entries belonging to a Shikimori franchise slug (excluding music/CM/PV). */
+    suspend fun franchise(name: String): List<RelatedRef> {
+        val clean = name.trim().replace("\"", "")
+        if (clean.isEmpty()) return emptyList()
+        val now = System.currentTimeMillis()
+        franchiseCache[clean]?.takeIf { now - it.first < 10 * 60_000L }?.let { return it.second }
+        val d = query(
+            """
+            { animes(franchise: "$clean", limit: 30, censored: false) {
+                id name russian kind score status episodes episodesAired
+                airedOn { year month day } poster { originalUrl mainUrl main2xUrl }
+            } }
+            """.trimIndent()
+        )
+        return sortFranchiseEntries(d["animes"].decodeList<RelatedRef>()).also {
+            trimCache(franchiseCache)
+            franchiseCache[clean] = System.currentTimeMillis() to it
+        }
+    }
+
+    /** Popular anime by a Shikimori studio ID (excluding music/CM/PV). */
+    suspend fun byStudio(studioId: String, limit: Int = 40): List<Anime> {
+        val clean = studioId.trim().replace("\"", "")
+        if (clean.isEmpty()) return emptyList()
+        val now = System.currentTimeMillis()
+        studioCache[clean]?.takeIf { now - it.first < 10 * 60_000L }?.let { return it.second }
+        val d = query(
+            """
+            { animes(studio: "$clean", order: popularity, limit: $limit, censored: false) {
+                id name russian kind score status episodes episodesAired
+                airedOn { year } poster { originalUrl mainUrl main2xUrl }
+            } }
+            """.trimIndent()
+        )
+        return d["animes"].decodeList<Anime>()
+            .filterNot { it.kind in FRANCHISE_SKIP_KINDS }
+            .distinctBy { it.id }
+            .also {
+                trimCache(studioCache)
+                studioCache[clean] = System.currentTimeMillis() to it
+            }
+    }
+
+    suspend fun cachedSchedule(): List<Anime>? =
+        scheduleCache?.third ?: offlineCache?.readSchedule()?.animes
+
     /** Currently airing anime with their next episode timestamps; merges any extra MAL IDs from the user's lists. */
-    suspend fun ongoingSchedule(extraMalIds: List<Long> = emptyList()): List<Anime> {
+    suspend fun ongoingSchedule(extraMalIds: List<Long> = emptyList(), forceRefresh: Boolean = false): List<Anime> {
+        val wanted = extraMalIds.filter { it > 0L }.toSet()
+        val now = System.currentTimeMillis()
+        if (!forceRefresh) {
+            scheduleCache?.takeIf { now - it.first < 15 * 60_000L && wanted.all { id -> id in it.second } }
+                ?.let { return it.third }
+        }
         val fields = """
             id name russian kind score status episodes episodesAired nextEpisodeAt
             airedOn { year } poster { originalUrl mainUrl main2xUrl }
         """.trimIndent()
-        val popular = query("""{ animes(status: "ongoing", order: popularity, limit: 50, censored: false) { $fields } }""")["animes"]
-            .decodeList<Anime>()
-        val have = popular.mapTo(HashSet()) { it.id }
-        val missing = extraMalIds.filter { it > 0L && it.toString() !in have }.distinct().take(50)
-        val extra = if (missing.isEmpty()) emptyList() else runCatching {
-            val ids = missing.joinToString(",")
-            query("""{ animes(ids: "$ids", limit: ${missing.size}, censored: false) { $fields } }""")["animes"]
+        return runCatching {
+            val popular = query("""{ animes(status: "ongoing", order: popularity, limit: 50, censored: false) { $fields } }""")["animes"]
                 .decodeList<Anime>()
-        }.getOrDefault(emptyList())
-        return (popular + extra).distinctBy { it.id }
+            val have = popular.mapTo(HashSet()) { it.id }
+            val missing = extraMalIds.filter { it > 0L && it.toString() !in have }.distinct().take(50)
+            val extra = if (missing.isEmpty()) emptyList() else runCatching {
+                val ids = missing.joinToString(",")
+                query("""{ animes(ids: "$ids", limit: ${missing.size}, censored: false) { $fields } }""")["animes"]
+                    .decodeList<Anime>()
+            }.getOrDefault(emptyList())
+            (popular + extra).distinctBy { it.id }.also { merged ->
+                val ts = System.currentTimeMillis()
+                scheduleCache = Triple(ts, wanted, merged)
+                offlineCache?.writeSchedule(merged, ts)
+            }
+        }.getOrElse { err ->
+            if (err is kotlinx.coroutines.CancellationException) throw err
+            // Fall back to the last offline snapshot so Schedule & Home keep working without a network.
+            offlineCache?.readSchedule()?.animes?.takeIf { it.isNotEmpty() } ?: throw err
+        }
     }
 }

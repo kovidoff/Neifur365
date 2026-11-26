@@ -172,6 +172,7 @@ private fun AppRoot() {
     var catalogTop by remember { mutableIntStateOf(0) }
     var listsTop by remember { mutableIntStateOf(0) }
     var catalogFocusSearch by remember { mutableStateOf(false) }
+    var pendingCatalogQuery by remember { mutableStateOf<app.neifur.ui.screens.CatalogQuery?>(null) }
 
     SharedTransitionLayout {
         CompositionLocalProvider(LocalSharedScope provides this) {
@@ -214,6 +215,7 @@ private fun AppRoot() {
                                 scrollTopSignal = homeTop,
                                 onSearch = { catalogFocusSearch = true; nav.switchTab("catalog") },
                                 onDownloads = { nav.navigate("downloads") { launchSingleTop = true } },
+                                onSchedule = { nav.navigate("schedule") { launchSingleTop = true } },
                             )
                         }
                     }
@@ -224,6 +226,8 @@ private fun AppRoot() {
                                 focusSearch = catalogFocusSearch,
                                 onSearchFocused = { catalogFocusSearch = false },
                                 scrollTopSignal = catalogTop,
+                                pendingQuery = pendingCatalogQuery,
+                                onPendingQueryConsumed = { pendingCatalogQuery = null },
                                 onSchedule = { nav.navigate("schedule") { launchSingleTop = true } },
                             )
                         }
@@ -291,6 +295,14 @@ private fun AppRoot() {
                                 id = e.arguments?.getString("id").orEmpty(),
                                 origin = e.arguments?.getString("origin").orEmpty(),
                                 open = open,
+                                onOpenGenre = { genreId ->
+                                    pendingCatalogQuery = app.neifur.ui.screens.CatalogQuery(genreId = genreId)
+                                    nav.switchTab("catalog")
+                                },
+                                onOpenStudio = { st ->
+                                    pendingCatalogQuery = app.neifur.ui.screens.CatalogQuery(studioId = st.id, studioName = st.name)
+                                    nav.switchTab("catalog")
+                                },
                                 onBack = { nav.popBackStack() },
                             )
                         }

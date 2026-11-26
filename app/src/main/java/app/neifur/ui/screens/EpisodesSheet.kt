@@ -36,6 +36,7 @@ import androidx.compose.material.icons.rounded.MovieFilter
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -410,6 +411,7 @@ private fun EpisodeRow(
                         (if (downloadStatus.totalBytes > 0L) "Загрузка $pct%" else "Загрузка…") to Nf.Violet
                     }
                     downloadStatus is DownloadStatus.Queued -> "В очереди на загрузку" to Nf.Violet
+                    downloadStatus is DownloadStatus.WaitingWifi -> "Ожидание Wi-Fi" to Nf.Amber
                     downloadStatus is DownloadStatus.Failed -> "Ошибка загрузки" to Nf.Red
                     downloaded != null -> ("Офлайн · ${formatBytes(downloaded.sizeBytes)}") to Nf.Mint
                     missingNote != null -> missingNote to Nf.Amber.copy(alpha = 0.85f)
@@ -463,6 +465,12 @@ private fun EpisodeDownloadButton(
         ) {
             CircularProgressIndicator(modifier = Modifier.size(28.dp), color = Nf.Violet.copy(alpha = 0.7f), strokeWidth = 2.dp)
             Icon(Icons.Rounded.Close, "Отменить загрузку", tint = Nf.Violet, modifier = Modifier.size(14.dp))
+        }
+        status is DownloadStatus.WaitingWifi -> Box(
+            Modifier.size(34.dp).clip(CircleShape).background(Nf.Amber.copy(alpha = 0.16f)).pressable(0.88f, onClick = onCancel),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Rounded.Wifi, "Ожидание Wi-Fi (нажмите для отмены)", tint = Nf.Amber, modifier = Modifier.size(17.dp))
         }
         status is DownloadStatus.Failed -> Box(
             Modifier.size(34.dp).clip(CircleShape).background(Nf.Red.copy(alpha = 0.14f)).pressable(0.88f, onClick = onRetry),

@@ -87,13 +87,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.random.Random
 
-/** Filters the Anime 365 catalog understands. It has no sorting: results come ranked by the site. */
+/** Filters the Anime 365 catalog understands (plus Shikimori studio browse). */
 data class CatalogQuery(
     val search: String = "",
     val kind: String? = null,
     val airing: Boolean = false,
     val genreId: Int? = null,
     val year: Int? = null,
+    val studioId: String? = null,
+    val studioName: String? = null,
 )
 
 private const val PAGE = 30
@@ -139,10 +141,37 @@ class CatalogVm(private val c: Container) : ViewModel() {
 
     init { reload(0) }
 
-    private suspend fun fetch(offset: Int, q: CatalogQuery = query) = c.a365.catalog(
-        query = q.search, offset = offset, limit = PAGE, type = q.kind, airing = q.airing,
-        year = q.year, genre = q.genreId,
-    )
+    private suspend fun fetch(offset: Int, q: CatalogQuery = query): List<Series> {
+        val sid = q.studioId
+        if (!sid.isNullOrBlank()) {
+            if (offset > 0) return emptyList()
+            val raw = c.shikimori.byStudio(sid, limit = 40)
+            val term = q.search.trim()
+            return raw.mapNotNull { a ->
+                val malId = a.id.toLongOrNull() ?: return@mapNotNull null
+                if (q.kind != null && a.kind != q.kind) return@mapNotNull null
+                if (q.airing && a.status != "ongoing") return@mapNotNull null
+                if (q.year != null && a.year != q.year) return@mapNotNull null
+                if (term.isNotEmpty() && !a.title.contains(term, ignoreCase = true) && !a.name.contains(term, ignoreCase = true)) return@mapNotNull null
+                Series(
+                    id = -malId,
+                    myAnimeListId = malId,
+                    myAnimeListScore = a.score,
+                    numberOfEpisodes = a.episodes,
+                    year = a.year ?: 0,
+                    type = a.kind,
+                    isAiring = if (a.status == "ongoing") 1 else 0,
+                    titles = app.neifur.data.a365.Titles(ru = a.russian, romaji = a.name),
+                    posterUrl = a.poster?.card,
+                    posterUrlSmall = a.poster?.card,
+                )
+            }
+        }
+        return c.a365.catalog(
+            query = q.search, offset = offset, limit = PAGE, type = q.kind, airing = q.airing,
+            year = q.year, genre = q.genreId,
+        )
+    }
 
     fun update(q: CatalogQuery) {
         if (q == query) return
@@ -331,6 +360,7 @@ internal fun pickRandomSeries(
 internal fun catalogFilterSummary(q: CatalogQuery): String {
     val parts = buildList {
         q.search.trim().takeIf { it.isNotEmpty() }?.let { add("«$it»") }
+        q.studioName?.takeIf { it.isNotBlank() }?.let { add(it) }
         q.kind?.let { k -> kinds.firstOrNull { it.first == k }?.second?.let(::add) }
         if (q.airing) add("Онгоинг")
         q.genreId?.let { g -> A365Genres.firstOrNull { it.first == g }?.second?.let(::add) }
@@ -351,14 +381,19 @@ fun CatalogScreen(
     focusSearch: Boolean = false,
     onSearchFocused: () -> Unit = {},
     scrollTopSignal: Int = 0,
+    pendingQuery: CatalogQuery? = null,
+    onPendingQueryConsumed: () -> Unit = {},
     onSchedule: () -> Unit = {},
 ) {
     val vm = nfViewModel { CatalogVm(it) }
     val lists by vm.lists.collectAsStateWithLifecycle()
     val recentSearches by vm.recentSearches.collectAsStateWithLifecycle(emptyList())
     val marks = remember(lists) { lists.titles.mapValues { it.value.status } }
+    val marksByMal = remember(lists) {
+        lists.titles.values.mapNotNull { t -> t.series?.myAnimeListId?.takeIf { it > 0L }?.let { it to t } }.toMap()
+    }
     val q = vm.query
-    val hasFilters = q.kind != null || q.airing || q.genreId != null || q.year != null
+    val hasFilters = q.kind != null || q.airing || q.genreId != null || q.year != null || q.studioId != null
     var sheet by remember { mutableStateOf<String?>(null) }
     var quick by remember { mutableStateOf<Series?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -372,6 +407,14 @@ fun CatalogScreen(
     val focus = LocalFocusManager.current
     val haptic = LocalHapticFeedback.current
     var handledQueryVersion by rememberSaveable { mutableIntStateOf(vm.queryVersion) }
+
+    LaunchedEffect(pendingQuery) {
+        if (pendingQuery != null) {
+            focus.clearFocus()
+            vm.update(pendingQuery)
+            onPendingQueryConsumed()
+        }
+    }
 
     LaunchedEffect(focusSearch) {
         if (focusSearch) {
@@ -459,9 +502,14 @@ fun CatalogScreen(
                     modifier = Modifier.weight(1f),
                 ) {
                     if (hasFilters) item { FilterResetPill { vm.clearFilters() } }
+                    if (q.studioId != null) item {
+                        FilterPill("Студия: ${q.studioName ?: q.studioId} ×", true) {
+                            vm.update(q.copy(studioId = null, studioName = null))
+                        }
+                    }
                     item { FilterPill(kinds.first { it.first == q.kind }.second, q.kind != null) { sheet = "kind" } }
                     item { FilterPill(statuses.first { it.first == q.airing }.second, q.airing) { sheet = "status" } }
-                    item { FilterPill(A365Genres.firstOrNull { it.first == q.genreId }?.second ?: "Жанр", q.genreId != null) { sheet = "genre" } }
+                    if (q.studioId == null) item { FilterPill(A365Genres.firstOrNull { it.first == q.genreId }?.second ?: "Жанр", q.genreId != null) { sheet = "genre" } }
                     item { FilterPill(q.year?.toString() ?: "Год", q.year != null) { sheet = "year" } }
                 }
             }
@@ -502,9 +550,14 @@ fun CatalogScreen(
                 modifier = Modifier.padding(vertical = 12.dp),
             ) {
                 if (hasFilters) item { FilterResetPill { vm.clearFilters() } }
+                if (q.studioId != null) item {
+                    FilterPill("Студия: ${q.studioName ?: q.studioId} ×", true) {
+                        vm.update(q.copy(studioId = null, studioName = null))
+                    }
+                }
                 item { FilterPill(kinds.first { it.first == q.kind }.second, q.kind != null) { sheet = "kind" } }
                 item { FilterPill(statuses.first { it.first == q.airing }.second, q.airing) { sheet = "status" } }
-                item { FilterPill(A365Genres.firstOrNull { it.first == q.genreId }?.second ?: "Жанр", q.genreId != null) { sheet = "genre" } }
+                if (q.studioId == null) item { FilterPill(A365Genres.firstOrNull { it.first == q.genreId }?.second ?: "Жанр", q.genreId != null) { sheet = "genre" } }
                 item { FilterPill(q.year?.toString() ?: "Год", q.year != null) { sheet = "year" } }
             }
         }
@@ -529,6 +582,7 @@ fun CatalogScreen(
                     if (vm.items.isEmpty()) items(cols * 4) { PosterCardSkeleton(width = null) }
                     else {
                         items(vm.items, key = { it.id }, contentType = { "card" }) { a ->
+                            val listedMatch = if (a.id > 0L) null else marksByMal[a.myAnimeListId]
                             PosterCard(
                                 a.stub(), "catalog",
                                 onClick = {
@@ -536,12 +590,13 @@ fun CatalogScreen(
                                     focus.clearFocus()
                                     open(a.stub(), "catalog")
                                 },
-                                modifier = Modifier.animateItem(), width = null, listStatus = marks[a.id],
-                                onLongClick = {
+                                modifier = Modifier.animateItem(), width = null,
+                                listStatus = marks[a.id] ?: listedMatch?.status,
+                                onLongClick = if (a.id > 0L || listedMatch != null) ({
                                     if (q.search.isNotBlank()) vm.rememberSearch()
                                     focus.clearFocus()
-                                    quick = a
-                                },
+                                    quick = if (a.id > 0L) a else a.copy(id = listedMatch!!.entry.seriesId)
+                                }) else null,
                             )
                         }
                         if (vm.loading) item(span = { GridItemSpan(cols) }) {

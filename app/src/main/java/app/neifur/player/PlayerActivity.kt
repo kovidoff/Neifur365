@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.util.Rational
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -37,10 +38,12 @@ import kotlinx.serialization.json.jsonObject
 import app.neifur.container
 import app.neifur.core.ApiError
 import app.neifur.core.userMessage
+import app.neifur.data.a365.EmbedStream
 import app.neifur.data.a365.Picker
 import app.neifur.data.a365.Translation
 import app.neifur.data.a365.TranslationKind
 import app.neifur.data.a365.VideoChannel
+import app.neifur.data.aniskip.skipSegmentsToChapters
 import app.neifur.data.WatchEntry
 import app.neifur.ui.NeifurTheme
 import kotlinx.coroutines.Deferred
@@ -100,7 +103,23 @@ class PlayerActivity : ComponentActivity() {
     private var sleepRemainingMs by mutableLongStateOf(0L)
     /** Set when an "end of episode" sleep timer fires so auto-advance stays suppressed on that episode. */
     private var sleepStoppedEpisode by mutableStateOf(false)
+    private var aniSkipEnabled by mutableStateOf(false)
+    private var aniSkipJob: Job? = null
+    private var resolvedMalId: Long = 0L
+    private var prefetchJob: Job? = null
+    @Volatile private var prefetched: PrefetchedEpisode? = null
     private lateinit var media: MediaControls
+
+    private data class PrefetchedEpisode(
+        val episodeId: Long,
+        val pick: String?,
+        val quality: Int,
+        val options: Map<TranslationKind, List<Translation>>,
+        val chosen: Translation,
+        val streams: List<EmbedStream>,
+        val subPath: String?,
+        val fetchedAtMs: Long,
+    )
 
     private val noisyReceiver = object : BroadcastReceiver() {
         // Headphones pulled out or Bluetooth gone: pause instead of playing out loud.
@@ -147,6 +166,7 @@ class PlayerActivity : ComponentActivity() {
             ?: savedInstanceState?.let { restoreSession() }?.also { container.session = it }
         if (s == null) { finish(); return }
         sessionState = s
+        resolvedMalId = s.anime.malId
         index = s.index
         pick = s.pick
         pickName = s.pickName
@@ -158,10 +178,40 @@ class PlayerActivity : ComponentActivity() {
         player.onStreamError = ::recover
         lifecycleScope.launch {
             container.networkKey.drop(1).collect { key ->
-                if (key.isNotEmpty()) channelChecked = false
+                if (key.isNotEmpty()) { channelChecked = false; clearPrefetch() }
             }
         }
         lifecycleScope.launch { player.changeSubScale(container.prefs.subScale()) }
+        lifecycleScope.launch { container.prefs.normalizeAudio.collect { player.setAudioNormalize(it) } }
+        lifecycleScope.launch {
+            container.prefs.aniSkip.collect { on ->
+                aniSkipEnabled = on
+                if (!on) { aniSkipJob?.cancel(); player.setExternalChapters(emptyList()) }
+            }
+        }
+        // Fetch verified AniSkip OP/ED markers once the video's true duration is known (strictly guarded against studio intros).
+        lifecycleScope.launch {
+            snapshotFlow { Triple(aniSkipEnabled, player.loaded, playingIndex) to player.duration }.collectLatest { (triple, dur) ->
+                val (enabled, loaded, epIdx) = triple
+                aniSkipJob?.cancel()
+                if (!enabled || !loaded || dur <= 60.0 || epIdx < 0) return@collectLatest
+                val ep = session.episodes.getOrNull(epIdx) ?: return@collectLatest
+                if (ep.number <= 0) return@collectLatest
+                if (ep.episodeInt != null && ep.episodeInt != ep.number.toDouble()) return@collectLatest
+                aniSkipJob = launch {
+                    val mal = resolvedMalId.takeIf { it > 0L } ?: run {
+                        val sid = session.anime.id.toLongOrNull() ?: return@run 0L
+                        runCatching { container.a365.series(sid).myAnimeListId }.getOrDefault(0L)
+                            .also { if (it > 0L) resolvedMalId = it }
+                    }
+                    if (mal <= 0L) return@launch
+                    val segs = container.aniSkip.skipTimes(mal, ep.number, dur)
+                    if (playingIndex == epIdx && player.loaded && aniSkipEnabled) {
+                        player.setExternalChapters(skipSegmentsToChapters(segs, dur))
+                    }
+                }
+            }
+        }
         lifecycleScope.launch {
             container.prefs.savedBrightness()?.let { b ->
                 savedWindowBrightness = b
@@ -245,6 +295,7 @@ class PlayerActivity : ComponentActivity() {
                 syncMedia()
                 if (!player.paused) {
                     markIfWatched()
+                    maybePrefetchNext()
                     if (++tick >= 4) { tick = 0; saveProgress() }
                 }
             }
@@ -288,7 +339,7 @@ class PlayerActivity : ComponentActivity() {
                     sleep = sleep, sleepRemainingMs = { sleepRemainingMs },
                     autoNextBlocked = sleep == SleepTimer.EndOfEpisode || sleepStoppedEpisode,
                     onTranslation = ::switchTranslation, onHeight = { h -> loadEpisode(index, resumeAt = player.position, height = h, keep = true, preservePaused = player.paused) },
-                    onBack = { finish() }, onRetry = { channelChecked = false; channelProbeJob?.cancel(); channelProbeJob = null; freshEmbedRetried = false; loadEpisode(index) }, onEpisode = { loadEpisode(it) }, onPip = { enterPip() },
+                    onBack = { finish() }, onRetry = { channelChecked = false; channelProbeJob?.cancel(); channelProbeJob = null; freshEmbedRetried = false; clearPrefetch(); loadEpisode(index) }, onEpisode = { loadEpisode(it) }, onPip = { enterPip() },
                     onVideoBounds = { r ->
                         val rect = android.graphics.Rect(r.left.toInt(), r.top.toInt(), r.right.toInt(), r.bottom.toInt())
                         if (!inPip && rect.width() > 0 && rect != videoRect) { videoRect = rect; schedulePipUpdate() }
@@ -323,7 +374,10 @@ class PlayerActivity : ComponentActivity() {
         if (::player.isInitialized && player.loaded) saveProgress()
         flushWatchedDeletes()
         marked.clear()
+        clearPrefetch()
+        aniSkipJob?.cancel()
         sessionState = next
+        resolvedMalId = next.anime.malId
         index = next.index
         pick = next.pick
         pickName = next.pickName
@@ -368,10 +422,13 @@ class PlayerActivity : ComponentActivity() {
             reconnects = 0
             reconnecting = false
             freshEmbedRetried = false
+        } else {
+            clearPrefetch()
         }
         // Another episode (or a fresh start): close the old file now. Left playing while the new links load, it
         // would be saved and marked on the site under the new episode's number.
         if (resumeAt == null) {
+            aniSkipJob?.cancel()
             sleepStoppedEpisode = false; player.stop(); playingIndex = -1; playingTr = null
             flushWatchedDeletes(keepEpisodeId = ep.id)
         }
@@ -410,32 +467,52 @@ class PlayerActivity : ComponentActivity() {
                 }
                 val quality = c.prefs.quality.first()
                 val reuse = stream.current?.takeIf { keep && it.episodeId == ep.id }
-                val tr = reuse ?: run {
-                    val list = c.a365.episode(ep.id).translations.orEmpty()
-                    val kind = runCatching { TranslationKind.valueOf(c.prefs.preferredKind.first()) }.getOrDefault(TranslationKind.VoiceRu)
-                    val chosen = Picker.choose(list, pick, kind, c.prefs.favouriteAuthors(), quality)
-                        ?: throw ApiError("Для этой серии пока нет ни одного перевода")
-                    stream = StreamUi(Picker.options(list, quality), chosen)
-                    // The chosen studio skipped this episode: say which one plays instead.
-                    if (pick != null && chosen.pickKey != pick) {
+                val cached = if (resumeAt == null && height == null && !keep && !fromRecover) {
+                    prefetched?.takeIf {
+                        it.episodeId == ep.id && it.pick == pick && it.quality == quality &&
+                            System.currentTimeMillis() - it.fetchedAtMs < 6 * 60_000L
+                    }?.also { prefetched = null }
+                } else null
+
+                val tr: Translation
+                val streams: List<EmbedStream>
+                val subs: String?
+                if (cached != null) {
+                    stream = StreamUi(cached.options, cached.chosen)
+                    tr = cached.chosen
+                    if (pick != null && tr.pickKey != pick) {
                         val name = pickName ?: pick!!.substringAfter('|').replaceFirstChar { it.uppercase() }
-                        notice = "У $name нет этой серии — включён ${chosen.author}"
+                        notice = "У $name нет этой серии — включён ${tr.author}"
                     }
-                    chosen
+                    streams = cached.streams
+                    subs = cached.subPath?.takeIf { java.io.File(it).exists() }
+                } else {
+                    tr = reuse ?: run {
+                        val list = c.a365.episode(ep.id).translations.orEmpty()
+                        val kind = runCatching { TranslationKind.valueOf(c.prefs.preferredKind.first()) }.getOrDefault(TranslationKind.VoiceRu)
+                        val chosen = Picker.choose(list, pick, kind, c.prefs.favouriteAuthors(), quality)
+                            ?: throw ApiError("Для этой серии пока нет ни одного перевода")
+                        stream = StreamUi(Picker.options(list, quality), chosen)
+                        // The chosen studio skipped this episode: say which one plays instead.
+                        if (pick != null && chosen.pickKey != pick) {
+                            val name = pickName ?: pick!!.substringAfter('|').replaceFirstChar { it.uppercase() }
+                            notice = "У $name нет этой серии — включён ${chosen.author}"
+                        }
+                        chosen
+                    }
+                    val embed = c.a365.embed(tr.id)
+                    streams = embed.stream.filter { it.urls.isNotEmpty() }.sortedByDescending { it.height }
+                    if (streams.isEmpty()) throw ApiError("Anime 365 не отдал видео для этого перевода")
+                    subs = embed.subtitlesUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                        runCatching {
+                            val text = c.a365.subtitles(url)
+                            java.io.File(cacheDir, "subs").apply { mkdirs() }.resolve("${tr.id}.ass").apply { writeText(text) }.absolutePath
+                        }.getOrNull()
+                    }
                 }
-                val embed = c.a365.embed(tr.id)
-                val streams = embed.stream.filter { it.urls.isNotEmpty() }.sortedByDescending { it.height }
-                if (streams.isEmpty()) throw ApiError("Anime 365 не отдал видео для этого перевода")
                 val want = height ?: quality
                 val s = streams.firstOrNull { it.height <= want } ?: streams.last()
-                stream = stream.copy(current = tr, heights = streams.map { it.height }.distinct(), height = s.height, externalSubs = false, offline = false)
-                val subs = embed.subtitlesUrl?.takeIf { it.isNotBlank() }?.let { url ->
-                    runCatching {
-                        val text = c.a365.subtitles(url)
-                        java.io.File(cacheDir, "subs").apply { mkdirs() }.resolve("${tr.id}.ass").apply { writeText(text) }.absolutePath
-                    }.getOrNull()
-                }
-                stream = stream.copy(externalSubs = subs != null)
+                stream = stream.copy(current = tr, heights = streams.map { it.height }.distinct(), height = s.height, externalSubs = subs != null, offline = false)
                 val start = resumeAt ?: c.prefs.history.first()
                     .firstOrNull { it.animeId == session.anime.id && it.episode == ep.number }
                     ?.takeIf { !it.finished && it.positionSec > 15 }?.positionSec ?: 0.0
@@ -475,6 +552,7 @@ class PlayerActivity : ComponentActivity() {
     /** Another studio from the panel: same episode, same moment, and it becomes the pick for the next episodes. */
     private fun switchTranslation(t: Translation) {
         val rollback = Triple(stream, pick, pickName)
+        clearPrefetch()
         pick = t.pickKey
         pickName = t.author
         syncContainerSession()
@@ -488,11 +566,66 @@ class PlayerActivity : ComponentActivity() {
         val tr = playingTr ?: return
         if (!player.loaded || player.duration <= 0 || player.position / player.duration < 0.85 || tr.id in marked) return
         if (container.account.profile == null) return
+        val animeId = session.anime.id.toLongOrNull() ?: 0L
         marked += tr.id
         container.scope.launch {
+            if (!container.online.value) {
+                container.prefs.enqueuePendingWatched(tr.id, animeId)
+                return@launch
+            }
             runCatching { container.a365.markWatched(tr.id) }
-                .onSuccess { session.anime.id.toLongOrNull()?.let { container.lists.reload(it) } }
-                .onFailure { marked -= tr.id }
+                .onSuccess { if (animeId > 0L) container.lists.reload(animeId) }
+                .onFailure { container.prefs.enqueuePendingWatched(tr.id, animeId) }
+        }
+    }
+
+    private fun clearPrefetch() {
+        prefetchJob?.cancel()
+        prefetchJob = null
+        prefetched = null
+    }
+
+    /** Quietly resolves the next episode's embed & subtitles once the viewer passes 88% so auto-advance is instant. */
+    private fun maybePrefetchNext() {
+        if (!player.loaded || player.duration <= 60.0 || player.position / player.duration < 0.88) return
+        if (playingIndex < 0 || !container.online.value) return
+        val nextEp = session.episodes.getOrNull(playingIndex + 1) ?: return
+        if (container.downloads.localFile(nextEp.id) != null) return
+        val targetPick = pick
+        val cur = prefetched
+        if (cur != null && cur.episodeId == nextEp.id && cur.pick == targetPick &&
+            System.currentTimeMillis() - cur.fetchedAtMs < 5 * 60_000L
+        ) return
+        if (prefetchJob?.isActive == true) return
+        prefetchJob = lifecycleScope.launch {
+            runCatching {
+                val c = container
+                val quality = c.prefs.quality.first()
+                val list = c.a365.episode(nextEp.id).translations.orEmpty()
+                val kind = runCatching { TranslationKind.valueOf(c.prefs.preferredKind.first()) }.getOrDefault(TranslationKind.VoiceRu)
+                val chosen = Picker.choose(list, targetPick, kind, c.prefs.favouriteAuthors(), quality) ?: return@runCatching
+                val embed = c.a365.embed(chosen.id)
+                val streams = embed.stream.filter { it.urls.isNotEmpty() }.sortedByDescending { it.height }
+                if (streams.isEmpty()) return@runCatching
+                val subPath = embed.subtitlesUrl?.takeIf { it.isNotBlank() }?.let { url ->
+                    runCatching {
+                        val text = c.a365.subtitles(url)
+                        java.io.File(cacheDir, "subs").apply { mkdirs() }.resolve("${chosen.id}.ass").apply { writeText(text) }.absolutePath
+                    }.getOrNull()
+                }
+                if (pick == targetPick) {
+                    prefetched = PrefetchedEpisode(
+                        episodeId = nextEp.id,
+                        pick = targetPick,
+                        quality = quality,
+                        options = Picker.options(list, quality),
+                        chosen = chosen,
+                        streams = streams,
+                        subPath = subPath,
+                        fetchedAtMs = System.currentTimeMillis(),
+                    )
+                }
+            }
         }
     }
 
@@ -790,10 +923,48 @@ class PlayerActivity : ComponentActivity() {
         if (sessionState != null) saveSession()
     }
 
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (!inPip && ::player.isInitialized && event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                    if (player.loaded) { player.toggle(); return true }
+                }
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                    if (player.loaded) { player.seekBy(-seekStep.toDouble()); return true }
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                    if (player.loaded) { player.seekBy(seekStep.toDouble()); return true }
+                }
+                KeyEvent.KEYCODE_F -> {
+                    if (player.loaded) { player.changeFill(!player.fill); return true }
+                }
+                KeyEvent.KEYCODE_S -> {
+                    if (player.loaded && !player.ended) {
+                        val active = player.chapterAt(player.position)
+                        if (active != null && active.first.kind in setOf(ChapterKind.Opening, ChapterKind.Ending, ChapterKind.Recap)) {
+                            player.seekTo(active.second + 0.1, exact = true)
+                        } else if (player.duration > 180.0) {
+                            player.seekBy(JUMP_SECONDS.toDouble())
+                        }
+                        return true
+                    }
+                }
+                KeyEvent.KEYCODE_N -> {
+                    if (sessionState != null && index + 1 < session.episodes.size) { loadEpisode(index + 1); return true }
+                }
+                KeyEvent.KEYCODE_P -> {
+                    if (sessionState != null && index > 0) { loadEpisode(index - 1); return true }
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     /** The session (title, episodes, where we are, chosen studio), kept in a file: the episode list can be long. */
     private fun saveSession() = runCatching {
         val o = kotlinx.serialization.json.buildJsonObject {
             put("id", kotlinx.serialization.json.JsonPrimitive(session.anime.id))
+            put("malId", kotlinx.serialization.json.JsonPrimitive(resolvedMalId.takeIf { it > 0L } ?: session.anime.malId))
             put("title", kotlinx.serialization.json.JsonPrimitive(session.anime.title))
             put("poster", kotlinx.serialization.json.JsonPrimitive(session.anime.poster))
             put("index", kotlinx.serialization.json.JsonPrimitive(index))
@@ -807,14 +978,17 @@ class PlayerActivity : ComponentActivity() {
     private fun restoreSession(): PlaySession? = runCatching {
         val o = app.neifur.core.AppJson.parseToJsonElement(java.io.File(cacheDir, SESSION_FILE).readText()).jsonObject
         fun str(k: String) = (o[k] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+        val malId = (o["malId"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toLongOrNull() ?: 0L
         val eps = app.neifur.core.AppJson.decodeFromJsonElement(kotlinx.serialization.builtins.ListSerializer(Episode.serializer()), o["episodes"]!!)
         PlaySession(
-            AnimeStub(str("id")!!, str("title").orEmpty(), str("poster")), eps,
+            AnimeStub(str("id")!!, str("title").orEmpty(), str("poster"), malId = malId), eps,
             (o["index"] as kotlinx.serialization.json.JsonPrimitive).content.toInt(), str("pick"), str("pickName"),
         )
     }.getOrNull()
 
     override fun onDestroy() {
+        clearPrefetch()
+        aniSkipJob?.cancel()
         runCatching { unregisterReceiver(pipReceiver) }
         runCatching { unregisterReceiver(noisyReceiver) }
         if (::media.isInitialized) media.release()

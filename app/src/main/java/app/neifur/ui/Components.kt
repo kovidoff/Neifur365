@@ -233,9 +233,10 @@ fun Pill(
     val bg = if (selected) tint.copy(alpha = 0.18f) else Nf.Surface
     val fg = if (selected) tint else Nf.TextDim
     Row(
-        modifier.clip(CircleShape).background(bg)
+        modifier
+            .then(if (onClick != null) Modifier.pressable(0.94f, onClick = onClick) else Modifier)
+            .clip(CircleShape).background(bg)
             .border(1.dp, if (selected) tint.copy(alpha = 0.45f) else Nf.Line, CircleShape)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 13.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {

@@ -43,6 +43,55 @@ data class SavedAnime(
     val year: Int? = null, val score: Double? = null, val addedAt: Long = 0,
 )
 
+/** Episode mark queued offline and flushed to Anime 365 as soon as a connection returns. */
+@Serializable
+data class PendingWatch(val translationId: Long, val animeId: Long, val savedAt: Long = 0)
+
+/** Portable backup of user settings and studio preferences. Never includes cookies, tokens or account data. */
+@Serializable
+data class SettingsBackup(
+    val app: String = "Neifur365",
+    val version: Int = 1,
+    val exportedAt: Long = 0,
+    val preferredKind: String = "VoiceRu",
+    val favouriteStudios: List<Pair<String, String>> = emptyList(),
+    val translationPicks: Map<String, String> = emptyMap(),
+    val quality: Int = 1080,
+    val subScale: Double = 1.0,
+    val seekStep: Int = 10,
+    val holdBoost: Boolean = true,
+    val sideGestures: Boolean = true,
+    val rememberBrightness: Boolean = false,
+    val aniSkip: Boolean = false,
+    val normalizeAudio: Boolean = false,
+    val downloadQuality: Int = 0,
+    val autoDeleteWatched: Boolean = false,
+    val wifiOnlyDownloads: Boolean = false,
+    val mirrorAuto: Boolean = true,
+    val channelAuto: Boolean = true,
+    val customMirrors: List<String> = emptyList(),
+    val alertsEnabled: Boolean = false,
+    val alertsMyStudio: Boolean = false,
+    val alertsPlanned: Boolean = false,
+    val favorites: List<SavedAnime> = emptyList(),
+)
+
+data class BackupImportSummary(val studios: Int, val picks: Int, val favorites: Int)
+
+private val BackupJson = kotlinx.serialization.json.Json {
+    ignoreUnknownKeys = true
+    prettyPrint = true
+    encodeDefaults = true
+}
+
+internal fun encodeSettingsBackup(b: SettingsBackup): String = BackupJson.encodeToString(SettingsBackup.serializer(), b)
+
+internal fun decodeSettingsBackup(raw: String): SettingsBackup {
+    val parsed = BackupJson.decodeFromString(SettingsBackup.serializer(), raw)
+    require(parsed.app == "Neifur365" && parsed.version in 1..2) { "Неподдерживаемый файл резервной копии" }
+    return parsed
+}
+
 class Prefs(private val context: Context) {
     private val KEY_MIRROR = stringPreferencesKey("mirror")
     private val KEY_CUSTOM_MIRRORS = stringPreferencesKey("custom_mirrors")
@@ -77,13 +126,18 @@ class Prefs(private val context: Context) {
     private val KEY_STASH = stringPreferencesKey("account_stash")
     private val KEY_PROFILE = stringPreferencesKey("profile")
     private val KEY_RECENT_SEARCHES = stringPreferencesKey("recent_searches")
+    private val KEY_ANISKIP = stringPreferencesKey("aniskip")
+    private val KEY_NORMALIZE_AUDIO = stringPreferencesKey("normalize_audio")
+    private val KEY_WIFI_ONLY_DL = stringPreferencesKey("wifi_only_dl")
+    private val KEY_PENDING_WATCHED = stringPreferencesKey("pending_watched")
 
     /** What belongs to one Anime 365 account rather than to the phone: put aside when another account signs in. */
-    private val accountKeys = listOf(KEY_HISTORY, KEY_PICKS, KEY_ALERTS_SEEN, KEY_ALERTS_CHECKED, KEY_CHANNEL_CHECKED)
+    private val accountKeys = listOf(KEY_HISTORY, KEY_PICKS, KEY_ALERTS_SEEN, KEY_ALERTS_CHECKED, KEY_CHANNEL_CHECKED, KEY_PENDING_WATCHED)
     private val stashSer = MapSerializer(String.serializer(), MapSerializer(String.serializer(), String.serializer()))
 
     private val historySer = ListSerializer(WatchEntry.serializer())
     private val favSer = ListSerializer(SavedAnime.serializer())
+    private val pendingWatchSer = ListSerializer(PendingWatch.serializer())
 
     // --- mirrors -------------------------------------------------------------------------------------
     val mirror: Flow<String?> = context.store.data.map { it[KEY_MIRROR] }.distinctUntilChanged()
@@ -322,6 +376,119 @@ class Prefs(private val context: Context) {
     /** Automatically deletes a downloaded episode once it has been watched past 92%. Off by default. */
     val autoDeleteWatched: Flow<Boolean> = context.store.data.map { it[KEY_AUTO_DELETE_DL] == "on" }.distinctUntilChanged()
     suspend fun setAutoDeleteWatched(on: Boolean) = context.store.edit { if (on) it[KEY_AUTO_DELETE_DL] = "on" else it.remove(KEY_AUTO_DELETE_DL) }
+
+    /** Downloads only proceed on Wi-Fi / unmetered networks when enabled; cellular pauses them cleanly. */
+    val wifiOnlyDownloads: Flow<Boolean> = context.store.data.map { it[KEY_WIFI_ONLY_DL] == "on" }.distinctUntilChanged()
+    suspend fun setWifiOnlyDownloads(on: Boolean) = context.store.edit { if (on) it[KEY_WIFI_ONLY_DL] = "on" else it.remove(KEY_WIFI_ONLY_DL) }
+
+    /** Smart OP/ED skip markers from AniSkip, strictly validated against episode runtime. Off by default. */
+    val aniSkip: Flow<Boolean> = context.store.data.map { it[KEY_ANISKIP] == "on" }.distinctUntilChanged()
+    suspend fun setAniSkip(on: Boolean) = context.store.edit { if (on) it[KEY_ANISKIP] = "on" else it.remove(KEY_ANISKIP) }
+
+    /** Dynamic audio normalization (dynaudnorm) for balancing quiet dialogue and loud openings. Off by default. */
+    val normalizeAudio: Flow<Boolean> = context.store.data.map { it[KEY_NORMALIZE_AUDIO] == "on" }.distinctUntilChanged()
+    suspend fun setNormalizeAudio(on: Boolean) = context.store.edit { if (on) it[KEY_NORMALIZE_AUDIO] = "on" else it.remove(KEY_NORMALIZE_AUDIO) }
+
+    // --- offline watched outbox ----------------------------------------------------------------------
+    val pendingWatched: Flow<List<PendingWatch>> = context.store.data
+        .map { it[KEY_PENDING_WATCHED] }
+        .distinctUntilChanged()
+        .map { raw -> raw?.let { runCatching { AppJson.decodeFromString(pendingWatchSer, it) }.getOrNull() } ?: emptyList() }
+
+    suspend fun enqueuePendingWatched(translationId: Long, animeId: Long) = context.store.edit { p ->
+        val cur = p[KEY_PENDING_WATCHED]?.let { runCatching { AppJson.decodeFromString(pendingWatchSer, it) }.getOrNull() } ?: emptyList()
+        if (cur.any { it.translationId == translationId }) return@edit
+        val next = (cur + PendingWatch(translationId, animeId, System.currentTimeMillis())).takeLast(200)
+        p[KEY_PENDING_WATCHED] = AppJson.encodeToString(pendingWatchSer, next)
+    }
+
+    suspend fun removePendingWatched(translationId: Long) = context.store.edit { p ->
+        val cur = p[KEY_PENDING_WATCHED]?.let { runCatching { AppJson.decodeFromString(pendingWatchSer, it) }.getOrNull() } ?: emptyList()
+        val next = cur.filterNot { it.translationId == translationId }
+        if (next.isEmpty()) p.remove(KEY_PENDING_WATCHED) else p[KEY_PENDING_WATCHED] = AppJson.encodeToString(pendingWatchSer, next)
+    }
+
+    // --- portable settings backup (JSON, never contains cookies or account tokens) -------------------
+    suspend fun exportBackupJson(): String {
+        val d = context.store.data.first()
+        val studios = d[KEY_FAVOURITE_STUDIOS]?.lines().orEmpty().filter { it.isNotBlank() }.map { l ->
+            val key = l.substringBefore('\t')
+            key to (l.substringAfter('\t', "").ifBlank { key.substringAfter('|').replaceFirstChar { it.uppercase() } })
+        }
+        val picks = d[KEY_PICKS]?.lines().orEmpty().filter { it.contains('\t') }.associate { l ->
+            l.substringBefore('\t') to l.substringAfter('\t')
+        }
+        val favs = d[KEY_FAVORITES]?.let { runCatching { AppJson.decodeFromString(favSer, it) }.getOrNull() } ?: emptyList()
+        val backup = SettingsBackup(
+            exportedAt = System.currentTimeMillis(),
+            preferredKind = d[KEY_KIND] ?: "VoiceRu",
+            favouriteStudios = studios,
+            translationPicks = picks,
+            quality = minOf(d[KEY_QUALITY] ?: 1080, app.neifur.data.a365.MAX_STREAM_HEIGHT),
+            subScale = d[KEY_SUB_SCALE]?.toDoubleOrNull()?.coerceIn(0.6, 2.0) ?: 1.0,
+            seekStep = if (d[KEY_SEEK_STEP] == 5) 5 else 10,
+            holdBoost = d[KEY_HOLD_BOOST] != "off",
+            sideGestures = d[KEY_SIDE_GESTURES] != "off",
+            rememberBrightness = d[KEY_REMEMBER_BRIGHTNESS] == "on",
+            aniSkip = d[KEY_ANISKIP] == "on",
+            normalizeAudio = d[KEY_NORMALIZE_AUDIO] == "on",
+            downloadQuality = d[KEY_DOWNLOAD_QUALITY] ?: 0,
+            autoDeleteWatched = d[KEY_AUTO_DELETE_DL] == "on",
+            wifiOnlyDownloads = d[KEY_WIFI_ONLY_DL] == "on",
+            mirrorAuto = d[KEY_MIRROR_AUTO] != "0",
+            channelAuto = d[KEY_CHANNEL_AUTO] != "0",
+            customMirrors = d[KEY_CUSTOM_MIRRORS]?.split('\n')?.filter(String::isNotBlank) ?: emptyList(),
+            alertsEnabled = d[KEY_ALERTS] == "1",
+            alertsMyStudio = d[KEY_ALERTS_MODE] == "studio",
+            alertsPlanned = d[KEY_ALERTS_PLANNED] == "1",
+            favorites = favs,
+        )
+        return encodeSettingsBackup(backup)
+    }
+
+    suspend fun importBackupJson(raw: String): BackupImportSummary {
+        val b = decodeSettingsBackup(raw)
+        context.store.edit { p ->
+            p[KEY_KIND] = b.preferredKind.ifBlank { "VoiceRu" }
+            if (b.favouriteStudios.isNotEmpty()) {
+                p[KEY_FAVOURITE_STUDIOS] = b.favouriteStudios.distinctBy { it.first }.take(30)
+                    .joinToString("\n") { "${it.first}\t${it.second}" }
+            }
+            if (b.translationPicks.isNotEmpty()) {
+                val existing = p[KEY_PICKS]?.lines().orEmpty().filter { it.contains('\t') }
+                    .associate { it.substringBefore('\t') to it.substringAfter('\t') }
+                val merged = (existing + b.translationPicks).entries.toList().takeLast(400)
+                p[KEY_PICKS] = merged.joinToString("\n") { "${it.key}\t${it.value}" }
+            }
+            p[KEY_QUALITY] = b.quality.coerceIn(360, app.neifur.data.a365.MAX_STREAM_HEIGHT)
+            p[KEY_SUB_SCALE] = b.subScale.coerceIn(0.6, 2.0).toString()
+            p[KEY_SEEK_STEP] = if (b.seekStep == 5) 5 else 10
+            if (b.holdBoost) p.remove(KEY_HOLD_BOOST) else p[KEY_HOLD_BOOST] = "off"
+            if (b.sideGestures) p.remove(KEY_SIDE_GESTURES) else p[KEY_SIDE_GESTURES] = "off"
+            if (b.rememberBrightness) p[KEY_REMEMBER_BRIGHTNESS] = "on" else { p.remove(KEY_REMEMBER_BRIGHTNESS); p.remove(KEY_BRIGHTNESS) }
+            if (b.aniSkip) p[KEY_ANISKIP] = "on" else p.remove(KEY_ANISKIP)
+            if (b.normalizeAudio) p[KEY_NORMALIZE_AUDIO] = "on" else p.remove(KEY_NORMALIZE_AUDIO)
+            if (b.downloadQuality <= 0) p.remove(KEY_DOWNLOAD_QUALITY)
+            else p[KEY_DOWNLOAD_QUALITY] = b.downloadQuality.coerceIn(360, app.neifur.data.a365.MAX_STREAM_HEIGHT)
+            if (b.autoDeleteWatched) p[KEY_AUTO_DELETE_DL] = "on" else p.remove(KEY_AUTO_DELETE_DL)
+            if (b.wifiOnlyDownloads) p[KEY_WIFI_ONLY_DL] = "on" else p.remove(KEY_WIFI_ONLY_DL)
+            p[KEY_MIRROR_AUTO] = if (b.mirrorAuto) "1" else "0"
+            p[KEY_CHANNEL_AUTO] = if (b.channelAuto) "1" else "0"
+            if (b.customMirrors.isNotEmpty()) {
+                val cur = p[KEY_CUSTOM_MIRRORS]?.split('\n')?.filter(String::isNotBlank) ?: emptyList()
+                p[KEY_CUSTOM_MIRRORS] = (cur + b.customMirrors).distinct().joinToString("\n")
+            }
+            p[KEY_ALERTS] = if (b.alertsEnabled) "1" else "0"
+            p[KEY_ALERTS_MODE] = if (b.alertsMyStudio) "studio" else "any"
+            p[KEY_ALERTS_PLANNED] = if (b.alertsPlanned) "1" else "0"
+            if (b.favorites.isNotEmpty()) {
+                val cur = p[KEY_FAVORITES]?.let { runCatching { AppJson.decodeFromString(favSer, it) }.getOrNull() } ?: emptyList()
+                val merged = (b.favorites + cur).distinctBy { it.id }
+                p[KEY_FAVORITES] = AppJson.encodeToString(favSer, merged)
+            }
+        }
+        return BackupImportSummary(b.favouriteStudios.size, b.translationPicks.size, b.favorites.size)
+    }
 
     /** Keeps manual player brightness between sessions instead of reverting to system auto-brightness. */
     val rememberBrightness: Flow<Boolean> = context.store.data.map { it[KEY_REMEMBER_BRIGHTNESS] == "on" }.distinctUntilChanged()

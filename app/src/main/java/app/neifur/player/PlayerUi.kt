@@ -34,6 +34,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -255,6 +256,8 @@ fun PlayerScreen(
     val panelNow by rememberUpdatedState(panel)
     val boostingNow by rememberUpdatedState(boosting)
     val dragActive = remember { object { var value = false } }
+    val suppressTap = remember { object { var until = 0L } }
+    var zoomHint by remember { mutableStateOf<Pair<String, Long>?>(null) }
 
     // Auto-hide: controls go away after a few seconds of playback without touches.
     LaunchedEffect(controls, interaction, player.paused, panel, menu, isScrubbing, locked) {
@@ -262,6 +265,7 @@ fun PlayerScreen(
     }
     LaunchedEffect(burst?.at) { if (burst != null) { delay(850); burst = null } }
     LaunchedEffect(pop?.second) { if (pop != null) { delay(550); pop = null } }
+    LaunchedEffect(zoomHint?.second) { if (zoomHint != null) { delay(1100); zoomHint = null } }
 
     BackHandler(enabled = panel != null || menu != null || locked) {
         when { menu != null -> menu = null; panel != null -> panel = null; else -> lockHint++ }
@@ -402,15 +406,15 @@ fun PlayerScreen(
                     val topEdge = with(density) { 56.dp.toPx() }
                     val sideEdge = with(density) { 36.dp.toPx() }
                     fun inDeadZone(o: Offset) = o.y < topEdge || o.y > size.height - sideEdge || o.x < sideEdge || o.x > size.width - sideEdge
-                    var suppressTapUntil = 0L
                     detectTapGestures(
                         onTap = { o ->
-                            if (System.currentTimeMillis() < suppressTapUntil) return@detectTapGestures
+                            if (System.currentTimeMillis() < suppressTap.until) return@detectTapGestures
                             if (inDeadZone(o) && panelNow == null) return@detectTapGestures
                             if (panelNow != null) panel = null
                             else { controls = !controls; interaction++ }
                         },
                         onDoubleTap = { o ->
+                            if (System.currentTimeMillis() < suppressTap.until) return@detectTapGestures
                             if (inDeadZone(o) || panelNow != null) return@detectTapGestures
                             when {
                                 o.x < size.width / 3f -> seekStep(-1)
@@ -439,11 +443,55 @@ fun PlayerScreen(
                                 if (boosted) {
                                     boosting = false
                                     player.changeSpeed(before)
-                                    suppressTapUntil = System.currentTimeMillis() + 350L
+                                    suppressTap.until = System.currentTimeMillis() + 350L
                                 }
                             }
                         },
                     )
+                }
+                .pointerInput(Unit) {
+                    // Two-finger pinch toggles Fill / Fit cleanly without interfering with taps, drags, or 2× hold.
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        if (panelNow != null || boostingNow) return@awaitEachGesture
+                        var totalZoom = 1f
+                        var pinchStarted = false
+                        var triggered = false
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val pressed = event.changes.count { it.pressed }
+                                if (pressed == 0) break
+                                if (pressed >= 2) {
+                                    if (!pinchStarted) {
+                                        pinchStarted = true
+                                        dragActive.value = true
+                                    }
+                                    val z = event.calculateZoom()
+                                    if (z.isFinite() && z > 0f) {
+                                        totalZoom *= z
+                                        if (!triggered && totalZoom > 1.15f) {
+                                            triggered = true
+                                            if (!player.fill) player.changeFill(true)
+                                            zoomHint = "Заполнить экран" to System.currentTimeMillis()
+                                            interaction++
+                                        } else if (!triggered && totalZoom < 0.87f) {
+                                            triggered = true
+                                            if (player.fill) player.changeFill(false)
+                                            zoomHint = "Вписать в экран" to System.currentTimeMillis()
+                                            interaction++
+                                        }
+                                    }
+                                    event.changes.forEach { it.consume() }
+                                }
+                            }
+                        } finally {
+                            if (pinchStarted) {
+                                dragActive.value = false
+                                suppressTap.until = System.currentTimeMillis() + 380L
+                            }
+                        }
+                    }
                 }
                 .pointerInput(Unit) {
                     val audio = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -675,6 +723,15 @@ fun PlayerScreen(
                 Icon(Icons.Rounded.FastForward, null, tint = Color.White, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("2× пока держите палец", style = Type.Label, color = Color.White)
+            }
+        }
+        var lastZoomLabel by remember { mutableStateOf("") }
+        zoomHint?.first?.let { lastZoomLabel = it }
+        AnimatedVisibility(zoomHint != null && !boosting, Modifier.align(Alignment.TopCenter).displayCutoutPadding().padding(top = 22.dp), enter = fadeIn(tween(140)) + scaleIn(initialScale = 0.94f), exit = fadeOut(tween(220))) {
+            Row(Modifier.clip(CircleShape).background(Color(0xCC0E0E15)).border(1.dp, Color(0x1AFFFFFF), CircleShape).padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (player.fill) Icons.Rounded.FitScreen else Icons.Rounded.AspectRatio, null, tint = Color.White, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(7.dp))
+                Text(lastZoomLabel, style = Type.Label, color = Color.White)
             }
         }
 
@@ -946,6 +1003,7 @@ private fun SkipButton(
     val offer = when {
         now == null || remainingInChapter < 2 -> null
         kind == ChapterKind.Opening -> "Пропустить опенинг"
+        kind == ChapterKind.Recap -> "Пропустить рекап"
         kind == ChapterKind.Ending && hasNext && now.second >= player.duration - 120 -> "Следующая серия"
         kind == ChapterKind.Ending -> "Пропустить эндинг"
         kind == ChapterKind.Preview && hasNext -> "Следующая серия"
@@ -1144,6 +1202,7 @@ internal fun chapterLabel(c: Chapter): String? = when (c.kind) {
     ChapterKind.Opening -> "Опенинг"
     ChapterKind.Ending -> "Эндинг"
     ChapterKind.Preview -> "Анонс"
+    ChapterKind.Recap -> "Рекап"
     ChapterKind.Other -> c.title.takeIf { it.isNotBlank() && !Regex("""(?i)^(episode|chapter|part|глава|часть)\s*\d*$""").matches(it.trim()) }
 }
 
@@ -1231,7 +1290,7 @@ private fun SeekBar(
                 val x0 = fracs[k] * w + if (k > 0) gap / 2 else 0f
                 val x1 = fracs[k + 1] * w - if (k < fracs.size - 2) gap / 2 else 0f
                 if (x1 <= x0) continue
-                val special = kinds.getOrNull(k).let { it == ChapterKind.Opening || it == ChapterKind.Ending }
+                val special = kinds.getOrNull(k).let { it == ChapterKind.Opening || it == ChapterKind.Ending || it == ChapterKind.Recap }
                 // The chapter under the finger grows a little, like on YouTube.
                 val active = dragging && px >= fracs[k] * w && px <= fracs[k + 1] * w
                 val h = base + if (active) 2.dp.toPx() else 0f

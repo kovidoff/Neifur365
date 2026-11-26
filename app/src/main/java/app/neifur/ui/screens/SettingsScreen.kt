@@ -2,8 +2,11 @@
 
 package app.neifur.ui.screens
 
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -15,6 +18,8 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -39,7 +44,9 @@ import androidx.compose.material.icons.rounded.ClosedCaption
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.FastForward
+import androidx.compose.material.icons.rounded.FileOpen
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.KeyboardDoubleArrowRight
@@ -54,10 +61,13 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.Replay5
 import androidx.compose.material.icons.rounded.RestartAlt
+import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material.icons.rounded.Verified
+import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -203,19 +213,60 @@ class SettingsVm(private val c: Container) : ViewModel() {
     val holdBoost = c.prefs.holdBoost
     val sideGestures = c.prefs.sideGestures
     val rememberBrightness = c.prefs.rememberBrightness
+    val aniSkip = c.prefs.aniSkip
+    val normalizeAudio = c.prefs.normalizeAudio
     val downloadQuality = c.prefs.downloadQuality
     val autoDeleteWatched = c.prefs.autoDeleteWatched
+    val wifiOnlyDownloads = c.prefs.wifiOnlyDownloads
     val downloads = c.downloads.state
     val alerts = c.prefs.alerts
     val alertsMyStudio = c.prefs.alertsMyStudio
+    var backupNotice by mutableStateOf<String?>(null)
     fun setSeekStep(v: Int) = viewModelScope.launch { c.prefs.setSeekStep(v) }
     fun setHoldBoost(on: Boolean) = viewModelScope.launch { c.prefs.setHoldBoost(on) }
     fun setSideGestures(on: Boolean) = viewModelScope.launch { c.prefs.setSideGestures(on) }
     fun setRememberBrightness(on: Boolean) = viewModelScope.launch { c.prefs.setRememberBrightness(on) }
+    fun setAniSkip(on: Boolean) = viewModelScope.launch { c.prefs.setAniSkip(on) }
+    fun setNormalizeAudio(on: Boolean) = viewModelScope.launch { c.prefs.setNormalizeAudio(on) }
     fun setDownloadQuality(q: Int) = viewModelScope.launch { c.prefs.setDownloadQuality(q) }
     fun setAutoDeleteWatched(on: Boolean) = viewModelScope.launch { c.prefs.setAutoDeleteWatched(on) }
+    fun setWifiOnlyDownloads(on: Boolean) = viewModelScope.launch { c.prefs.setWifiOnlyDownloads(on) }
     fun clearHistory() = viewModelScope.launch { c.prefs.clearHistory() }
     fun showWelcome() = viewModelScope.launch { c.prefs.beginOnboarding() }
+
+    fun exportBackup(ctx: android.content.Context, uri: Uri) = viewModelScope.launch {
+        runCatching {
+            val json = c.prefs.exportBackupJson()
+            withContext(Dispatchers.IO) {
+                ctx.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(json.toByteArray(Charsets.UTF_8))
+                } ?: error("Не удалось открыть файл для записи")
+            }
+        }.onSuccess {
+            backupNotice = "Резервная копия настроек сохранена"
+        }.onFailure {
+            backupNotice = "Не удалось сохранить: ${it.message ?: "ошибка"}"
+        }
+    }
+
+    fun importBackup(ctx: android.content.Context, uri: Uri) = viewModelScope.launch {
+        runCatching {
+            val raw = withContext(Dispatchers.IO) {
+                ctx.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+                    ?: error("Не удалось прочитать файл")
+            }
+            c.prefs.importBackupJson(raw)
+        }.onSuccess { res ->
+            val details = buildList {
+                if (res.studios > 0) add("${res.studios} студ.")
+                if (res.picks > 0) add("${res.picks} привязок")
+                if (res.favorites > 0) add("${res.favorites} избр.")
+            }.joinToString(", ")
+            backupNotice = if (details.isNotEmpty()) "Настройки восстановлены ($details)" else "Настройки восстановлены"
+        }.onFailure {
+            backupNotice = "Файл не подходит: проверьте резервную копию Neifur 365"
+        }
+    }
 
     fun measureCache(ctx: android.content.Context) = viewModelScope.launch {
         cacheBytes = withContext(Dispatchers.IO) { runCatching { SingletonImageLoader.get(ctx).diskCache?.size }.getOrNull() ?: 0L }
@@ -370,11 +421,28 @@ fun SettingsSectionScreen(
     val holdBoost by vm.holdBoost.collectAsStateWithLifecycle(true)
     val sideGestures by vm.sideGestures.collectAsStateWithLifecycle(true)
     val rememberBrightness by vm.rememberBrightness.collectAsStateWithLifecycle(false)
+    val aniSkip by vm.aniSkip.collectAsStateWithLifecycle(false)
+    val normalizeAudio by vm.normalizeAudio.collectAsStateWithLifecycle(false)
     val autoDeleteWatched by vm.autoDeleteWatched.collectAsStateWithLifecycle(false)
+    val wifiOnlyDownloads by vm.wifiOnlyDownloads.collectAsStateWithLifecycle(false)
     val studios by vm.studios.collectAsStateWithLifecycle(emptyList())
     val pickCount by vm.pickCount.collectAsStateWithLifecycle(0)
     var confirmHistory by remember { mutableStateOf(false) }
     var confirmPicks by remember { mutableStateOf(false) }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) vm.exportBackup(ctx, uri)
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.importBackup(ctx, uri)
+    }
+
+    LaunchedEffect(vm.backupNotice) {
+        if (vm.backupNotice != null) {
+            kotlinx.coroutines.delay(3400)
+            vm.backupNotice = null
+        }
+    }
 
     if (section == SettingsSection.Data) LaunchedEffect(Unit) { vm.measureCache(ctx) }
     if (section == SettingsSection.Connection) LaunchedEffect(acc) { if (acc is AccountState.SignedIn) vm.loadChannels() }
@@ -470,6 +538,22 @@ fun SettingsSectionScreen(
                         }
                     }
                 }
+                item(key = "smart") {
+                    Spacer(Modifier.height(12.dp))
+                    Card {
+                        SettingTitle("Звук и заставки", "Дополнительные возможности плеера")
+                        ToggleRow(
+                            Icons.Rounded.GraphicEq, "Нормализация громкости",
+                            "Выравнивает тихие диалоги и громкие опенинги (dynaudnorm)", normalizeAudio,
+                        ) { vm.setNormalizeAudio(it) }
+                        Divider()
+                        ToggleRow(
+                            Icons.Rounded.SkipNext, "Умный пропуск заставок (AniSkip)",
+                            "Метки опенинга и эндинга по точному хронометражу серии. Если студия добавила своё интро — остаётся +85",
+                            aniSkip,
+                        ) { vm.setAniSkip(it) }
+                    }
+                }
             }
 
             SettingsSection.Translation -> {
@@ -553,6 +637,11 @@ fun SettingsSectionScreen(
                             Icons.Rounded.AutoDelete, "Удалять после просмотра",
                             "Освобождает память, когда скачанная серия досмотрена", autoDeleteWatched,
                         ) { vm.setAutoDeleteWatched(it) }
+                        Divider()
+                        ToggleRow(
+                            Icons.Rounded.Wifi, "Скачивать только по Wi-Fi",
+                            "На мобильной сети загрузки ставятся на паузу и докачиваются по Wi-Fi", wifiOnlyDownloads,
+                        ) { vm.setWifiOnlyDownloads(it) }
                     }
                     Spacer(Modifier.height(12.dp))
                 }
@@ -576,10 +665,71 @@ fun SettingsSectionScreen(
                             "Очистить", enabled = (vm.cacheBytes ?: 0) > 0,
                         ) { vm.clearCache(ctx) }
                     }
+                    Spacer(Modifier.height(12.dp))
+                }
+                item(key = "backup") {
+                    Card {
+                        SettingTitle(
+                            "Резервная копия",
+                            "Сохраняет любимые студии, привязки переводов, зеркала и настройки плеера. Аккаунт и cookies не попадают в файл",
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                Modifier
+                                    .weight(1f)
+                                    .pressable(0.95f) { exportLauncher.launch("neifur365-backup.json") }
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(Nf.Violet.copy(alpha = 0.14f))
+                                    .border(1.dp, Nf.Violet.copy(alpha = 0.38f), RoundedCornerShape(16.dp))
+                                    .padding(horizontal = 14.dp, vertical = 13.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(Icons.Rounded.UploadFile, null, tint = Nf.Violet, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(7.dp))
+                                Text("Экспорт", style = Type.Label, color = Nf.Text, maxLines = 1)
+                            }
+                            Row(
+                                Modifier
+                                    .weight(1f)
+                                    .pressable(0.95f) { importLauncher.launch(arrayOf("application/json", "*/*")) }
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(Nf.SurfaceHi)
+                                    .border(1.dp, Nf.Line, RoundedCornerShape(16.dp))
+                                    .padding(horizontal = 14.dp, vertical = 13.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(Icons.Rounded.FileOpen, null, tint = Nf.TextDim, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(7.dp))
+                                Text("Импорт", style = Type.Label, color = Nf.Text, maxLines = 1)
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+
+        var lastBackupNotice by remember { mutableStateOf("") }
+        vm.backupNotice?.let { lastBackupNotice = it }
+        AnimatedVisibility(
+            vm.backupNotice != null,
+            Modifier.align(Alignment.BottomCenter).padding(20.dp),
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+        ) {
+            Text(
+                lastBackupNotice,
+                style = Type.Label,
+                color = Nf.Text,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(Nf.SurfaceHi)
+                    .border(1.dp, Nf.Line, RoundedCornerShape(18.dp))
+                    .padding(horizontal = 18.dp, vertical = 13.dp),
+            )
+        }
     }
 
     if (confirmHistory) AlertDialog(
