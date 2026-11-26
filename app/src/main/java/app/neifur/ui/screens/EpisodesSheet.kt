@@ -54,8 +54,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.neifur.data.WatchEntry
@@ -117,6 +121,42 @@ fun CoverageBar(studio: Studio, episodes: List<Episode>, accent: Color, modifier
  * episodes it hasn't uploaded are marked, with what plays instead. The translation page picks a studio for the
  * whole title, showing how many episodes each one has.
  */
+/**
+ * Prevents ModalBottomSheet from collapsing when a list inside it is scrolled or flung back up to index 0:
+ * leftover drag/fling inertia hitting the top of the list is absorbed here so only an intentional pull
+ * starting cleanly from the top collapses the sheet.
+ */
+internal class SheetScrollGuardConnection(
+    private val canScrollBackward: () -> Boolean,
+    private val isScrollInProgress: () -> Boolean,
+) : NestedScrollConnection {
+    private var blockOverscrollUntilRelease = false
+
+    override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+        if (!isScrollInProgress()) blockOverscrollUntilRelease = false
+        if (source == NestedScrollSource.UserInput && canScrollBackward()) {
+            blockOverscrollUntilRelease = true
+        }
+        return Offset.Zero
+    }
+
+    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+        if (available.y <= 0f) return Offset.Zero
+        if (source == NestedScrollSource.SideEffect) return Offset(0f, available.y)
+        if (blockOverscrollUntilRelease || consumed.y > 0f) {
+            blockOverscrollUntilRelease = true
+            return Offset(0f, available.y)
+        }
+        return Offset.Zero
+    }
+
+    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+        val shouldConsume = blockOverscrollUntilRelease || consumed.y > 0f || canScrollBackward()
+        blockOverscrollUntilRelease = false
+        return if (shouldConsume && available.y > 0f) Velocity(0f, available.y) else Velocity.Zero
+    }
+}
+
 @Composable
 fun EpisodesSheet(
     state: PlayState, history: List<WatchEntry>, isMovie: Boolean, accent: Color, startPage: SheetPage,
@@ -277,7 +317,13 @@ private fun Episodes(
                 )
             }
         }
-        LazyColumn(state = list, contentPadding = PaddingValues(top = 12.dp, bottom = 28.dp), modifier = Modifier.weight(1f)) {
+        LazyColumn(
+            state = list,
+            contentPadding = PaddingValues(top = 12.dp, bottom = 28.dp),
+            modifier = Modifier
+                .weight(1f)
+                .nestedScroll(remember(list) { SheetScrollGuardConnection({ list.canScrollBackward }, { list.isScrollInProgress }) }),
+        ) {
             items(ranges.getOrNull(range).orEmpty(), key = { eps[it].id }) { i ->
                 val ep = eps[i]
                 // Unknown until this range's translations are in (long shows): don't call it missing yet.
@@ -594,7 +640,13 @@ private fun TranslationsPage(
             if (favKeys.size > seenFavs.size && listState.firstVisibleItemIndex < 8) listState.animateScrollToItem(0)
             seenFavs = favKeys
         }
-        LazyColumn(state = listState, contentPadding = PaddingValues(top = 6.dp, bottom = 28.dp)) {
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(top = 6.dp, bottom = 28.dp),
+            modifier = Modifier
+                .weight(1f)
+                .nestedScroll(remember(listState) { SheetScrollGuardConnection({ listState.canScrollBackward }, { listState.isScrollInProgress }) }),
+        ) {
             if (favs.isNotEmpty()) {
                 item(key = "h-fav") {
                     ListOverline("Любимые", FavouriteTint, star = true, modifier = Modifier.animateItem().padding(start = 24.dp, top = 8.dp, bottom = 6.dp))

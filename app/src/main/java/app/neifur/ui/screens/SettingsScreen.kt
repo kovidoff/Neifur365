@@ -11,6 +11,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -27,6 +28,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -71,8 +73,6 @@ import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
@@ -88,6 +88,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -113,7 +114,10 @@ import app.neifur.nfViewModel
 import app.neifur.ui.*
 import coil3.SingletonImageLoader
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -132,6 +136,8 @@ enum class SettingsSection(val route: String, val title: String, val subtitle: S
 }
 
 class SettingsVm(private val c: Container) : ViewModel() {
+    private fun <T> Flow<T>.eager(initial: T) = stateIn(viewModelScope, SharingStarted.Eagerly, initial)
+
     val account = c.account.state
     val lists = c.lists.state
     var mirrors by mutableStateOf<List<MirrorStatus>?>(null)
@@ -139,15 +145,15 @@ class SettingsVm(private val c: Container) : ViewModel() {
     var mirrorsBusy by mutableStateOf(false)
         private set
     var mirrorInput by mutableStateOf("")
-    val mirrorAuto = c.prefs.mirrorAuto
+    val mirrorAuto = c.prefs.mirrorAuto.eager(true)
     var cacheBytes by mutableStateOf<Long?>(null)
         private set
-    val quality = c.prefs.quality
-    val preferredKind = c.prefs.preferredKind
-    val history = c.prefs.history
-    val subScale = c.prefs.subScaleFlow
-    val studios = c.prefs.favouriteStudios
-    val pickCount = c.prefs.pickCount
+    val quality = c.prefs.quality.eager(1080)
+    val preferredKind = c.prefs.preferredKind.eager("VoiceRu")
+    val history = c.prefs.history.eager(emptyList())
+    val subScale = c.prefs.subScaleFlow.eager(1.0)
+    val studios = c.prefs.favouriteStudios.eager(emptyList())
+    val pickCount = c.prefs.pickCount.eager(0)
     /** Address in use, for "open on the site" links. */
     var base by mutableStateOf<String?>(null)
         private set
@@ -159,7 +165,7 @@ class SettingsVm(private val c: Container) : ViewModel() {
 
     // --- video channel (where the account's video links come from): shared with the player and startup ---
     val channel = c.channels.state
-    val channelAuto = c.prefs.channelAuto
+    val channelAuto = c.prefs.channelAuto.eager(true)
     fun loadChannels() = viewModelScope.launch { if (c.channels.state.value.setup == null) c.channels.load() }
     fun reloadChannels() = viewModelScope.launch { c.channels.load() }
     fun testChannels() = c.channels.testAll()
@@ -209,18 +215,18 @@ class SettingsVm(private val c: Container) : ViewModel() {
     fun setQuality(q: Int) = viewModelScope.launch { c.prefs.setQuality(q) }
     fun setKind(k: String) = viewModelScope.launch { c.prefs.setPreferredKind(k) }
     fun setSubScale(v: Double) = viewModelScope.launch { c.prefs.setSubScale(v) }
-    val seekStep = c.prefs.seekStep
-    val holdBoost = c.prefs.holdBoost
-    val sideGestures = c.prefs.sideGestures
-    val rememberBrightness = c.prefs.rememberBrightness
-    val aniSkip = c.prefs.aniSkip
-    val normalizeAudio = c.prefs.normalizeAudio
-    val downloadQuality = c.prefs.downloadQuality
-    val autoDeleteWatched = c.prefs.autoDeleteWatched
-    val wifiOnlyDownloads = c.prefs.wifiOnlyDownloads
+    val seekStep = c.prefs.seekStep.eager(10)
+    val holdBoost = c.prefs.holdBoost.eager(true)
+    val sideGestures = c.prefs.sideGestures.eager(true)
+    val rememberBrightness = c.prefs.rememberBrightness.eager(false)
+    val aniSkip = c.prefs.aniSkip.eager(false)
+    val normalizeAudio = c.prefs.normalizeAudio.eager(false)
+    val downloadQuality = c.prefs.downloadQuality.eager(0)
+    val autoDeleteWatched = c.prefs.autoDeleteWatched.eager(false)
+    val wifiOnlyDownloads = c.prefs.wifiOnlyDownloads.eager(false)
     val downloads = c.downloads.state
-    val alerts = c.prefs.alerts
-    val alertsMyStudio = c.prefs.alertsMyStudio
+    val alerts = c.prefs.alerts.eager(false)
+    val alertsMyStudio = c.prefs.alertsMyStudio.eager(false)
     var backupNotice by mutableStateOf<String?>(null)
     fun setSeekStep(v: Int) = viewModelScope.launch { c.prefs.setSeekStep(v) }
     fun setHoldBoost(on: Boolean) = viewModelScope.launch { c.prefs.setHoldBoost(on) }
@@ -290,14 +296,14 @@ fun SettingsScreen(onOpenSection: (SettingsSection) -> Unit) {
     val vm = nfViewModel { SettingsVm(it) }
     val ctx = LocalContext.current
     val acc by vm.account.collectAsStateWithLifecycle()
-    val quality by vm.quality.collectAsStateWithLifecycle(1080)
-    val kind by vm.preferredKind.collectAsStateWithLifecycle("VoiceRu")
-    val history by vm.history.collectAsStateWithLifecycle(emptyList())
-    val seekStep by vm.seekStep.collectAsStateWithLifecycle(10)
-    val holdBoost by vm.holdBoost.collectAsStateWithLifecycle(true)
-    val studios by vm.studios.collectAsStateWithLifecycle(emptyList())
-    val alertsOn by vm.alerts.collectAsStateWithLifecycle(false)
-    val alertsMyStudio by vm.alertsMyStudio.collectAsStateWithLifecycle(true)
+    val quality by vm.quality.collectAsStateWithLifecycle()
+    val kind by vm.preferredKind.collectAsStateWithLifecycle()
+    val history by vm.history.collectAsStateWithLifecycle()
+    val seekStep by vm.seekStep.collectAsStateWithLifecycle()
+    val holdBoost by vm.holdBoost.collectAsStateWithLifecycle()
+    val studios by vm.studios.collectAsStateWithLifecycle()
+    val alertsOn by vm.alerts.collectAsStateWithLifecycle()
+    val alertsMyStudio by vm.alertsMyStudio.collectAsStateWithLifecycle()
     val downloads by vm.downloads.collectAsStateWithLifecycle()
     val channel by vm.channel.collectAsStateWithLifecycle()
     var alertsPermitted by remember { mutableStateOf(EpisodeAlerts.permitted(ctx)) }
@@ -411,22 +417,22 @@ fun SettingsSectionScreen(
     val vm = nfViewModel(owner = owner) { SettingsVm(it) }
     val ctx = LocalContext.current
     val acc by vm.account.collectAsStateWithLifecycle()
-    val quality by vm.quality.collectAsStateWithLifecycle(1080)
-    val downloadQuality by vm.downloadQuality.collectAsStateWithLifecycle(0)
+    val quality by vm.quality.collectAsStateWithLifecycle()
+    val downloadQuality by vm.downloadQuality.collectAsStateWithLifecycle()
     val downloads by vm.downloads.collectAsStateWithLifecycle()
-    val kind by vm.preferredKind.collectAsStateWithLifecycle("VoiceRu")
-    val history by vm.history.collectAsStateWithLifecycle(emptyList())
-    val subScale by vm.subScale.collectAsStateWithLifecycle(1.0)
-    val seekStep by vm.seekStep.collectAsStateWithLifecycle(10)
-    val holdBoost by vm.holdBoost.collectAsStateWithLifecycle(true)
-    val sideGestures by vm.sideGestures.collectAsStateWithLifecycle(true)
-    val rememberBrightness by vm.rememberBrightness.collectAsStateWithLifecycle(false)
-    val aniSkip by vm.aniSkip.collectAsStateWithLifecycle(false)
-    val normalizeAudio by vm.normalizeAudio.collectAsStateWithLifecycle(false)
-    val autoDeleteWatched by vm.autoDeleteWatched.collectAsStateWithLifecycle(false)
-    val wifiOnlyDownloads by vm.wifiOnlyDownloads.collectAsStateWithLifecycle(false)
-    val studios by vm.studios.collectAsStateWithLifecycle(emptyList())
-    val pickCount by vm.pickCount.collectAsStateWithLifecycle(0)
+    val kind by vm.preferredKind.collectAsStateWithLifecycle()
+    val history by vm.history.collectAsStateWithLifecycle()
+    val subScale by vm.subScale.collectAsStateWithLifecycle()
+    val seekStep by vm.seekStep.collectAsStateWithLifecycle()
+    val holdBoost by vm.holdBoost.collectAsStateWithLifecycle()
+    val sideGestures by vm.sideGestures.collectAsStateWithLifecycle()
+    val rememberBrightness by vm.rememberBrightness.collectAsStateWithLifecycle()
+    val aniSkip by vm.aniSkip.collectAsStateWithLifecycle()
+    val normalizeAudio by vm.normalizeAudio.collectAsStateWithLifecycle()
+    val autoDeleteWatched by vm.autoDeleteWatched.collectAsStateWithLifecycle()
+    val wifiOnlyDownloads by vm.wifiOnlyDownloads.collectAsStateWithLifecycle()
+    val studios by vm.studios.collectAsStateWithLifecycle()
+    val pickCount by vm.pickCount.collectAsStateWithLifecycle()
     var confirmHistory by remember { mutableStateOf(false) }
     var confirmPicks by remember { mutableStateOf(false) }
 
@@ -487,11 +493,12 @@ fun SettingsSectionScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             listOf(0.8 to "80%", 1.0 to "100%", 1.25 to "125%", 1.5 to "150%").forEachIndexed { i, (v, pct) ->
                                 val on = kotlin.math.abs(subScale - v) < 0.01
-                                val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.2f) else Nf.Ink, label = "sz")
+                                val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.2f) else Nf.Ink, tween(220, easing = FastOutSlowInEasing), label = "sz")
+                                val br by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.55f) else Nf.Line, tween(220, easing = FastOutSlowInEasing), label = "szb")
                                 Column(
-                                    Modifier.weight(1f).height(58.dp).clip(RoundedCornerShape(14.dp)).background(bg)
-                                        .border(1.dp, if (on) Nf.Violet.copy(alpha = 0.55f) else Nf.Line, RoundedCornerShape(14.dp))
-                                        .clickable { vm.setSubScale(v) },
+                                    Modifier.weight(1f).height(58.dp).pressable(0.95f) { vm.setSubScale(v) }
+                                        .clip(RoundedCornerShape(14.dp)).background(bg)
+                                        .border(1.dp, br, RoundedCornerShape(14.dp)),
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.Center,
                                 ) {
@@ -1100,7 +1107,7 @@ private fun ProfileStatTile(value: String, label: String, accent: Color, modifie
 @Composable
 private fun MirrorsCard(vm: SettingsVm) {
     val focus = LocalFocusManager.current
-    val auto by vm.mirrorAuto.collectAsStateWithLifecycle(true)
+    val auto by vm.mirrorAuto.collectAsStateWithLifecycle()
     val list = vm.mirrors
     Card {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1176,7 +1183,7 @@ private fun MirrorsCard(vm: SettingsVm) {
 @Composable
 private fun ChannelCard(vm: SettingsVm) {
     val st by vm.channel.collectAsStateWithLifecycle()
-    val auto by vm.channelAuto.collectAsStateWithLifecycle(true)
+    val auto by vm.channelAuto.collectAsStateWithLifecycle()
     val setup = st.setup
     val allMeasured = setup != null && st.speeds.size == setup.channels.size
     val working = setup?.channels?.count { st.speeds[it.id]?.works == true } ?: 0
@@ -1349,11 +1356,13 @@ private fun MirrorRow(m: MirrorStatus, auto: Boolean, onPick: () -> Unit, onRemo
 @Composable
 private fun RowScope.QualityTile(height: Int, caption: String, bars: Int, selected: Int, onPick: (Int) -> Unit) {
     val on = height == selected
-    val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.16f) else Nf.Ink, label = "qt")
-    val br by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.6f) else Nf.Line, label = "qtb")
+    val tileSpec = tween<Color>(220, easing = FastOutSlowInEasing)
+    val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.16f) else Nf.Ink, tileSpec, label = "qt")
+    val br by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.6f) else Nf.Line, tileSpec, label = "qtb")
     Column(
-        Modifier.weight(1f).height(92.dp).clip(RoundedCornerShape(18.dp)).background(bg).border(1.dp, br, RoundedCornerShape(18.dp))
-            .pressable(0.95f) { onPick(height) }.padding(horizontal = 12.dp, vertical = 12.dp),
+        Modifier.weight(1f).height(92.dp).pressable(0.95f) { onPick(height) }
+            .clip(RoundedCornerShape(18.dp)).background(bg).border(1.dp, br, RoundedCornerShape(18.dp))
+            .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.SpaceBetween,
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
@@ -1376,35 +1385,82 @@ private fun RowScope.QualityTile(height: Int, caption: String, bars: Int, select
 @Composable
 private fun RowScope.StepTile(sec: Int, icon: ImageVector, caption: String, selected: Int, onPick: (Int) -> Unit) {
     val on = sec == selected
-    val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.16f) else Nf.Ink, label = "st")
-    val br by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.6f) else Nf.Line, label = "stb")
-    val box by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.22f) else Nf.Surface, label = "sti")
+    val tileSpec = tween<Color>(220, easing = FastOutSlowInEasing)
+    val bg by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.16f) else Nf.Ink, tileSpec, label = "st")
+    val br by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.6f) else Nf.Line, tileSpec, label = "stb")
+    val box by animateColorAsState(if (on) Nf.Violet.copy(alpha = 0.22f) else Nf.Surface, tileSpec, label = "sti")
+    val iconTint by animateColorAsState(if (on) Nf.Violet else Nf.TextDim, tileSpec, label = "stit")
+    val titleColor by animateColorAsState(if (on) Nf.Text else Nf.TextDim, tileSpec, label = "sttc")
+    val capColor by animateColorAsState(if (on) Nf.Violet else Nf.TextMute, tileSpec, label = "stcc")
     Row(
-        Modifier.weight(1f).height(68.dp).clip(RoundedCornerShape(18.dp)).background(bg).border(1.dp, br, RoundedCornerShape(18.dp))
-            .pressable(0.95f) { onPick(sec) }.padding(horizontal = 12.dp),
+        Modifier.weight(1f).height(68.dp).pressable(0.95f) { onPick(sec) }
+            .clip(RoundedCornerShape(18.dp)).background(bg).border(1.dp, br, RoundedCornerShape(18.dp))
+            .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(box), contentAlignment = Alignment.Center) {
-            Icon(icon, null, tint = if (on) Nf.Violet else Nf.TextDim, modifier = Modifier.size(22.dp))
+            Icon(icon, null, tint = iconTint, modifier = Modifier.size(22.dp))
         }
         Spacer(Modifier.width(12.dp))
         Column {
-            Text("$sec секунд", style = Type.Title.copy(fontSize = 15.sp), color = if (on) Nf.Text else Nf.TextDim, maxLines = 1)
-            Text(caption, style = Type.Caption, color = if (on) Nf.Violet else Nf.TextMute, maxLines = 1)
+            Text("$sec секунд", style = Type.Title.copy(fontSize = 15.sp), color = titleColor, maxLines = 1)
+            Text(caption, style = Type.Caption, color = capColor, maxLines = 1)
         }
+    }
+}
+
+/** Smooth custom switch aligned with Neifur's dark surface & mint accent. */
+@Composable
+private fun NeifurSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    val colorSpec = tween<Color>(240, easing = FastOutSlowInEasing)
+    val trackBg by animateColorAsState(if (checked) Nf.Mint else Nf.Ink, colorSpec, label = "swTrack")
+    val trackBr by animateColorAsState(if (checked) Nf.Mint else Nf.Line, colorSpec, label = "swBorder")
+    val thumbColor by animateColorAsState(if (checked) Nf.Ink else Nf.TextDim, colorSpec, label = "swThumbColor")
+    val thumbX by animateDpAsState(
+        if (checked) 23.dp else 3.dp,
+        spring(dampingRatio = 0.78f, stiffness = 520f),
+        label = "swThumbX",
+    )
+    Box(
+        modifier
+            .size(width = 48.dp, height = 28.dp)
+            .clip(CircleShape)
+            .background(trackBg)
+            .border(1.dp, trackBr, CircleShape)
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onValueChange = onCheckedChange,
+            ),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Box(
+            Modifier
+                .offset { IntOffset(thumbX.roundToPx(), 0) }
+                .size(22.dp)
+                .clip(CircleShape)
+                .background(thumbColor)
+        )
     }
 }
 
 /** A setting that is either on or off: icon, what it does, and a switch. The whole row toggles it. */
 @Composable
 private fun ToggleRow(icon: ImageVector, title: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    val tint by animateColorAsState(if (checked) Nf.Mint else Nf.TextDim, label = "tg")
-    val box by animateColorAsState(if (checked) Nf.Mint.copy(alpha = 0.14f) else Nf.Ink, label = "tgb")
+    val colorSpec = tween<Color>(240, easing = FastOutSlowInEasing)
+    val tint by animateColorAsState(if (checked) Nf.Mint else Nf.TextDim, colorSpec, label = "tg")
+    val box by animateColorAsState(if (checked) Nf.Mint.copy(alpha = 0.14f) else Nf.Ink, colorSpec, label = "tgb")
+    val boxBorder by animateColorAsState(if (checked) Nf.Mint.copy(alpha = 0.36f) else Nf.Line.copy(alpha = 0.7f), colorSpec, label = "tgbb")
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable { onChange(!checked) },
+        Modifier.fillMaxWidth().pressable(0.985f) { onChange(!checked) }.padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(box), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(box).border(1.dp, boxBorder, RoundedCornerShape(11.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
             Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp))
         }
         Spacer(Modifier.width(12.dp))
@@ -1413,24 +1469,19 @@ private fun ToggleRow(icon: ImageVector, title: String, hint: String, checked: B
             Text(hint, style = Type.Caption, color = Nf.TextMute, modifier = Modifier.padding(top = 2.dp))
         }
         Spacer(Modifier.width(10.dp))
-        Switch(
-            checked = checked, onCheckedChange = onChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Nf.Ink, checkedTrackColor = Nf.Mint, checkedBorderColor = Nf.Mint,
-                uncheckedThumbColor = Nf.TextMute, uncheckedTrackColor = Nf.Ink, uncheckedBorderColor = Nf.Line,
-            ),
-        )
+        NeifurSwitch(checked = checked, onCheckedChange = onChange)
     }
 }
 
 @Composable
 private fun RowScope.KindTile(key: String, icon: ImageVector, tint: Color, label: String, selected: String, onPick: (String) -> Unit) {
     val on = key == selected
-    val bg by animateColorAsState(if (on) tint.copy(alpha = 0.16f) else Nf.Ink, label = "kt")
-    val br by animateColorAsState(if (on) tint.copy(alpha = 0.6f) else Nf.Line, label = "ktb")
+    val tileSpec = tween<Color>(220, easing = FastOutSlowInEasing)
+    val bg by animateColorAsState(if (on) tint.copy(alpha = 0.16f) else Nf.Ink, tileSpec, label = "kt")
+    val br by animateColorAsState(if (on) tint.copy(alpha = 0.6f) else Nf.Line, tileSpec, label = "ktb")
     Column(
-        Modifier.weight(1f).height(84.dp).clip(RoundedCornerShape(18.dp)).background(bg).border(1.dp, br, RoundedCornerShape(18.dp))
-            .pressable(0.95f) { onPick(key) },
+        Modifier.weight(1f).height(84.dp).pressable(0.95f) { onPick(key) }
+            .clip(RoundedCornerShape(18.dp)).background(bg).border(1.dp, br, RoundedCornerShape(18.dp)),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
     ) {
         Icon(icon, null, tint = if (on) tint else Nf.TextDim, modifier = Modifier.size(24.dp))
